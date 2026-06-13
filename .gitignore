@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets / local config
+config.yaml
+.env
+*.key
+
+# Data pulls — large, regenerable from the APIs; keep out of git.
+data/*.csv
+data/*.parquet
+data/*.feather
+
+# Results — keep human-readable reports, drop raw dumps.
+results/*.csv
+results/*.parquet
+!results/*.md
