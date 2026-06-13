@@ -72,8 +72,11 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
 - [x] Loader layer (Breeze hook + Twelve Data adapter) → canonical OHLCV frame.
 - [x] MTF: session-anchored resample + no-lookahead align + MTF resolver (3
       methods) + score_instrument_mtf. Tested in tests/test_mtf_smoke.py.
+- [x] Stage-1 config-driven sweep loop in `scoring.stage1.main`: per instrument
+      pull 3m+daily → assemble MTF → score the mtf_method × tf_method grid (6
+      cells) → write ranked CSV + markdown to results/. Skips instruments whose
+      loader can't pull. Tested in tests/test_stage1_sweep.py.
 - [ ] Provide live creds: `breeze_pull.py` on path (Indian) + TWELVEDATA_API_KEY
-      env (global). Loaders raise clear errors until then.
+      env (global). Loaders raise clear errors / instruments are skipped until then.
 - [ ] Fill 3-min strategy component thresholds from journal rules (Phase 2).
-- [ ] Wire Stage-1 config-driven sweep loop in `scoring.stage1.main` → write the
-      instrument × directional-expectancy table to results/.
+- [ ] Stage 2 (levels: entry/stop/target, R-multiple) on Stage-1 survivors.

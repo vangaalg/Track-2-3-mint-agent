@@ -79,18 +79,28 @@ rather than pre-committing. The design is flexible enough to express
 
 ```bash
 pip install -r requirements.txt
-cp config.example.yaml config.yaml   # then edit
-# Stage 1 scoring entry point (stub):
-python -m scoring.stage1 --help
+cp config.example.yaml config.yaml   # then edit instruments/keys
+export TWELVEDATA_API_KEY=...        # global instruments
+# put your breeze_pull.py on PYTHONPATH for Indian instruments
+
+# Run Stage 1: per instrument, sweep mtf_method x tf_method and write the
+# ranked instrument x directional-expectancy table to results/.
+python -m scoring.stage1 --config config.yaml
+python -m scoring.stage1 --no-sweep                 # configured default only
+python -m scoring.stage1 --mtf-method htf_bias_trigger --method confluence
 ```
+
+Instruments whose loader can't pull (missing key / `breeze_pull.py`) are skipped
+with a warning; the rest still run.
 
 ## Status
 
-Phase 1 skeleton in place and tested (`pytest -q`): indicator engine, MTF
+Phase 1 in place and tested (`pytest -q`, 11 tests): indicator engine, MTF
 plumbing (session-anchored resample + no-lookahead alignment), single-TF and
-MTF directional resolvers (all methods), per-source loaders, and Stage-1
-scoring primitives. Indicator math (EMA / Bollinger / RSI / MACD) is
-implemented. Remaining: the 3-min strategy component thresholds (Phase-2
-journal extraction) and the config-driven multi-instrument sweep loop in
-`scoring.stage1.main` (loaders raise clear errors until a Twelve Data key /
-`breeze_pull.py` is provided).
+MTF directional resolvers (all methods), per-source loaders, and the
+**config-driven Stage-1 sweep loop** (`scoring.stage1.main`) that scores the
+mtf_method × tf_method grid per instrument and writes the ranked expectancy
+table (CSV + markdown) to `results/`. Indicator math (EMA / Bollinger / RSI /
+MACD) is implemented. Remaining: live creds (Twelve Data key / `breeze_pull.py`),
+the 3-min strategy component thresholds (Phase-2 journal extraction), and
+Stage 2 (levels) on Stage-1 survivors.

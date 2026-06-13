@@ -22,6 +22,23 @@ indicators:
     slow: 26
     signal: 9
 
+# Data sourcing. History windows in calendar days; daily must cover SMA-200's
+# ~400-day warm-up. `intervals` (optional) overrides the per-source (base, daily)
+# interval strings; defaults: twelvedata=[3min,1day], breeze=[3minute,1day].
+data:
+  intraday_days: 40             # ~5000 3-min bars — Twelve Data free-tier friendly
+  daily_days: 800
+  # intervals:
+  #   twelvedata: [3min, 1day]
+  #   breeze: [3minute, 1day]
+
+# Stage-1 sweep grid. Each instrument is scored over mtf_method x tf_method, so
+# the table shows which resolver wins per instrument (the point of Track 2).
+sweep:
+  enabled: true
+  mtf_methods: [htf_bias_trigger, cross_tf_confluence, per_tf_then_vote]
+  tf_methods: [confluence, hierarchical]
+
 # Multi-timeframe stack. Pull a 3m base + daily direct, resample the rest
 # locally (see indicators/timeframes.py). All TFs are aligned no-lookahead.
 timeframes:

@@ -9,18 +9,26 @@ Output is an **instrument x directional-expectancy table** — the filter that
 decides which instruments even deserve Stage-2 level-tuning. It does NOT model
 entries/stops/targets (that is Stage 2); it only grades the *read*.
 
-This module provides the scoring primitives plus a CLI skeleton. The data
-loader (Breeze reuse / Twelve Data adapter) and the multi-instrument sweep loop
-are the remaining TODOs.
+This module provides the scoring primitives AND the config-driven runner: per
+instrument, ``main`` pulls 3m+daily via the loaders, builds the MTF stack, and
+scores the ``mtf_method x tf_method`` grid, writing a ranked expectancy table
+(CSV + markdown) to ``results/``. Instruments whose loader can't pull (missing
+key / breeze_pull.py) are skipped with a warning.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import sys
 from dataclasses import dataclass
+from datetime import date, timedelta
+from itertools import product
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from indicators.engine import compute_indicators
 from indicators.directional import (
@@ -30,6 +38,13 @@ from indicators.directional import (
     resolve_direction_mtf,
 )
 from indicators.timeframes import resample_ohlcv, build_mtf_features
+from loaders import get_loader
+
+# Per-source (base, daily) interval strings. Override via config `data.intervals`.
+SOURCE_INTERVALS = {
+    "twelvedata": ("3min", "1day"),
+    "breeze": ("3minute", "1day"),
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -66,7 +81,7 @@ class ExpectancyRow:
     """One row of the instrument x directional-expectancy table."""
 
     instrument: str
-    method: str
+    method: str              # mtf_method (or single-TF method for score_instrument)
     n_signals: int
     n_long: int
     n_short: int
@@ -75,6 +90,7 @@ class ExpectancyRow:
     expectancy: float        # hit_rate-weighted; == avg_signed_ret here, kept
                              # explicit so Stage 2 can swap in R-multiple terms
     coverage: float          # fraction of bars that produced a non-flat call
+    tf_method: str = ""      # per-TF resolver method, when swept alongside mtf
 
     def as_dict(self) -> dict:
         return self.__dict__.copy()
@@ -136,20 +152,20 @@ def assemble_mtf_frames(
     return frames
 
 
-def score_instrument_mtf(
+def _score_from_features(
+    feats_by_tf: dict[str, pd.DataFrame],
     frames_by_tf: dict[str, pd.DataFrame],
     instrument: str,
     horizon: int,
     cfg: MTFDirectionalConfig,
-    indicator_params: dict | None = None,
     flat_threshold: float = 0.0,
 ) -> ExpectancyRow:
-    """Score one instrument's MTF directional read end-to-end.
+    """MTF call -> grade vs N-bar forward return on the trigger TF -> one row.
 
-    frames -> per-TF indicators -> MTF directional call -> grade vs N-bar
-    forward return on the TRIGGER (3m) timeframe -> one expectancy row.
+    Takes pre-computed per-TF features so the sweep can build them ONCE per
+    instrument and reuse across resolver variants. ``tf_method`` is recorded
+    from ``cfg.base.method`` for traceability in the swept table.
     """
-    feats_by_tf = build_mtf_features(frames_by_tf, indicator_params)
     calls = resolve_direction_mtf(feats_by_tf, cfg)
 
     trigger = frames_by_tf[cfg.trigger_tf]
@@ -168,6 +184,26 @@ def score_instrument_mtf(
         avg_signed_ret=float(graded["signed_ret"].mean()) if n else float("nan"),
         expectancy=float(graded["signed_ret"].mean()) if n else float("nan"),
         coverage=(n / n_bars) if n_bars else float("nan"),
+        tf_method=cfg.base.method,
+    )
+
+
+def score_instrument_mtf(
+    frames_by_tf: dict[str, pd.DataFrame],
+    instrument: str,
+    horizon: int,
+    cfg: MTFDirectionalConfig,
+    indicator_params: dict | None = None,
+    flat_threshold: float = 0.0,
+) -> ExpectancyRow:
+    """Score one instrument's MTF directional read end-to-end.
+
+    frames -> per-TF indicators -> MTF directional call -> grade vs N-bar
+    forward return on the TRIGGER (3m) timeframe -> one expectancy row.
+    """
+    feats_by_tf = build_mtf_features(frames_by_tf, indicator_params)
+    return _score_from_features(
+        feats_by_tf, frames_by_tf, instrument, horizon, cfg, flat_threshold
     )
 
 
@@ -176,8 +212,160 @@ def build_expectancy_table(rows: list[ExpectancyRow]) -> pd.DataFrame:
     return pd.DataFrame([r.as_dict() for r in rows])
 
 
+_DAILY_TF_NAMES = {"1day", "1d", "daily"}
+_DEFAULT_MTF_METHODS = [
+    "htf_bias_trigger",
+    "cross_tf_confluence",
+    "per_tf_then_vote",
+]
+_DEFAULT_TF_METHODS = ["confluence", "hierarchical"]
+_TABLE_COLUMNS = [
+    "instrument", "method", "tf_method", "n_signals", "n_long", "n_short",
+    "hit_rate", "avg_signed_ret", "expectancy", "coverage",
+]
+
+
 # --------------------------------------------------------------------------- #
-# CLI skeleton
+# Config -> dataclasses
+# --------------------------------------------------------------------------- #
+def load_config(path: str) -> dict:
+    """Load the YAML config (see config.example.yaml)."""
+    with open(path) as fh:
+        return yaml.safe_load(fh) or {}
+
+
+def _directional_config_from(d: dict) -> DirectionalConfig:
+    """Map the `directional` block onto DirectionalConfig (defaults fill gaps)."""
+    fields = {f.name for f in dataclasses.fields(DirectionalConfig)}
+    return DirectionalConfig(**{k: v for k, v in d.items() if k in fields})
+
+
+def _rules_by_tf(tf_block: dict) -> dict[str, str]:
+    """Resample/align rule per non-trigger TF, from the `timeframes` block.
+
+    Intraday TFs keep their resample rule; pulled daily aligns with `1D`;
+    weekly-from-daily keeps its rule. Used by align_to_base for the close shift.
+    """
+    rules: dict[str, str] = {}
+    rules.update(tf_block.get("resample_intraday", {}))
+    for tf in tf_block.get("pull_direct", []):
+        rules[tf] = "1D" if tf in _DAILY_TF_NAMES else tf
+    rules.update(tf_block.get("resample_from_daily", {}))
+    return rules
+
+
+def _mtf_config_from(cfg: dict, base: DirectionalConfig) -> MTFDirectionalConfig:
+    """Build an MTFDirectionalConfig from the `mtf` + `timeframes` blocks."""
+    m = cfg.get("mtf", {})
+    tf = cfg.get("timeframes", {})
+    return MTFDirectionalConfig(
+        base=base,
+        trigger_tf=m.get("trigger_tf", tf.get("base", "3min")),
+        bias_tfs=m.get("bias_tfs", ["15min", "60min", "1day", "1week"]),
+        rules_by_tf=_rules_by_tf(tf),
+        mtf_method=m.get("mtf_method", "htf_bias_trigger"),
+        bias_quorum=m.get("bias_quorum", 2),
+        veto=m.get("veto", True),
+    )
+
+
+def _timeframe_settings(cfg: dict) -> tuple[dict[str, str], str]:
+    """Return (intraday_rules, weekly_rule) for assemble_mtf_frames."""
+    tf = cfg.get("timeframes", {})
+    intraday_rules = tf.get("resample_intraday", {"15min": "15min", "60min": "60min"})
+    weekly_rule = tf.get("resample_from_daily", {}).get("1week", "1W")
+    return intraday_rules, weekly_rule
+
+
+def _pull_frames(inst: dict, cfg: dict):
+    """Pull the 3m base + daily series for one instrument (2 API calls)."""
+    source = inst["source"]
+    symbol = inst["symbol"]
+    loader = get_loader(source)
+
+    data_cfg = cfg.get("data", {})
+    intervals = data_cfg.get("intervals", {}).get(source) or SOURCE_INTERVALS.get(source)
+    if not intervals:
+        raise RuntimeError(f"no (base, daily) intervals configured for source {source!r}")
+    base_iv, daily_iv = intervals
+
+    today = date.today()
+    base3m = loader.load(
+        symbol, base_iv,
+        start=today - timedelta(days=data_cfg.get("intraday_days", 40)),
+    )
+    daily = loader.load(
+        symbol, daily_iv,
+        start=today - timedelta(days=data_cfg.get("daily_days", 800)),
+    )
+    return base3m, daily
+
+
+def _sweep_grid(cfg: dict, args) -> list[tuple[str, str]]:
+    """The (mtf_method, tf_method) cells to score per instrument."""
+    sweep = cfg.get("sweep", {})
+    enabled = sweep.get("enabled", True) and not args.no_sweep
+
+    if args.mtf_method:
+        mtf_methods = [args.mtf_method]
+    elif enabled:
+        mtf_methods = sweep.get("mtf_methods", _DEFAULT_MTF_METHODS)
+    else:
+        mtf_methods = [cfg.get("mtf", {}).get("mtf_method", "htf_bias_trigger")]
+
+    if args.method:
+        tf_methods = [args.method]
+    elif enabled:
+        tf_methods = sweep.get("tf_methods", _DEFAULT_TF_METHODS)
+    else:
+        tf_methods = [cfg.get("directional", {}).get("method", "confluence")]
+
+    return list(product(mtf_methods, tf_methods))
+
+
+# --------------------------------------------------------------------------- #
+# Reporting
+# --------------------------------------------------------------------------- #
+def _fmt(v) -> str:
+    return f"{v:.4f}" if isinstance(v, float) else str(v)
+
+
+def _df_to_md(df: pd.DataFrame) -> str:
+    cols = list(df.columns)
+    head = "| " + " | ".join(cols) + " |"
+    sep = "| " + " | ".join("---" for _ in cols) + " |"
+    body = ["| " + " | ".join(_fmt(r[c]) for c in cols) + " |" for _, r in df.iterrows()]
+    return "\n".join([head, sep, *body])
+
+
+def _write_markdown(table: pd.DataFrame, path: Path) -> None:
+    best = (
+        table.sort_values("expectancy", ascending=False)
+        .groupby("instrument", as_index=False)
+        .first()
+        .sort_values("expectancy", ascending=False)
+    )
+    keep = ["instrument", "method", "tf_method", "hit_rate", "expectancy",
+            "coverage", "n_signals"]
+    out = [
+        "# Stage 1 — directional-expectancy table",
+        "",
+        f"_generated {date.today().isoformat()}_",
+        "",
+        "## Best config per instrument",
+        "",
+        _df_to_md(best[keep]),
+        "",
+        "## Full sweep",
+        "",
+        _df_to_md(table),
+        "",
+    ]
+    path.write_text("\n".join(out))
+
+
+# --------------------------------------------------------------------------- #
+# CLI
 # --------------------------------------------------------------------------- #
 def _build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -191,7 +379,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--method",
         choices=["confluence", "hierarchical"],
         default=None,
-        help="override the directional resolver method",
+        help="pin the per-TF resolver method (disables the tf_method sweep)",
+    )
+    p.add_argument(
+        "--mtf-method",
+        dest="mtf_method",
+        choices=_DEFAULT_MTF_METHODS,
+        default=None,
+        help="pin the MTF combination method (disables the mtf_method sweep)",
+    )
+    p.add_argument(
+        "--no-sweep",
+        action="store_true",
+        help="run only the configured default (1 row/instrument)",
     )
     p.add_argument(
         "--out",
@@ -203,20 +403,61 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
-    # TODO Phase 1 wiring:
-    #   1. load config (config.yaml): instruments, data sources, horizon,
-    #      timeframes block, directional+mtf block -> MTFDirectionalConfig,
-    #      indicator params.
-    #   2. for each instrument: get_loader(source) -> pull 3m base + daily
-    #      (breeze_pull.py reuse for Indian; Twelve Data for global), then
-    #      assemble_mtf_frames(...) and score_instrument_mtf(...). Optionally
-    #      sweep mtf_method / knob grids per instrument.
-    #   3. build_expectancy_table(rows).to_csv(args.out).
-    raise SystemExit(
-        "scoring.stage1: scoring + MTF primitives are ready; the data-loader "
-        "sweep loop is not wired yet. See the TODO in main(). "
-        f"(parsed args: {vars(args)})"
+    cfg = load_config(args.config)
+
+    horizon = args.horizon or cfg.get("horizon", 8)
+    flat_threshold = cfg.get("flat_threshold", 0.0)
+    indicator_params = cfg.get("indicators")
+    base_dir_cfg = cfg.get("directional", {})
+    intraday_rules, weekly_rule = _timeframe_settings(cfg)
+    grid = _sweep_grid(cfg, args)
+
+    rows: list[ExpectancyRow] = []
+    for inst in cfg.get("instruments", []):
+        name = inst["name"]
+        try:
+            base3m, daily = _pull_frames(inst, cfg)
+        except Exception as exc:  # missing creds / pull failure -> skip + warn
+            print(f"[skip] {name}: {exc}", file=sys.stderr)
+            continue
+
+        frames = assemble_mtf_frames(
+            base3m, daily, intraday_rules, weekly_rule, inst.get("session_anchor")
+        )
+        feats = build_mtf_features(frames, indicator_params)
+
+        for mtf_method, tf_method in grid:
+            base = _directional_config_from({**base_dir_cfg, "method": tf_method})
+            mcfg = _mtf_config_from(cfg, base)
+            mcfg.mtf_method = mtf_method
+            try:
+                rows.append(
+                    _score_from_features(
+                        feats, frames, name, horizon, mcfg, flat_threshold
+                    )
+                )
+            except Exception as exc:
+                print(f"[warn] {name} {mtf_method}/{tf_method}: {exc}", file=sys.stderr)
+
+    if not rows:
+        raise SystemExit(
+            "No instruments scored. Provide TWELVEDATA_API_KEY (global) and/or "
+            "breeze_pull.py on the path (Indian), then retry."
+        )
+
+    table = (
+        build_expectancy_table(rows)[_TABLE_COLUMNS]
+        .sort_values(["instrument", "expectancy"], ascending=[True, False])
+        .reset_index(drop=True)
     )
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(out, index=False)
+    _write_markdown(table, out.with_suffix(".md"))
+
+    print(f"Wrote {len(table)} rows -> {out}  (+ {out.with_suffix('.md').name})")
+    print(table.to_string(index=False))
+    return 0
 
 
 if __name__ == "__main__":
