@@ -108,3 +108,54 @@ These map 1:1 to the `directional` block in `config.example.yaml`.
 values in `{long, short, flat}`. Stage 1 sweeps **both methods (and their
 knobs)** per instrument and scores each — the winning resolver is an *output* of
 the breadth test, never an assumption baked into the code.
+
+---
+
+## Multi-timeframe extension
+
+The 3-min strategy is read **inside an MTF stack**, not on 3-min bars alone:
+
+```
+3m (trigger)  ·  15m  ·  60m  ·  daily  ·  weekly (regime)
+```
+
+Sourcing (rate-limit friendly): pull a **3m base** + **daily direct**; resample
+15m/60m from the base and weekly from daily (`indicators/timeframes.py`).
+
+### Two correctness rules
+
+1. **Session anchoring** — intraday bins align to the market open (e.g. NSE
+   09:15) via `resample_ohlcv(anchor=...)`, so a "15m bar" matches the chart.
+2. **No lookahead** — a higher-TF bar is visible on the 3m timeline only after
+   it has **closed**. `align_to_base` shifts each HTF bar to its close time
+   (`open + rule`) then takes the last *completed* bar per 3m bar (`merge_asof`
+   backward). At 3m bar *t* you see yesterday's completed daily, never today's
+   still-forming one.
+
+The single-TF resolver above runs **per timeframe**; voters become
+*indicator × timeframe* once aligned.
+
+### Three MTF combination methods (`mtf_method`)
+
+| method | how timeframes combine |
+|--------|------------------------|
+| **`htf_bias_trigger`** *(default)* | Bias TFs (15m/60m/1d/1w) each resolve a call; their net agreement (≥ `bias_quorum`, `veto` cancels on conflict) sets a **bias**. The 3m call is the **trigger**. Take the trade only if trigger direction == bias and bias ≠ flat. Classic higher-TF-bias / lower-TF-entry. |
+| **`cross_tf_confluence`** | Pool every (indicator × TF) vote, aligned to 3m, into one confluence count (`min_agree`). |
+| **`per_tf_then_vote`** | Resolve a full call within each TF, then vote across the TF-level calls (net ≥ `bias_quorum`). |
+
+### MTF config (`MTFDirectionalConfig`)
+
+| field | meaning |
+|-------|---------|
+| `base` | the per-TF `DirectionalConfig` (voters/method/knobs), reused on each TF |
+| `trigger_tf` | the entry timeframe (`3min`) |
+| `bias_tfs` | higher timeframes that set/veto direction |
+| `rules_by_tf` | pandas resample rule per non-trigger TF (for the close-time shift) |
+| `mtf_method` | `htf_bias_trigger` \| `cross_tf_confluence` \| `per_tf_then_vote` |
+| `bias_quorum` | net HTF agreement required to set a bias |
+| `veto` | a conflicting HTF cancels the bias → stand down |
+
+These map 1:1 to the `mtf` block in `config.example.yaml`. As with the single-TF
+switch, **Stage 1 sweeps `mtf_method` per instrument** — the winning combination
+is an output of the test, not a baked-in assumption. Grading is always on the
+3m (trigger) timeline.

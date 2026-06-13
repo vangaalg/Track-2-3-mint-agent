@@ -4,9 +4,12 @@ pandas>=2.0
 numpy>=1.24
 pyyaml>=6.0
 
+# Parquet cache for loaders (data/*.parquet):
+pyarrow>=12.0
+
 # Data sources (install as needed per market):
-# breeze-connect>=1.0      # ICICI Breeze — Indian instruments
-# twelvedata>=1.2          # Twelve Data — global instruments
+requests>=2.28             # Twelve Data REST adapter (loaders/twelvedata.py)
+# breeze-connect>=1.0      # ICICI Breeze — Indian instruments (reuse breeze_pull.py)
 
 # Dev / testing:
 # pytest>=7.0

@@ -34,10 +34,22 @@ level-tuning. Stage 1 is what this skeleton wires up first.
 
 ```
 data/         OHLCV pulls, one file per instrument (gitignored; see data/README.md)
-indicators/   Instrument-agnostic indicator engine + directional-output resolver
+loaders/      Per-source loaders (Breeze, Twelve Data) → one canonical OHLCV frame
+indicators/   Instrument-agnostic engine, multi-timeframe plumbing, directional resolver
 scoring/      Stage 1 directional-read scoring (Stage 2/3 to follow)
 results/      Score tables and reports (gitignored except reports)
+tests/        Smoke tests (resample correctness, no-lookahead, MTF methods)
 ```
+
+## Multi-timeframe (MTF)
+
+The 3-min strategy is read inside an MTF stack — **3m (trigger) · 15m · 60m ·
+daily · weekly (regime)**. We pull a **3m base** + **daily direct** and resample
+the rest locally; higher-TF bars are aligned onto the 3m timeline **without
+lookahead** (a bar is only visible once it has closed). The default combination
+is **HTF bias-filter + 3m trigger** (higher TFs set/veto direction, 3-min fires
+the entry), switchable to cross-TF confluence or per-TF-then-vote. See
+[`indicators/DIRECTIONAL_SPEC.md`](indicators/DIRECTIONAL_SPEC.md).
 
 ## The directional-output rule (key design constraint)
 
@@ -74,8 +86,11 @@ python -m scoring.stage1 --help
 
 ## Status
 
-Phase 1 skeleton: directory layout, indicator engine, directional-output
-resolver (both methods), and a Stage-1 scoring stub are in place. Indicator
-math (EMA / Bollinger / RSI / MACD) is implemented; the 3-min strategy
-components and the scoring loop are structured stubs to be filled as the
-journal-derived rules are extracted in Phase 2.
+Phase 1 skeleton in place and tested (`pytest -q`): indicator engine, MTF
+plumbing (session-anchored resample + no-lookahead alignment), single-TF and
+MTF directional resolvers (all methods), per-source loaders, and Stage-1
+scoring primitives. Indicator math (EMA / Bollinger / RSI / MACD) is
+implemented. Remaining: the 3-min strategy component thresholds (Phase-2
+journal extraction) and the config-driven multi-instrument sweep loop in
+`scoring.stage1.main` (loaders raise clear errors until a Twelve Data key /
+`breeze_pull.py` is provided).

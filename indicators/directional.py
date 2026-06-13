@@ -27,7 +27,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from indicators.timeframes import align_to_base
+
 LONG, SHORT, FLAT = "long", "short", "flat"
+_CALL_TO_SIGN = {LONG: 1, SHORT: -1, FLAT: 0}
 
 
 # --------------------------------------------------------------------------- #
@@ -241,3 +244,179 @@ def resolve_direction(
     calls = calls.rename("direction")
 
     return (calls, votes) if return_votes else calls
+
+
+# --------------------------------------------------------------------------- #
+# Multi-timeframe (MTF) resolution
+# --------------------------------------------------------------------------- #
+# The 3-min strategy is read inside an MTF stack: 3m (trigger) + 15m/60m/daily/
+# weekly (bias/regime). Higher TFs are resolved on their own bars, then aligned
+# onto the 3m index WITHOUT lookahead (see indicators.timeframes.align_to_base).
+# The combination of TFs is itself a config switch — same "let the backtest
+# decide" philosophy as the single-TF resolver. See DIRECTIONAL_SPEC.md.
+
+_MTF_METHODS = ("htf_bias_trigger", "cross_tf_confluence", "per_tf_then_vote")
+
+
+def calls_to_sign(calls: pd.Series) -> pd.Series:
+    """Map a long/short/flat call Series to {+1, -1, 0}."""
+    return calls.map(_CALL_TO_SIGN).astype("float").fillna(0).astype("int8")
+
+
+def _sign_to_calls(sign: pd.Series) -> pd.Series:
+    out = pd.Series(FLAT, index=sign.index, dtype=object)
+    out[sign > 0] = LONG
+    out[sign < 0] = SHORT
+    return out.rename("direction")
+
+
+@dataclass
+class MTFDirectionalConfig:
+    """MTF resolver config — extends the single-TF knobs with timeframe roles.
+
+    Attributes:
+        base: per-TF resolver config (voters, method, min_agree, ...) reused to
+            resolve each timeframe individually.
+        trigger_tf: the timeframe that fires the entry (the 3-min bar).
+        bias_tfs: higher timeframes that set/veto direction.
+        rules_by_tf: pandas resample rule per non-trigger TF, used by
+            ``align_to_base`` to compute each HTF bar's close time.
+        mtf_method: how the timeframes combine —
+            ``htf_bias_trigger`` (default), ``cross_tf_confluence``,
+            ``per_tf_then_vote``.
+        bias_quorum: how much net agreement the bias TFs need to set a bias
+            (and, in ``per_tf_then_vote``, the cross-TF agreement margin).
+        veto: in ``htf_bias_trigger``, any bias TF opposing the net bias forces
+            that bias to flat (so a conflicted regime stands the trade down).
+    """
+
+    base: DirectionalConfig = field(default_factory=DirectionalConfig)
+    trigger_tf: str = "3min"
+    bias_tfs: list[str] = field(
+        default_factory=lambda: ["15min", "60min", "1day", "1week"]
+    )
+    rules_by_tf: dict[str, str] = field(
+        default_factory=lambda: {
+            "15min": "15min",
+            "60min": "60min",
+            "1day": "1D",
+            "1week": "1W",
+        }
+    )
+    mtf_method: str = "htf_bias_trigger"
+    bias_quorum: int = 2
+    veto: bool = True
+
+    def validate(self) -> None:
+        self.base.validate()
+        if self.mtf_method not in _MTF_METHODS:
+            raise ValueError(
+                f"unknown mtf_method: {self.mtf_method!r}. Known: {_MTF_METHODS}"
+            )
+        for tf in self.bias_tfs:
+            if tf not in self.rules_by_tf:
+                raise ValueError(f"no resample rule configured for bias TF {tf!r}")
+
+
+def _bias_sign_matrix(
+    feats_by_tf: dict[str, pd.DataFrame],
+    base_index: pd.DatetimeIndex,
+    cfg: MTFDirectionalConfig,
+) -> pd.DataFrame:
+    """Per bias TF: resolve its own call, sign it, align (no-lookahead) to base."""
+    cols = {}
+    for tf in cfg.bias_tfs:
+        call = resolve_direction(feats_by_tf[tf], cfg.base)
+        sign = calls_to_sign(call)
+        cols[tf] = align_to_base(sign, base_index, cfg.rules_by_tf[tf]).fillna(0)
+    return pd.DataFrame(cols, index=base_index).astype(int)
+
+
+def _resolve_htf_bias_trigger(
+    feats_by_tf: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig
+) -> pd.Series:
+    base_index = feats_by_tf[cfg.trigger_tf].index
+    trig = calls_to_sign(resolve_direction(feats_by_tf[cfg.trigger_tf], cfg.base))
+
+    B = _bias_sign_matrix(feats_by_tf, base_index, cfg)
+    longs, shorts = (B > 0).sum(axis=1), (B < 0).sum(axis=1)
+    net = longs - shorts
+    bias = pd.Series(0, index=base_index, dtype="int8")
+    bias[net >= cfg.bias_quorum] = 1
+    bias[net <= -cfg.bias_quorum] = -1
+    if cfg.veto:  # a conflicting higher TF cancels the bias
+        bias[(bias == 1) & (shorts > 0)] = 0
+        bias[(bias == -1) & (longs > 0)] = 0
+
+    final = pd.Series(0, index=base_index, dtype="int8")
+    take = (trig == bias) & (bias != 0)
+    final[take] = trig[take]
+    return _sign_to_calls(final)
+
+
+def _aligned_votes(
+    feats_by_tf: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig
+) -> pd.DataFrame:
+    base_index = feats_by_tf[cfg.trigger_tf].index
+    mats = []
+    for tf, feats in feats_by_tf.items():
+        votes = _collect_votes(feats, cfg.base)
+        votes.columns = [f"{c}@{tf}" for c in votes.columns]
+        if tf == cfg.trigger_tf:
+            mats.append(votes.reindex(base_index))
+        else:
+            mats.append(align_to_base(votes, base_index, cfg.rules_by_tf[tf]))
+    return pd.concat(mats, axis=1).reindex(base_index).fillna(0).astype(int)
+
+
+def _resolve_cross_tf_confluence(
+    feats_by_tf: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig
+) -> pd.Series:
+    votes = _aligned_votes(feats_by_tf, cfg)
+    return _resolve_confluence(votes, cfg.base)  # uses cfg.base.min_agree
+
+
+def _resolve_per_tf_then_vote(
+    feats_by_tf: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig
+) -> pd.Series:
+    base_index = feats_by_tf[cfg.trigger_tf].index
+    cols = {}
+    for tf, feats in feats_by_tf.items():
+        sign = calls_to_sign(resolve_direction(feats, cfg.base))
+        if tf == cfg.trigger_tf:
+            cols[tf] = sign.reindex(base_index).fillna(0)
+        else:
+            cols[tf] = align_to_base(sign, base_index, cfg.rules_by_tf[tf]).fillna(0)
+    C = pd.DataFrame(cols, index=base_index).astype(int)
+    net = (C > 0).sum(axis=1) - (C < 0).sum(axis=1)
+    out = pd.Series(FLAT, index=base_index, dtype=object)
+    out[net >= cfg.bias_quorum] = LONG
+    out[net <= -cfg.bias_quorum] = SHORT
+    return out.rename("direction")
+
+
+def resolve_direction_mtf(
+    feats_by_tf: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig | None = None
+) -> pd.Series:
+    """Resolve a single long/short/flat call per 3-min bar from the MTF stack.
+
+    Args:
+        feats_by_tf: ``{tf_name: feature_frame}`` where each frame has already
+            been through ``engine.compute_indicators`` (see
+            ``timeframes.build_mtf_features``). Must contain ``cfg.trigger_tf``
+            and every ``cfg.bias_tfs``.
+        cfg: MTF config (defaults to htf_bias_trigger over 3m+15m/60m/1d/1w).
+
+    Returns:
+        ``Series[str]`` of calls aligned to the trigger (3-min) index.
+    """
+    cfg = cfg or MTFDirectionalConfig()
+    cfg.validate()
+    if cfg.trigger_tf not in feats_by_tf:
+        raise ValueError(f"trigger_tf {cfg.trigger_tf!r} missing from feats_by_tf")
+
+    if cfg.mtf_method == "htf_bias_trigger":
+        return _resolve_htf_bias_trigger(feats_by_tf, cfg)
+    if cfg.mtf_method == "cross_tf_confluence":
+        return _resolve_cross_tf_confluence(feats_by_tf, cfg)
+    return _resolve_per_tf_then_vote(feats_by_tf, cfg)

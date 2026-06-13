@@ -13,7 +13,17 @@ from indicators.engine import (
     macd,
     compute_indicators,
 )
-from indicators.directional import resolve_direction, DirectionalConfig
+from indicators.directional import (
+    resolve_direction,
+    DirectionalConfig,
+    resolve_direction_mtf,
+    MTFDirectionalConfig,
+)
+from indicators.timeframes import (
+    resample_ohlcv,
+    align_to_base,
+    build_mtf_features,
+)
 
 __all__ = [
     "ema",
@@ -24,4 +34,9 @@ __all__ = [
     "compute_indicators",
     "resolve_direction",
     "DirectionalConfig",
+    "resolve_direction_mtf",
+    "MTFDirectionalConfig",
+    "resample_ohlcv",
+    "align_to_base",
+    "build_mtf_features",
 ]

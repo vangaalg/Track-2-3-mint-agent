@@ -25,12 +25,26 @@ ruleset. Stage 1 is the cheap wide filter and is what's wired up first.
 ## Current layout
 ```
 data/         OHLCV pulls per instrument (gitignored)
-indicators/   engine.py (EMA/BB/RSI/MACD/3-min), directional.py (resolver),
+loaders/      base.py (OHLCVLoader ABC + canonical contract), twelvedata.py,
+              breeze.py (HOOK for user's breeze_pull.py); get_loader() registry
+indicators/   engine.py (EMA/BB/RSI/MACD/3-min), timeframes.py (resample +
+              no-lookahead align), directional.py (single-TF + MTF resolvers),
               DIRECTIONAL_SPEC.md (the spec)
-scoring/      stage1.py (directional-read scoring stub)
+scoring/      stage1.py (directional-read scoring + MTF wiring, sweep loop TODO)
+tests/        test_mtf_smoke.py (resample, no-lookahead, MTF methods, e2e score)
 results/      score tables / reports
 config.example.yaml   copy to config.yaml (gitignored) and edit
 ```
+
+## Multi-timeframe (confirmed with user)
+- Stack: **3m (trigger) · 15m · 60m · daily · weekly**.
+- Sourcing: pull **3m base + daily direct**; resample 15m/60m from base, weekly
+  from daily. Rate-limit friendly (2 API calls/instrument).
+- Default combine: **htf_bias_trigger** (HTF bias-filter + 3m trigger).
+  Switchable: `cross_tf_confluence`, `per_tf_then_vote`. Config block `mtf:`.
+- Two correctness invariants enforced in `timeframes.py`: session-anchored
+  resample bins + **no-lookahead** alignment (HTF bar visible only after close).
+  Both have dedicated tests — do not regress them.
 
 ## Key design constraint — never violate
 The single `long / short / flat` resolver is **not hardcoded**. It is a config
@@ -53,8 +67,13 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
 - SMA-200 needs ~400-day rolling window per symbol.
 
 ## Status / next steps
-- [x] Phase-1 skeleton: dirs, indicator engine (math implemented), directional
-      resolver (both methods), Stage-1 scoring stub.
-- [ ] Wire a real data loader (`breeze_pull.py` reuse + Twelve Data adapter).
-- [ ] Fill 3-min strategy component logic from the journal rules (Phase 2).
-- [ ] Implement Stage-1 scoring loop + instrument × expectancy table output.
+- [x] Phase-1 skeleton: dirs, indicator engine (math implemented), single-TF
+      directional resolver (both methods), Stage-1 scoring primitives.
+- [x] Loader layer (Breeze hook + Twelve Data adapter) → canonical OHLCV frame.
+- [x] MTF: session-anchored resample + no-lookahead align + MTF resolver (3
+      methods) + score_instrument_mtf. Tested in tests/test_mtf_smoke.py.
+- [ ] Provide live creds: `breeze_pull.py` on path (Indian) + TWELVEDATA_API_KEY
+      env (global). Loaders raise clear errors until then.
+- [ ] Fill 3-min strategy component thresholds from journal rules (Phase 2).
+- [ ] Wire Stage-1 config-driven sweep loop in `scoring.stage1.main` → write the
+      instrument × directional-expectancy table to results/.

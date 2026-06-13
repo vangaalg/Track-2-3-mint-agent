@@ -23,7 +23,13 @@ import numpy as np
 import pandas as pd
 
 from indicators.engine import compute_indicators
-from indicators.directional import DirectionalConfig, resolve_direction
+from indicators.directional import (
+    DirectionalConfig,
+    resolve_direction,
+    MTFDirectionalConfig,
+    resolve_direction_mtf,
+)
+from indicators.timeframes import resample_ohlcv, build_mtf_features
 
 
 # --------------------------------------------------------------------------- #
@@ -107,6 +113,64 @@ def score_instrument(
     )
 
 
+def assemble_mtf_frames(
+    base_3m: pd.DataFrame,
+    daily: pd.DataFrame,
+    intraday_rules: dict[str, str] | None = None,
+    weekly_rule: str = "1W",
+    anchor: str | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Build the ``{tf_name: OHLCV}`` stack from a 3m base + a daily series.
+
+    Matches the confirmed sourcing decision: pull 3m + daily, resample the rest
+    locally. ``intraday_rules`` maps the intraday TF name to its pandas rule
+    (default 15m & 60m); ``anchor`` is the session-open offset (e.g. ``"9h15min"``
+    for NSE) passed to ``resample_ohlcv``.
+    """
+    intraday_rules = intraday_rules or {"15min": "15min", "60min": "60min"}
+    frames: dict[str, pd.DataFrame] = {"3min": base_3m}
+    for tf, rule in intraday_rules.items():
+        frames[tf] = resample_ohlcv(base_3m, rule, anchor)
+    frames["1day"] = daily
+    frames["1week"] = resample_ohlcv(daily, weekly_rule)
+    return frames
+
+
+def score_instrument_mtf(
+    frames_by_tf: dict[str, pd.DataFrame],
+    instrument: str,
+    horizon: int,
+    cfg: MTFDirectionalConfig,
+    indicator_params: dict | None = None,
+    flat_threshold: float = 0.0,
+) -> ExpectancyRow:
+    """Score one instrument's MTF directional read end-to-end.
+
+    frames -> per-TF indicators -> MTF directional call -> grade vs N-bar
+    forward return on the TRIGGER (3m) timeframe -> one expectancy row.
+    """
+    feats_by_tf = build_mtf_features(frames_by_tf, indicator_params)
+    calls = resolve_direction_mtf(feats_by_tf, cfg)
+
+    trigger = frames_by_tf[cfg.trigger_tf]
+    fwd = forward_return(trigger, horizon)
+    graded = grade_calls(calls, fwd, flat_threshold)
+
+    n = len(graded)
+    n_bars = int(calls.notna().sum())
+    return ExpectancyRow(
+        instrument=instrument,
+        method=cfg.mtf_method,
+        n_signals=n,
+        n_long=int((graded["direction"] == "long").sum()),
+        n_short=int((graded["direction"] == "short").sum()),
+        hit_rate=float(graded["correct"].mean()) if n else float("nan"),
+        avg_signed_ret=float(graded["signed_ret"].mean()) if n else float("nan"),
+        expectancy=float(graded["signed_ret"].mean()) if n else float("nan"),
+        coverage=(n / n_bars) if n_bars else float("nan"),
+    )
+
+
 def build_expectancy_table(rows: list[ExpectancyRow]) -> pd.DataFrame:
     """Collect scored rows into the instrument x directional-expectancy table."""
     return pd.DataFrame([r.as_dict() for r in rows])
@@ -141,14 +205,16 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     # TODO Phase 1 wiring:
     #   1. load config (config.yaml): instruments, data sources, horizon,
-    #      directional block -> DirectionalConfig, indicator params.
-    #   2. for each instrument: load stored OHLCV (breeze_pull.py reuse for
-    #      Indian; Twelve Data adapter for global), then score_instrument(...).
-    #      Optionally sweep both methods / knob grids per instrument.
+    #      timeframes block, directional+mtf block -> MTFDirectionalConfig,
+    #      indicator params.
+    #   2. for each instrument: get_loader(source) -> pull 3m base + daily
+    #      (breeze_pull.py reuse for Indian; Twelve Data for global), then
+    #      assemble_mtf_frames(...) and score_instrument_mtf(...). Optionally
+    #      sweep mtf_method / knob grids per instrument.
     #   3. build_expectancy_table(rows).to_csv(args.out).
     raise SystemExit(
-        "scoring.stage1: scoring primitives are ready; the data-loader + sweep "
-        "loop are not wired yet. See the TODO in main(). "
+        "scoring.stage1: scoring + MTF primitives are ready; the data-loader "
+        "sweep loop is not wired yet. See the TODO in main(). "
         f"(parsed args: {vars(args)})"
     )
 

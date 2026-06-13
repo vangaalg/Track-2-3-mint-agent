@@ -22,8 +22,20 @@ indicators:
     slow: 26
     signal: 9
 
+# Multi-timeframe stack. Pull a 3m base + daily direct, resample the rest
+# locally (see indicators/timeframes.py). All TFs are aligned no-lookahead.
+timeframes:
+  base: 3min                    # trigger TF, pulled
+  resample_intraday:            # tf_name: pandas rule (resampled from base)
+    15min: 15min
+    60min: 60min
+  pull_direct: [1day]           # pulled straight from the API
+  resample_from_daily:          # tf_name: pandas rule (resampled from daily)
+    1week: 1W
+
 # THE directional-output switch (see indicators/DIRECTIONAL_SPEC.md).
-# Stage 1 sweeps both methods per instrument — this is just the default.
+# `directional` is the PER-TIMEFRAME resolver; `mtf` combines timeframes.
+# Stage 1 sweeps these per instrument — these are just the defaults.
 directional:
   method: confluence            # confluence | hierarchical
   voters: [ema, macd, rsi, bollinger, three_min]
@@ -37,22 +49,35 @@ directional:
   confirm_min: 0                # >0 => hierarchical-with-confluence-confirmation
   veto: true
 
+# How the timeframes combine into one 3m call (see DIRECTIONAL_SPEC.md "MTF").
+mtf:
+  mtf_method: htf_bias_trigger  # htf_bias_trigger | cross_tf_confluence | per_tf_then_vote
+  trigger_tf: 3min
+  bias_tfs: [15min, 60min, 1day, 1week]
+  bias_quorum: 2                # net HTF agreement needed to set a bias
+  veto: true                    # a conflicting HTF cancels the bias -> stand down
+
 # Instruments to score. `source` selects the loader; `symbol` is the
-# provider-specific ticker. (Loader wiring is the next TODO.)
+# provider-specific ticker. `session_anchor` aligns intraday resample bins to
+# the market open (offset from local midnight); `tz` documents the exchange tz.
 instruments:
   - name: NIFTY
     source: breeze              # breeze | twelvedata
     symbol: NIFTY
-    interval: 3minute
+    tz: Asia/Kolkata
+    session_anchor: 9h15min
   - name: BANKNIFTY
     source: breeze
     symbol: CNXBAN
-    interval: 3minute
+    tz: Asia/Kolkata
+    session_anchor: 9h15min
   - name: NIKKEI
     source: twelvedata
     symbol: "N225"
-    interval: 3min
+    tz: Asia/Tokyo
+    session_anchor: 9h00min
   - name: USDINR
     source: twelvedata
     symbol: "USD/INR"
-    interval: 3min
+    tz: Asia/Kolkata
+    session_anchor: null        # 24x5 FX — no session anchor
