@@ -93,6 +93,48 @@ python -m scoring.stage1 --mtf-method htf_bias_trigger --method confluence
 Instruments whose loader can't pull (missing key / `breeze_pull.py`) are skipped
 with a warning; the rest still run.
 
+## Run locally (live data) — recommended
+
+Live data pulls need open network. **Run them on your own machine**, where
+Twelve Data (global) and your `breeze_pull.py` (Indian) are reachable. (A hosted
+sandbox may block outbound network via an egress allowlist; this repo is a
+local, offline-batch tool by design — no VPS needed.)
+
+**Windows** (cloning to e.g. `E:\Track 2-3 mint` — quote the spaced path):
+
+```bat
+git clone https://github.com/vangaalg/Track-2-3-mint-agent "E:\Track 2-3 mint"
+cd /d "E:\Track 2-3 mint"
+git checkout claude/dazzling-lamport-7d0je8
+
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+copy config.example.yaml config.yaml      REM then edit instruments
+
+REM set the Twelve Data key for this shell:
+set TWELVEDATA_API_KEY=your_key_here       REM cmd.exe
+REM  (PowerShell instead:  $env:TWELVEDATA_API_KEY="your_key_here" )
+
+python -m scoring.stage1 --config config.yaml
+REM -> results\stage1_expectancy.csv  +  results\stage1_expectancy.md
+```
+
+**macOS / Linux:** same steps with `source .venv/bin/activate`,
+`cp config.example.yaml config.yaml`, and `export TWELVEDATA_API_KEY=...`.
+
+Notes:
+- **Indian instruments (Breeze):** put your `breeze_pull.py` on `PYTHONPATH`
+  (Windows: `set PYTHONPATH=C:\path\to\folder`) or drop it in the repo root.
+  Without it those instruments are skipped with a warning — the global
+  (Twelve Data) instruments still run. So a Twelve-Data-only first run works with
+  just the key; the Breeze rows simply skip until `breeze_pull.py` is present.
+- The key lives only in your shell's environment — don't commit it (`config.yaml`
+  and `.env` are gitignored).
+- Each instrument is pulled once and cached to `data\*.parquet`; reruns are
+  offline.
+
 ## Status
 
 Phase 1 in place and tested (`pytest -q`, 11 tests): indicator engine, MTF

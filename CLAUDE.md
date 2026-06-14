@@ -78,5 +78,9 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       loader can't pull. Tested in tests/test_stage1_sweep.py.
 - [ ] Provide live creds: `breeze_pull.py` on path (Indian) + TWELVEDATA_API_KEY
       env (global). Loaders raise clear errors / instruments are skipped until then.
+- Note: **live data runs happen on the user's local machine** (open network).
+  This web env is network-locked (egress allowlist blocks api.twelvedata.com), so
+  use it for dev/tests; do real pulls locally. See README "Run locally". User
+  cloning to `E:\Track 2-3 mint` (Windows).
 - [ ] Fill 3-min strategy component thresholds from journal rules (Phase 2).
 - [ ] Stage 2 (levels: entry/stop/target, R-multiple) on Stage-1 survivors.
