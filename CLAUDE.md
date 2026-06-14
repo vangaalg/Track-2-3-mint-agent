@@ -76,8 +76,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       pull 3m+daily → assemble MTF → score the mtf_method × tf_method grid (6
       cells) → write ranked CSV + markdown to results/. Skips instruments whose
       loader can't pull. Tested in tests/test_stage1_sweep.py.
-- [ ] Provide live creds: `breeze_pull.py` on path (Indian) + TWELVEDATA_API_KEY
-      env (global). Loaders raise clear errors / instruments are skipped until then.
+- [x] Real indicator stack (the trader's actual chart read): EMA 5/45/100/200,
+      SMA 20, Bollinger, RSI, MACD, **Supertrend** (10/3), **CPR pivots**
+      (prior-bar HLC; daily/weekly bias). New voters `ema_stack`, `supertrend`,
+      `cpr` in `indicators/directional.py`. Tested in tests/test_engine_indicators.py
+      + tests/test_directional.py.
+- [x] **BreezeLoader ported to real HTTP** (`loaders/breeze.py`): ICICI Breeze
+      historicalcharts, checksum auth, creds from env (`BREEZE_API_KEY` /
+      `BREEZE_API_SECRET` / `BREEZE_SESSION_TOKEN`). No native 3min → pulls
+      1minute + resamples. Legacy `breeze_pull.py`/`pull_fn` kept as a fallback.
+      Tested (mocked HTTP) in tests/test_breeze_loader.py.
+- [ ] Provide live creds: `BREEZE_*` env (Indian) + `TWELVEDATA_API_KEY` env
+      (global). Loaders raise clear errors / instruments are skipped until then.
 - Note: **live data runs happen on the user's local machine** (open network).
   This web env is network-locked (egress allowlist blocks api.twelvedata.com), so
   use it for dev/tests; do real pulls locally. See README "Run locally". User

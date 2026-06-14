@@ -41,13 +41,53 @@ _CALL_TO_SIGN = {LONG: 1, SHORT: -1, FLAT: 0}
 # the "right" reading (e.g. RSI as momentum vs mean-reversion) is itself an
 # empirical question Stage 1 answers. Keep these pure and column-driven.
 
-def vote_ema(df: pd.DataFrame, fast: int = 9, slow: int = 21) -> pd.Series:
+def vote_ema(df: pd.DataFrame, fast: int = 5, slow: int = 45) -> pd.Series:
     """Fast EMA above slow EMA -> long; below -> short."""
     f, s = df[f"ema_{fast}"], df[f"ema_{slow}"]
     v = pd.Series(0, index=df.index, dtype="int8")
     v[f > s] = 1
     v[f < s] = -1
     return v.rename("vote_ema")
+
+
+def vote_ema_stack(
+    df: pd.DataFrame, periods: tuple[int, ...] = (5, 45, 100, 200)
+) -> pd.Series:
+    """Full EMA-ribbon alignment.
+
+    EMAs stacked strictly fastest>...>slowest -> long (trend up); strictly
+    fastest<...<slowest -> short; anything tangled -> flat. This is the trader's
+    5/45/100/200 ribbon read.
+    """
+    cols = [df[f"ema_{p}"] for p in periods]
+    up = pd.Series(True, index=df.index)
+    down = pd.Series(True, index=df.index)
+    for faster, slower in zip(cols, cols[1:]):
+        up &= faster > slower
+        down &= faster < slower
+    v = pd.Series(0, index=df.index, dtype="int8")
+    v[up] = 1
+    v[down] = -1
+    return v.rename("vote_ema_stack")
+
+
+def vote_supertrend(df: pd.DataFrame) -> pd.Series:
+    """Supertrend direction: +1 uptrend long, -1 downtrend short."""
+    return df["st_dir"].astype("int8").rename("vote_supertrend")
+
+
+def vote_cpr(df: pd.DataFrame) -> pd.Series:
+    """CPR position: close above the top central line -> long, below the bottom
+    central line -> short, inside the range -> flat.
+
+    Primarily a daily/weekly *bias* voter — on the 3-min trigger CPR degenerates
+    to a per-bar pivot (see engine.cpr), so prefer it on the higher TFs.
+    """
+    close, tc, bc = df["close"], df["cpr_tc"], df["cpr_bc"]
+    v = pd.Series(0, index=df.index, dtype="int8")
+    v[close > tc] = 1
+    v[close < bc] = -1
+    return v.rename("vote_cpr")
 
 
 def vote_macd(df: pd.DataFrame) -> pd.Series:
@@ -115,6 +155,9 @@ def vote_three_min(df: pd.DataFrame) -> pd.Series:
 # name so the indicator set is fully data-driven.
 VOTERS = {
     "ema": vote_ema,
+    "ema_stack": vote_ema_stack,
+    "supertrend": vote_supertrend,
+    "cpr": vote_cpr,
     "macd": vote_macd,
     "rsi": vote_rsi,
     "bollinger": vote_bollinger,
@@ -147,7 +190,9 @@ class DirectionalConfig:
 
     method: str = "confluence"
     voters: list[str] = field(
-        default_factory=lambda: ["ema", "macd", "rsi", "bollinger", "three_min"]
+        default_factory=lambda: [
+            "ema_stack", "supertrend", "macd", "rsi", "bollinger", "cpr"
+        ]
     )
     voter_kwargs: dict[str, dict] = field(default_factory=dict)
 
@@ -155,7 +200,7 @@ class DirectionalConfig:
     min_agree: int = 3
 
     # hierarchical
-    primary: str = "ema"
+    primary: str = "ema_stack"
     confirm_min: int = 0
     veto: bool = True
 

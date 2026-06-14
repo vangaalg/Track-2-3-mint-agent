@@ -8,12 +8,11 @@ horizon: 8
 flat_threshold: 0.0
 
 # Indicator periods (passed to engine.compute_indicators). Same code every
-# instrument; only data source differs.
+# instrument; only data source differs. This is the trader's real chart stack:
+# EMA 5/45/100/200 + SMA 20 + Bollinger + RSI + MACD + Supertrend + CPR pivots.
 indicators:
-  ema_fast: 9
-  ema_slow: 21
-  sma_ref: 50
-  sma_trend: 200
+  ema_periods: [5, 45, 100, 200]
+  sma_period: 20
   bb_period: 20
   bb_std: 2.0
   rsi_period: 14
@@ -21,6 +20,10 @@ indicators:
     fast: 12
     slow: 26
     signal: 9
+  supertrend:
+    period: 10
+    multiplier: 3.0
+  # CPR pivots take no params (derived from the prior bar's H/L/C).
 
 # Data sourcing. History windows in calendar days; daily must cover SMA-200's
 # ~400-day warm-up. `intervals` (optional) overrides the per-source (base, daily)
@@ -55,14 +58,17 @@ timeframes:
 # Stage 1 sweeps these per instrument — these are just the defaults.
 directional:
   method: confluence            # confluence | hierarchical
-  voters: [ema, macd, rsi, bollinger, three_min]
+  # Voters (keys of indicators.directional.VOTERS): ema, ema_stack, supertrend,
+  # cpr, macd, rsi, bollinger, three_min. NOTE: cpr is a daily/weekly bias voter
+  # (on the 3m trigger it degenerates to a per-bar pivot).
+  voters: [ema_stack, supertrend, macd, rsi, bollinger, cpr]
   voter_kwargs:
     rsi: {mode: momentum}       # momentum | reversion
     bollinger: {mode: reversion}  # reversion | breakout
   # --- confluence params ---
   min_agree: 3
   # --- hierarchical params (used when method: hierarchical) ---
-  primary: ema
+  primary: ema_stack            # must be one of `voters`
   confirm_min: 0                # >0 => hierarchical-with-confluence-confirmation
   veto: true
 
@@ -77,6 +83,12 @@ mtf:
 # Instruments to score. `source` selects the loader; `symbol` is the
 # provider-specific ticker. `session_anchor` aligns intraday resample bins to
 # the market open (offset from local midnight); `tz` documents the exchange tz.
+#
+# Breeze (Indian) creds come from the environment:
+#   BREEZE_API_KEY, BREEZE_API_SECRET, BREEZE_SESSION_TOKEN
+# Defaults are exchange_code=NSE, product_type=cash; the BreezeLoader accepts
+# overrides if a future instrument needs a different segment.
+# Twelve Data (global) uses TWELVEDATA_API_KEY.
 instruments:
   - name: NIFTY
     source: breeze              # breeze | twelvedata

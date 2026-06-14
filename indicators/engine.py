@@ -131,6 +131,112 @@ def macd(
 
 
 # --------------------------------------------------------------------------- #
+# ATR / Supertrend
+# --------------------------------------------------------------------------- #
+def atr(df: pd.DataFrame, period: int = 10) -> pd.Series:
+    """Average True Range (Wilder smoothing).
+
+    TR = max(high-low, |high-prev_close|, |low-prev_close|); ATR is the Wilder
+    EMA (``alpha = 1/period``) of TR. Used by Supertrend.
+    """
+    _require_columns(df, ["high", "low", "close"])
+    prev_close = df["close"].shift(1)
+    tr = pd.concat(
+        [
+            (df["high"] - df["low"]).abs(),
+            (df["high"] - prev_close).abs(),
+            (df["low"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(alpha=1.0 / period, adjust=False).mean().rename(f"atr_{period}")
+
+
+def supertrend(
+    df: pd.DataFrame, period: int = 10, multiplier: float = 3.0
+) -> pd.DataFrame:
+    """Supertrend trailing line + direction.
+
+    Returns columns ``supertrend`` (the trailing stop line) and ``st_dir``
+    (+1 uptrend / -1 downtrend). Standard ATR-band algorithm with the
+    carry-forward final-band rule; computed with an explicit loop, which is fine
+    for the few-thousand-bar frames Stage 1 scores.
+    """
+    _require_columns(df, ["high", "low", "close"])
+    a = atr(df, period)
+    hl2 = (df["high"] + df["low"]) / 2.0
+    upper_basic = (hl2 + multiplier * a).to_numpy()
+    lower_basic = (hl2 - multiplier * a).to_numpy()
+    close = df["close"].to_numpy()
+    n = len(df)
+
+    final_upper = [0.0] * n
+    final_lower = [0.0] * n
+    st = [float("nan")] * n
+    direction = [1] * n
+
+    for i in range(n):
+        if i == 0:
+            final_upper[i] = upper_basic[i]
+            final_lower[i] = lower_basic[i]
+            direction[i] = 1
+            st[i] = lower_basic[i]
+            continue
+        final_upper[i] = (
+            upper_basic[i]
+            if (upper_basic[i] < final_upper[i - 1] or close[i - 1] > final_upper[i - 1])
+            else final_upper[i - 1]
+        )
+        final_lower[i] = (
+            lower_basic[i]
+            if (lower_basic[i] > final_lower[i - 1] or close[i - 1] < final_lower[i - 1])
+            else final_lower[i - 1]
+        )
+        if close[i] > final_upper[i - 1]:
+            direction[i] = 1
+        elif close[i] < final_lower[i - 1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i - 1]
+        st[i] = final_lower[i] if direction[i] == 1 else final_upper[i]
+
+    return pd.DataFrame(
+        {"supertrend": st, "st_dir": direction}, index=df.index
+    ).astype({"st_dir": "int8"})
+
+
+# --------------------------------------------------------------------------- #
+# CPR — Central Pivot Range (from the PRIOR period's H/L/C)
+# --------------------------------------------------------------------------- #
+def cpr(df: pd.DataFrame) -> pd.DataFrame:
+    """Central Pivot Range derived from the previous bar's H/L/C.
+
+    On a DAILY frame this is the classic daily CPR (today's levels from
+    yesterday's range) — the form the trader uses, and the role it plays in the
+    MTF bias. Columns: ``cpr_pivot``, ``cpr_tc`` (top central), ``cpr_bc``
+    (bottom central), ``cpr_r1``, ``cpr_s1``. (On an intraday frame it degenerates
+    to a per-bar pivot, so it is meaningful mainly on daily/weekly.)
+    """
+    _require_columns(df, ["high", "low", "close"])
+    ph, pl, pc = df["high"].shift(1), df["low"].shift(1), df["close"].shift(1)
+    pivot = (ph + pl + pc) / 3.0
+    bc = (ph + pl) / 2.0
+    tc = 2.0 * pivot - bc
+    # TC/BC are orientation-free — order them so cpr_bc <= cpr_pivot <= cpr_tc.
+    top = pd.concat([tc, bc], axis=1).max(axis=1)
+    bot = pd.concat([tc, bc], axis=1).min(axis=1)
+    return pd.DataFrame(
+        {
+            "cpr_pivot": pivot,
+            "cpr_tc": top,
+            "cpr_bc": bot,
+            "cpr_r1": 2.0 * pivot - pl,
+            "cpr_s1": 2.0 * pivot - ph,
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
 # "3-min strategy" components  (STRUCTURED STUBS — fill from journal rules)
 # --------------------------------------------------------------------------- #
 # The 3-min strategy = three composable sub-signals, remapped to 3-min bars:
@@ -145,7 +251,7 @@ def macd(
 # are placeholders so the pipeline runs end-to-end.
 
 def ema_mean_reversion(
-    df: pd.DataFrame, fast_period: int = 9, stretch_pct: float = 0.004
+    df: pd.DataFrame, fast_period: int = 5, stretch_pct: float = 0.004
 ) -> pd.Series:
     """Fade price when it is stretched ``stretch_pct`` away from the fast EMA.
 
@@ -182,16 +288,16 @@ def bollinger_vrl_breakout(
 
 
 def sma_pullback_continuation(
-    df: pd.DataFrame, ref_period: int = 50, trend_period: int = 200
+    df: pd.DataFrame, ref_period: int = 20, trend_period: int = 200
 ) -> pd.Series:
     """Trend-continuation entry on a pullback to a reference SMA.
 
-    Placeholder logic: uptrend (ref SMA above trend SMA) + price pulls back to
+    Placeholder logic: uptrend (ref SMA above trend EMA) + price pulls back to
     touch/cross below ref SMA then closes above it -> long; mirror for short.
     TODO: replace touch test with the journal's pullback-depth + trigger rule.
     """
     ref = sma(df, ref_period)
-    trend = sma(df, trend_period)
+    trend = ema(df, trend_period)
     uptrend = ref > trend
     downtrend = ref < trend
     touched_up = (df["low"] <= ref) & (df["close"] > ref)
@@ -213,28 +319,32 @@ def compute_indicators(
     The returned frame is the input plus indicator/signal columns. ``params``
     overrides default periods; keys mirror the function arguments, e.g.::
 
-        {"ema_fast": 9, "ema_slow": 21, "rsi_period": 14,
+        {"ema_periods": [5, 45, 100, 200], "sma_period": 20, "rsi_period": 14,
          "bb_period": 20, "bb_std": 2.0,
+         "supertrend": {"period": 10, "multiplier": 3.0},
          "macd": {"fast": 12, "slow": 26, "signal": 9}}
 
-    This is the single entry point the scoring layer calls per instrument, so
-    every market gets identical feature engineering.
+    This is the trader's real chart stack: EMA 5/45/100/200, SMA 20, Bollinger,
+    RSI, MACD, Supertrend, and CPR pivots (the last meaningful on daily/weekly).
+    Single entry point the scoring layer calls per instrument, so every market
+    gets identical feature engineering.
     """
     _require_columns(df, OHLCV_COLUMNS)
     p = params or {}
     out = df.copy()
 
-    out[f"ema_{p.get('ema_fast', 9)}"] = ema(df, p.get("ema_fast", 9))
-    out[f"ema_{p.get('ema_slow', 21)}"] = ema(df, p.get("ema_slow", 21))
-    out["sma_50"] = sma(df, p.get("sma_ref", 50))
-    out["sma_200"] = sma(df, p.get("sma_trend", 200))
+    for period in p.get("ema_periods", [5, 45, 100, 200]):
+        out[f"ema_{period}"] = ema(df, period)
+    sma_period = p.get("sma_period", 20)
+    out[f"sma_{sma_period}"] = sma(df, sma_period)
 
     out = out.join(
         bollinger_bands(df, p.get("bb_period", 20), p.get("bb_std", 2.0))
     )
     out[f"rsi_{p.get('rsi_period', 14)}"] = rsi(df, p.get("rsi_period", 14))
-    macd_kw = p.get("macd", {})
-    out = out.join(macd(df, **macd_kw))
+    out = out.join(macd(df, **p.get("macd", {})))
+    out = out.join(supertrend(df, **p.get("supertrend", {})))
+    out = out.join(cpr(df))
 
     # 3-min strategy component signals
     out["sig_ema_meanrev"] = ema_mean_reversion(df)
