@@ -24,7 +24,9 @@ async function poll() {
 
 function renderChart(d) {
   const c = d.chart, num = c.numbers || {}, lv = c.levels || {};
-  $("spot").textContent = n(d.spot); $("mtf").textContent = c.mtf_call || "—";
+  $("spot").textContent = n(d.spot);
+  $("mtf").textContent = (c.mtf_call || "—")
+    + (c.mtf_confidence != null ? ` · 45EMA ${c.mtf_confidence}/5 ${mtfTicks(c.mtf_confidence_breakdown, c.mtf_call)}` : "");
   $("rsi").textContent = n(num.rsi_14); $("macd").textContent = n(num.macd_hist);
   $("st").textContent = n(num.supertrend); $("cpr").textContent = n(lv.cpr_pivot);
   $("emas").textContent = `EMA 5/45/100/200: ${n(num.ema_5)} / ${n(num.ema_45)} / ${n(num.ema_100)} / ${n(num.ema_200)}`;
@@ -85,7 +87,8 @@ function renderProposal(p) {
   if (p.recommendation === "enter") {
     box.className = "propbox enter";
     box.innerHTML = `ENTER · ${p.direction}<br>Entry ${n(p.entry)} · Stop ${n(p.stop)} · Target ${n(p.target)}`
-      + `<br>R:R ${p.rr_ratio} · ${p.size_lots} lots<br><span class="muted">${p.vehicle || ""}</span>`;
+      + `<br>R:R ${p.rr_ratio} · ${p.size_lots} lots <span class="muted">(MTF 45EMA ${p.mtf_confidence}/5)</span>`
+      + `<br><span class="muted">${p.vehicle || ""}</span>`;
     dec.hidden = false;
   } else {
     box.className = "propbox stand";

@@ -570,3 +570,62 @@ def journal_mtf_config() -> MTFDirectionalConfig:
         base=journal_trigger_config(), trigger_tf="3min",
         bias_tfs=["15min", "60min", "1day", "1week"],
         mtf_method="trigger_only", bias_quorum=2, veto=True)
+
+
+# --------------------------------------------------------------------------- #
+# MTF 45-EMA confidence — multi-timeframe agreement grades conviction (not a gate)
+# --------------------------------------------------------------------------- #
+# The trade fires on the 3-min trio; confidence rises with each higher TF whose
+# 45-EMA sits on the signal's side (price ABOVE it for a long, BELOW for a short).
+CONF_TFS = ("15min", "30min", "60min", "1day", "1week")
+CONF_RULES = {"15min": "15min", "30min": "30min", "60min": "60min",
+              "1day": "1D", "1week": "1W"}
+
+
+def mtf_ema45_alignment(
+    feats_by_tf: dict[str, pd.DataFrame],
+    base_index: pd.DatetimeIndex,
+    tfs: tuple[str, ...] = CONF_TFS,
+    rules: dict[str, str] = CONF_RULES,
+) -> pd.DataFrame:
+    """Per-bar sign of (3-min price − each TF's 45-EMA), no-lookahead aligned to base.
+
+    ``+1`` price ABOVE that TF's 45-EMA (long-supportive), ``-1`` below, ``0`` for a
+    missing TF or before its first bar closes. Each higher-TF 45-EMA is only visible
+    once its bar has closed (``align_to_base``), so there is no future leakage.
+    """
+    base = feats_by_tf.get("3min")
+    if base is None or "close" not in base.columns:
+        return pd.DataFrame(index=base_index)   # nothing to compare price against
+    price = base["close"].reindex(base_index)
+    cols = {}
+    for tf in tfs:
+        if tf not in feats_by_tf or "ema_45" not in feats_by_tf[tf].columns:
+            continue
+        ema = align_to_base(feats_by_tf[tf]["ema_45"], base_index, rules[tf])
+        diff = price - ema
+        cols[tf] = (
+            pd.Series(np.sign(diff.to_numpy()), index=base_index)
+            .fillna(0).astype("int8")
+        )
+    return pd.DataFrame(cols, index=base_index)
+
+
+def mtf_ema45_confidence(
+    feats_by_tf: dict[str, pd.DataFrame],
+    calls: pd.Series,
+    tfs: tuple[str, ...] = CONF_TFS,
+    rules: dict[str, str] = CONF_RULES,
+) -> tuple[pd.Series, pd.DataFrame]:
+    """Conviction score per bar: count of higher TFs whose 45-EMA agrees with the
+    SIGNAL direction. Returns ``(conf, breakdown)`` — ``conf`` is ``0..len(tfs)`` (0
+    when the call is flat), ``breakdown`` the per-TF ``+1/-1/0`` alignment frame.
+    """
+    align = mtf_ema45_alignment(feats_by_tf, calls.index, tfs, rules)
+    sig = calls_to_sign(calls).reindex(align.index)
+    if align.empty or align.shape[1] == 0:
+        conf = pd.Series(0, index=align.index, dtype=int)
+    else:
+        agree = align.apply(lambda c: ((c == sig) & (sig != 0)).astype(int))
+        conf = agree.sum(axis=1).astype(int)
+    return conf.rename("mtf_confidence"), align

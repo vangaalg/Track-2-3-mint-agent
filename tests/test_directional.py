@@ -169,3 +169,57 @@ def test_trigger_only_ignores_htf_gate():
     gated_cfg = MTFDirectionalConfig(base=cfg.base, mtf_method="htf_bias_trigger")
     gated = resolve_direction_mtf(feats, gated_cfg)
     assert (gated == "flat").all()
+
+
+# --- MTF 45-EMA confidence: multi-timeframe agreement grades conviction --------- #
+def _conf_frame(close, ema45):
+    idx = pd.date_range("2024-01-01", periods=len(close), freq="1D", tz="UTC")
+    df = pd.DataFrame({"close": np.asarray(close, float)}, index=idx)
+    df["ema_45"] = float(ema45)
+    return df
+
+
+def test_mtf_ema45_confidence_counts_agreement():
+    from indicators.directional import mtf_ema45_confidence
+    n = 12   # > 1 week so the weekly alignment lands a (no-lookahead) match
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D", tz="UTC")
+    price = [100.0] * n
+    base = _conf_frame(price, 90.0)          # carries "close" for the helper
+    # All five HTF 45-EMAs BELOW price -> every TF supports a long.
+    feats = {"3min": base,
+             "15min": _conf_frame(price, 90), "30min": _conf_frame(price, 91),
+             "60min": _conf_frame(price, 92), "1day": _conf_frame(price, 93),
+             "1week": _conf_frame(price, 94)}
+    longs = pd.Series(["long"] * n, index=idx)
+    conf, align = mtf_ema45_confidence(feats, longs)
+    assert int(conf.iloc[-1]) == 5
+    assert set(align.columns) == {"15min", "30min", "60min", "1day", "1week"}
+
+    # Same EMAs (all below price) but the SIGNAL is short -> none support it.
+    shorts = pd.Series(["short"] * n, index=idx)
+    conf_s, _ = mtf_ema45_confidence(feats, shorts)
+    assert int(conf_s.iloc[-1]) == 0
+
+    # Flat call -> confidence 0 regardless of alignment.
+    flat = pd.Series(["flat"] * n, index=idx)
+    conf_f, _ = mtf_ema45_confidence(feats, flat)
+    assert int(conf_f.iloc[-1]) == 0
+
+
+def test_mtf_ema45_confidence_partial_and_missing_tfs():
+    from indicators.directional import mtf_ema45_confidence
+    n = 4
+    idx = pd.date_range("2024-01-01", periods=n, freq="1D", tz="UTC")
+    price = [100.0] * n
+    # 15m + 30m below price (support long), 60m above (opposes); daily/weekly absent.
+    feats = {"3min": _conf_frame(price, 90),
+             "15min": _conf_frame(price, 95), "30min": _conf_frame(price, 96),
+             "60min": _conf_frame(price, 105)}
+    conf, align = mtf_ema45_confidence(feats, pd.Series(["long"] * n, index=idx))
+    assert int(conf.iloc[-1]) == 2
+    assert "1day" not in align.columns         # missing TFs simply don't count
+
+    # No HTF feats at all (3min only) -> confidence 0, no crash.
+    conf0, _ = mtf_ema45_confidence({"3min": _conf_frame(price, 90)},
+                                    pd.Series(["long"] * n, index=idx))
+    assert int(conf0.iloc[-1]) == 0

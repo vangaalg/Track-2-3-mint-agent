@@ -24,6 +24,17 @@ DEFAULT_SIZE_LOTS = 75
 R_MULTIPLE = 1.5           # fallback reward:risk when no structural target exists
 ITM_OFFSET = 300           # points in-the-money for the deep-ITM strike
 STRIKE_STEP = 50
+SIZE_BAND = (65, 130)      # journal's normal lot band; MTF confidence picks within it
+
+
+def size_for_confidence(conf: int, lo: int = SIZE_BAND[0], hi: int = SIZE_BAND[1],
+                        levels: int = 5) -> int:
+    """Map MTF 45-EMA confidence (0..levels) linearly across the lot band.
+
+    conf 0 -> lo (least HTF agreement), conf == levels -> hi (full stack aligned).
+    """
+    conf = max(0, min(levels, int(conf)))
+    return int(round(lo + (hi - lo) * conf / levels))
 
 
 def _nearest_below(spot: float, levels: list[float]) -> float | None:
@@ -82,9 +93,14 @@ def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposa
     lv = read["levels"]
     oi = snapshot.oi or {}
 
+    # MTF 45-EMA conviction scales the size across the journal band (65-130 lots).
+    mtf_conf = read.get("mtf_confidence")
+    if mtf_conf is not None:
+        size_lots = size_for_confidence(mtf_conf)
+
     base = dict(
         instrument=snapshot.instrument, trade_type="trade1", ts=snapshot.ts,
-        direction=direction, spot=spot,
+        direction=direction, spot=spot, mtf_confidence=int(mtf_conf or 0),
         context={"chart_read": read, "oi": snapshot.oi, "macro": snapshot.macro,
                  "notes": snapshot.notes},
     )
@@ -108,7 +124,9 @@ def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposa
     checklist = {
         "edge": f"{direction} read confirmed by MTF stack (45-EMA regime + 3m trigger)",
         "stop": f"{stop:.2f} (structure)" if stop is not None else "",
-        "size": f"{size_lots} lots (normal band)",
+        "size": (f"{size_lots} lots (MTF conf {int(mtf_conf or 0)}/5, band "
+                 f"{SIZE_BAND[0]}-{SIZE_BAND[1]})" if mtf_conf is not None
+                 else f"{size_lots} lots (normal band)"),
         "invalidation": (
             f"price closing {'below' if long else 'above'} {stop:.2f}"
             if stop is not None else ""

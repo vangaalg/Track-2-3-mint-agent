@@ -255,6 +255,24 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       trio, trigger_only ignores a conflicting HTF) + suite green (127). NOTE: warm-up
       artifacts at window start + the "three_min = net-sign of the trio (any 1 can fire)"
       aggregation remain open tuning questions.
+- [x] **MTF 45-EMA confidence boost (conviction → size).** Confirmed with the trader: the
+      3-min trio still FIRES the trade alone, but conviction rises with each higher TF whose
+      **45-EMA sits on the signal's side** (price ABOVE it for a long, BELOW for a short) —
+      scored **0–5** across **15m/30m/1h/daily/weekly** (NOT a gate). Added the missing
+      **30-min** frame (`feeds/snapshot._RESAMPLE_FROM_1M`/`_RESOLVER_TFS`). New
+      `indicators/directional.mtf_ema45_alignment` + `mtf_ema45_confidence` (reuse
+      `align_to_base` — no-lookahead; current 3-min price vs each TF's last-completed 45-EMA;
+      missing/short frames → 0). Surfaced in `_chart_read` (`mtf_confidence` +
+      `mtf_confidence_breakdown`), each trigger dict (`list_triggers`/`replay_today`), the web
+      `/api/snapshot` + `/api/train/case`, the cockpit/train UI (shared `chart.js::mtfTicks`
+      ✓/✗ per TF), and Claude's prompt. **Size scales** the conviction across the journal's
+      65–130 band: `analysis/trade1.size_for_confidence` (0→65 … 5→130) drives `propose_trade1`
+      (`TradeProposal.mtf_confidence` new); rupee-risk tracks the scaled size. Training P&L
+      stays fixed 2-lot (confidence shown, not sized). Decided w/ user: include daily+weekly
+      (0–5) AND scale size. Tested in tests/test_directional.py (counting/partial/missing),
+      test_analysis_trade1.py (band scaling), test_feeds_snapshot/test_web_server/test_training
+      (surfacing) + suite green (131). NOTE: the 65–130 linear map + equal TF weighting are a
+      first cut (easy to retune); confidence reads 0 on flat bars (breakdown still shown).
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

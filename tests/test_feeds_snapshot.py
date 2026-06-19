@@ -38,7 +38,7 @@ def _synth_daily(days: int = 60) -> pd.DataFrame:
 
 def test_assemble_ladder_has_full_tf_set():
     frames = assemble_ladder(_synth_1m(), _synth_daily(), anchor="9h15min")
-    assert set(frames) == {"1min", "3min", "15min", "60min", "1day", "1week", "1month"}
+    assert set(frames) == {"1min", "3min", "15min", "30min", "60min", "1day", "1week", "1month"}
     # resampled bars aggregate correctly: 3m open == first 1m open of the bin.
     assert frames["3min"]["open"].iloc[0] == frames["1min"]["open"].iloc[0]
 
@@ -48,7 +48,10 @@ def test_build_snapshot_degrades_without_oi_macro():
     assert snap.instrument == "NIFTY"
     assert snap.chart_read["mtf_call"] in {"long", "short", "flat"}
     assert isinstance(snap.spot, float)
-    assert {"3min", "15min", "60min", "1day", "1week"} <= set(snap.feats)
+    assert {"3min", "15min", "30min", "60min", "1day", "1week"} <= set(snap.feats)
+    conf = snap.chart_read["mtf_confidence"]
+    assert isinstance(conf, int) and 0 <= conf <= 5
+    assert isinstance(snap.chart_read["mtf_confidence_breakdown"], dict)
     assert snap.oi is None and snap.macro is None
     assert any("oi" in n for n in snap.notes) and any("macro" in n for n in snap.notes)
 

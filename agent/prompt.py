@@ -45,6 +45,9 @@ def build_user(snapshot, proposal) -> str:
         f"  MTF call: {read.get('mtf_call')}",
         f"  Daily 45-EMA regime: {read.get('regime_45_daily')}  "
         f"(+1 up / -1 down)",
+        f"  MTF 45-EMA conviction: {read.get('mtf_confidence', 0)}/5 "
+        f"(15m/30m/1h/1d/1w price-vs-45EMA on the signal's side: "
+        f"{_fmt(read.get('mtf_confidence_breakdown'))})",
         f"  3m Supertrend dir: {read.get('supertrend_3m')}   "
         f"3m EMA5 trigger: {read.get('ema5_trigger_3m')}",
         f"  Levels — 45-EMA {_fmt(lv.get('ema_45'))}, Supertrend "

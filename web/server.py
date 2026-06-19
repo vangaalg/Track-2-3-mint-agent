@@ -153,6 +153,8 @@ def _payload(symbol: str) -> dict:
     return {
         "ts": snap.ts, "spot": snap.spot, "fetched_at": datetime.now().isoformat(timespec="seconds"),
         "chart": {"mtf_call": read.get("mtf_call"), "regime": read.get("regime_45_daily"),
+                  "mtf_confidence": read.get("mtf_confidence"),
+                  "mtf_confidence_breakdown": read.get("mtf_confidence_breakdown", {}),
                   "numbers": read.get("numbers", {}), "levels": read.get("levels", {})},
         "oi": snap.oi, "macro": snap.macro, "notes": snap.notes,
         "chain": rows, "proposal": prop.as_dict(),
@@ -457,10 +459,13 @@ def train_case(tid: int, tf: str = "3min", bars: int = 200):
     frame = snap.frames.get(tf)
     chart = (_serialize_chart(frame, bars) if frame is not None and not frame.empty
              else {"bars": [], "cpr": {}})
+    read = snap.chart_read
     return {
         "tid": tid, "ts": trig["ts"], "date": trig["date"],
         "direction": trig["direction"], "entry": trig["entry"], "spot": snap.spot,
         "tf": tf, "bars": chart["bars"], "cpr": chart["cpr"],
+        "mtf_confidence": read.get("mtf_confidence"),
+        "mtf_confidence_breakdown": read.get("mtf_confidence_breakdown", {}),
         "oi": case["oi"], "chain": _chain_rows(case["chain"], snap.spot),
         "oi_as_of": case.get("oi_as_of"), "oi_age_min": case.get("oi_age_min"),
         "macro_available": False,

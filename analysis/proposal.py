@@ -41,6 +41,9 @@ class TradeProposal:
     rupee_risk: float | None = None      # approx, at full size
     rr_ratio: float | None = None        # reward : risk
 
+    # MTF 45-EMA conviction (0..5): higher TFs with price on the signal's side.
+    mtf_confidence: int = 0
+
     # The discipline gate
     recommendation: Recommendation = Recommendation.STAND_DOWN
     checklist: dict[str, str] = field(default_factory=dict)   # the six lines

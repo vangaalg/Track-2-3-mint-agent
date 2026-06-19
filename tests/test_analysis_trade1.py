@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from analysis.trade1 import propose_trade1
+from analysis.trade1 import propose_trade1, size_for_confidence, SIZE_BAND
 from analysis.proposal import Recommendation
 
 
-def _snapshot(call: str, spot: float = 23900.0, oi=None):
+def _snapshot(call: str, spot: float = 23900.0, oi=None, conf=None):
     read = {
         "mtf_call": call,
         "regime_45_daily": 1 if call == "long" else -1,
@@ -17,6 +17,8 @@ def _snapshot(call: str, spot: float = 23900.0, oi=None):
         "levels": {"ema_45": 23850.0, "supertrend": 23820.0,
                    "cpr_pivot": 23880.0, "cpr_tc": 23960.0, "cpr_bc": 23800.0},
     }
+    if conf is not None:
+        read["mtf_confidence"] = conf
     return SimpleNamespace(
         instrument="NIFTY", ts="2024-01-01T15:00:00+05:30", spot=spot,
         chart_read=read, oi=oi, macro=None, notes=[],
@@ -51,6 +53,25 @@ def test_oversize_is_blocked_even_on_clean_read():
     prop = propose_trade1(_snapshot("long"), size_lots=200)
     assert prop.recommendation is Recommendation.STAND_DOWN
     assert "outside the normal" in prop.reasons[-1]
+
+
+def test_mtf_confidence_scales_size_across_band():
+    lo, hi = SIZE_BAND
+    assert size_for_confidence(0) == lo and size_for_confidence(5) == hi
+    assert lo < size_for_confidence(3) < hi
+    # Full HTF agreement -> top of the band; none -> bottom.
+    full = propose_trade1(_snapshot("long", conf=5), size_lots=75)
+    none = propose_trade1(_snapshot("long", conf=0), size_lots=75)
+    assert full.recommendation is Recommendation.ENTER
+    assert full.size_lots == hi and full.mtf_confidence == 5
+    assert none.size_lots == lo and none.mtf_confidence == 0
+    # rupee risk tracks the scaled size (bigger size -> bigger risk).
+    assert full.rupee_risk > none.rupee_risk
+
+
+def test_no_confidence_key_keeps_passed_size():
+    prop = propose_trade1(_snapshot("long"), size_lots=75)   # no mtf_confidence in read
+    assert prop.size_lots == 75 and prop.mtf_confidence == 0
 
 
 def test_oi_wall_used_as_target():

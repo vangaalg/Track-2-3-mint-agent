@@ -52,7 +52,8 @@ async function loadCase() {
   } catch (e) { $("trigMeta").textContent = "case error: " + e.message; return; }
   const d = CUR;
   $("trigMeta").innerHTML = `${d.date} ${d.ts.slice(11, 16)} · `
-    + `<b class="${d.direction === "long" ? "win-txt" : "loss-txt"}">${d.direction.toUpperCase()}</b> @ ${d.entry}`;
+    + `<b class="${d.direction === "long" ? "win-txt" : "loss-txt"}">${d.direction.toUpperCase()}</b> @ ${d.entry}`
+    + (d.mtf_confidence != null ? ` · <span class="muted">MTF 45EMA ${d.mtf_confidence}/5 ${mtfTicks(d.mtf_confidence_breakdown, d.direction)}</span>` : "");
   $("entryShow").textContent = d.entry; $("dirShow").textContent = d.direction.toUpperCase();
   // suggest sensible default levels (trader edits): entry = trigger close, ±0.4% / ±0.2%
   const t = d.direction === "long" ? d.entry * 1.004 : d.entry * 0.996;

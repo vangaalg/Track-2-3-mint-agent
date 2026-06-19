@@ -60,6 +60,7 @@ def test_list_triggers_multi_day(monkeypatch):
     long_t, short_t = out
     assert long_t["direction"] == "long" and long_t["outcome"] == "win" and long_t["points"] == 1.0
     assert long_t["eng_stop"] == 99.0 and long_t["eng_target"] == 101.0
+    assert long_t["mtf_confidence"] == 0     # no HTF feats supplied → 0
     assert short_t["direction"] == "short" and short_t["outcome"] == "win" and short_t["points"] == 1.0
     assert short_t["tid"] == 1 and short_t["date"] == "2024-01-02"
 
@@ -154,6 +155,7 @@ def test_train_case_has_read_and_no_outcome(tclient):
     assert d["direction"] == "long" and d["entry"] == 24000.0
     assert d["bars"] and d["read"]["chart_analysis"] == "ca"
     assert d["macro_available"] is False
+    assert "mtf_confidence" in d and "mtf_confidence_breakdown" in d
     assert "outcome" not in d and "engine_outcome" not in d
 
 

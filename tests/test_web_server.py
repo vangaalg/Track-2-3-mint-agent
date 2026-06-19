@@ -69,6 +69,11 @@ def test_snapshot_returns_chart_oi_chain_proposal(client):
     assert any(r["call_extrinsic"] is not None for r in d["chain"])   # time value present
     assert d["proposal"]["recommendation"] in ("enter", "stand_down")
     assert d["chain"], "per-strike chain rows present"
+    # MTF 45-EMA conviction surfaces on the chart block + the proposal.
+    conf = d["chart"]["mtf_confidence"]
+    assert isinstance(conf, int) and 0 <= conf <= 5
+    assert isinstance(d["chart"]["mtf_confidence_breakdown"], dict)
+    assert "mtf_confidence" in d["proposal"]
 
 
 def test_analyse_returns_four_part_read(client):

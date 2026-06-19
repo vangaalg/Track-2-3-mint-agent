@@ -15,16 +15,18 @@ from typing import Callable
 import pandas as pd
 
 from indicators.timeframes import resample_ohlcv, build_mtf_features
-from indicators.directional import MTFDirectionalConfig, resolve_direction_mtf
+from indicators.directional import (
+    MTFDirectionalConfig, resolve_direction_mtf, mtf_ema45_confidence,
+)
 from feeds.oi import fetch_oi
 from feeds.macro import fetch_macro
 
 # The TF ladder the trader watches. The resolver consumes the 3m trigger + the
 # bias set; 1m and 1month are carried for display/context only (monthly EMAs need
 # years of history, so they stay out of the per-bar resolver).
-_RESAMPLE_FROM_1M = {"3min": "3min", "15min": "15min", "60min": "60min"}
+_RESAMPLE_FROM_1M = {"3min": "3min", "15min": "15min", "30min": "30min", "60min": "60min"}
 _RESAMPLE_FROM_DAILY = {"1week": "1W", "1month": "MS"}
-_RESOLVER_TFS = ("3min", "15min", "60min", "1day", "1week")
+_RESOLVER_TFS = ("3min", "15min", "30min", "60min", "1day", "1week")
 
 
 @dataclass
@@ -54,7 +56,10 @@ def assemble_ladder(
 
 def _chart_read(feats: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig) -> dict:
     """Resolve the MTF call and pull the last-bar levels the analysis layer needs."""
-    call = resolve_direction_mtf(feats, cfg).iloc[-1]
+    calls = resolve_direction_mtf(feats, cfg)
+    call = calls.iloc[-1]
+    # MTF 45-EMA conviction: how many higher TFs have price on the signal's side.
+    conf, align = mtf_ema45_confidence(feats, calls)
     trig = feats["3min"].iloc[-1]
     daily = feats["1day"].iloc[-1]
     return {
@@ -62,6 +67,8 @@ def _chart_read(feats: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig) -> di
         "regime_45_daily": _sign(daily["close"] - daily["ema_45"]),
         "supertrend_3m": int(trig["st_dir"]),
         "ema5_trigger_3m": int(trig["sig_ema5_trigger"]),
+        "mtf_confidence": int(conf.iloc[-1]),
+        "mtf_confidence_breakdown": {tf: int(align[tf].iloc[-1]) for tf in align.columns},
         "levels": {
             "ema_45": float(trig["ema_45"]),
             "supertrend": float(trig["supertrend"]),

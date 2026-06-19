@@ -8,6 +8,16 @@
 let LW = null, chartTF = "3min", _triggers = [];
 const _el = (id) => document.getElementById(id);
 
+// per-TF ✓/✗ for the MTF 45-EMA conviction: is each TF's 45-EMA on the signal's side?
+// Shared by the live cockpit (app.js) and the training replay (train.js).
+function mtfTicks(bd, call) {
+  if (!bd || !call || (call !== "long" && call !== "short")) return "";
+  const want = call === "long" ? 1 : -1;
+  const order = ["15min", "30min", "60min", "1day", "1week"];
+  const lbl = { "15min": "15m", "30min": "30m", "60min": "1h", "1day": "1d", "1week": "1w" };
+  return "(" + order.filter(tf => tf in bd).map(tf => `${lbl[tf]}${bd[tf] === want ? "✓" : "✗"}`).join(" ") + ")";
+}
+
 // --- indicator customization (color / show-hide / width), persisted locally ----- //
 const IND_KEY = "chartIndicators";
 const LINE_KEYS = ["bbU", "bbM", "bbL", "ema5", "ema45", "ema100", "ema200", "st", "macdL", "sigL", "rsi"];

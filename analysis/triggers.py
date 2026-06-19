@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import pandas as pd
 
-from indicators.directional import MTFDirectionalConfig, resolve_direction_mtf
+from indicators.directional import (
+    MTFDirectionalConfig, resolve_direction_mtf, mtf_ema45_confidence,
+)
 from analysis.trade1 import trade1_levels, LOT_SIZE, DEFAULT_SIZE_LOTS
 
 
@@ -86,6 +88,7 @@ def list_triggers(
     calls = resolve_direction_mtf(feats_by_tf, cfg)
     if calls.empty:
         return []
+    conf, _ = mtf_ema45_confidence(feats_by_tf, calls)
     bars = frames_by_tf["3min"].reindex(calls.index)
     feats = feats_by_tf["3min"].reindex(calls.index)
     c = calls.to_numpy()
@@ -110,6 +113,7 @@ def list_triggers(
             "tid": len(out), "ts": ts[i].isoformat(), "date": str(ts[i].date()),
             "direction": direction, "entry": round(entry, 2),
             "eng_stop": round(stop, 2), "eng_target": round(target, 2), "eng_rr": rr,
+            "mtf_confidence": int(conf.iloc[i]),
             "outcome": outcome, "points": round(points, 2),
             "rupees": round(points * lot_size * size_lots, 0),
         })
@@ -138,6 +142,7 @@ def replay_today(
     today = calls.index[-1].date()
     in_day = pd.Index([ts.date() == today for ts in calls.index])
     calls = calls[in_day.values]
+    conf, _ = mtf_ema45_confidence(feats_by_tf, calls)
     bars = frames_by_tf["3min"].reindex(calls.index)
     feats = feats_by_tf["3min"].reindex(calls.index)
     if len(calls) < 2:
@@ -165,7 +170,8 @@ def replay_today(
         triggers.append({
             "ts": ts[i].isoformat(), "direction": direction,
             "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2),
-            "rr": rr, "outcome": outcome, "points": round(points, 2),
+            "rr": rr, "mtf_confidence": int(conf.iloc[i]),
+            "outcome": outcome, "points": round(points, 2),
             "rupees": round(points * lot_size * size_lots, 0),
         })
 
