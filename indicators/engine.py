@@ -239,24 +239,43 @@ def cpr(df: pd.DataFrame) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # "3-min strategy" components  (STRUCTURED STUBS — fill from journal rules)
 # --------------------------------------------------------------------------- #
-# The 3-min strategy = three composable sub-signals, remapped to 3-min bars:
-#   (a) EMA mean-reversion       — fade stretch away from a fast EMA
-#   (b) Bollinger VRL recovery   — "violent rejection / recovery" breakout after
-#                                   a squeeze: band re-expansion + close back
-#                                   through a band edge
-#   (c) SMA pullback continuation— trend-following entry on a pullback to a
-#                                   reference SMA in the trend direction
-# Each returns a Series in {-1 short, 0 none, +1 long}. The exact thresholds are
-# the trader's edge and come from Phase-2 journal extraction; the defaults below
-# are placeholders so the pipeline runs end-to-end.
+# The "3-min strategy" = the journal-faithful trio the trader actually trades
+# (see indicators/JOURNAL_EXTRACTION.md):
+#   (a) 3m-EMA5 trigger          — price holding above/below the fast (5) EMA
+#                                   ("price holds above/below the 3-min EMA")
+#   (b) Bollinger VRL recovery   — recovery back through a band edge AFTER a
+#                                   squeeze ("Bollinger crushed → re-expands")
+#   (c) 45-EMA pullback contin.  — pullback to the 45-EMA in the regime direction
+#                                   ("sell strength into the falling 45-EMA;
+#                                    buy the pullback in trend")
+# Each returns a Series in {-1 short, 0 none, +1 long}. Numeric defaults are
+# PROVISIONAL (journal's own status) — registered in JOURNAL_EXTRACTION.md.
+# NOTE: ``ema_mean_reversion`` below is kept for experimentation but is NOT part
+# of the journal trio — the trader is a trend-follower, not a mean-reverter — so
+# it is excluded from ``vote_three_min``.
+
+def ema5_trigger(df: pd.DataFrame, period: int = 5) -> pd.Series:
+    """3-min entry trigger: close holding above/below the fast (5) EMA.
+
+    Journal master trigger ("price holds above/below the 3-min EMA-5"). +1 when
+    close is above the EMA-5, -1 below. Confirmation (2-close + volume) is a
+    separate gate applied at the resolver layer (see directional.confirm_2_close).
+    """
+    fast = ema(df, period)
+    sig = pd.Series(0, index=df.index, dtype="int8")
+    sig[df["close"] > fast] = 1
+    sig[df["close"] < fast] = -1
+    return sig.rename("sig_ema5_trigger")
+
 
 def ema_mean_reversion(
     df: pd.DataFrame, fast_period: int = 5, stretch_pct: float = 0.004
 ) -> pd.Series:
     """Fade price when it is stretched ``stretch_pct`` away from the fast EMA.
 
-    Placeholder logic: stretched far above -> short (+expect reversion down),
-    stretched far below -> long. TODO: replace with journal-calibrated bands.
+    NOT the journal's style (the trader trends, he does not fade) — retained for
+    completeness/experimentation and EXCLUDED from ``vote_three_min``. Stretched
+    far above -> short, far below -> long.
     """
     fast = ema(df, fast_period)
     stretch = (df["close"] - fast) / fast
@@ -267,41 +286,54 @@ def ema_mean_reversion(
 
 
 def bollinger_vrl_breakout(
-    df: pd.DataFrame, period: int = 20, num_std: float = 2.0
+    df: pd.DataFrame,
+    period: int = 20,
+    num_std: float = 2.0,
+    squeeze_window: int = 50,
+    squeeze_pct: float = 0.25,
 ) -> pd.Series:
     """Bollinger "VRL recovery breakout": close re-entering the band after a
-    poke outside it, on expanding width.
+    poke outside it, gated by a prior **squeeze** that is now re-expanding.
 
-    Placeholder logic: prior bar closed below lower band, current bar closes
-    back above it (bullish recovery) -> long; mirror for short. TODO: add the
-    squeeze/expansion width gate and the journal's exact recovery definition.
+    Journal read ("Bollinger crushed → re-expands"): a recovery only counts when
+    the PRIOR bar's band width sat in the low ``squeeze_pct`` quantile of its
+    trailing ``squeeze_window`` (the coil) AND width is now expanding. Prior bar
+    closed below the lower band, current closes back above it -> long; mirror for
+    short. ``squeeze_window``/``squeeze_pct`` PROVISIONAL (see JOURNAL_EXTRACTION).
     """
     bb = bollinger_bands(df, period=period, num_std=num_std)
+    width = bb["bb_width"]
+    sq_thresh = width.rolling(squeeze_window).quantile(squeeze_pct)
+    was_squeezed = width.shift(1) <= sq_thresh.shift(1)
+    expanding = width > width.shift(1)
+    gate = was_squeezed & expanding
+
     prev_below = df["close"].shift(1) < bb["bb_lower"].shift(1)
     prev_above = df["close"].shift(1) > bb["bb_upper"].shift(1)
     recover_up = prev_below & (df["close"] > bb["bb_lower"])
     recover_dn = prev_above & (df["close"] < bb["bb_upper"])
     sig = pd.Series(0, index=df.index, dtype="int8")
-    sig[recover_up] = 1
-    sig[recover_dn] = -1
+    sig[recover_up & gate] = 1
+    sig[recover_dn & gate] = -1
     return sig.rename("sig_bb_vrl")
 
 
 def sma_pullback_continuation(
-    df: pd.DataFrame, ref_period: int = 20, trend_period: int = 200
+    df: pd.DataFrame, regime_period: int = 45, trend_period: int = 200
 ) -> pd.Series:
-    """Trend-continuation entry on a pullback to a reference SMA.
+    """Trend-continuation pullback to the **45-EMA** (the journal's master MA).
 
-    Placeholder logic: uptrend (ref SMA above trend EMA) + price pulls back to
-    touch/cross below ref SMA then closes above it -> long; mirror for short.
-    TODO: replace touch test with the journal's pullback-depth + trigger rule.
+    Journal read ("buy the pullback in an up-regime; sell strength into the
+    falling 45-EMA"): regime = 45-EMA vs 200-EMA (up if 45 above 200). In an
+    up-regime a bar that tags/dips the 45-EMA and closes back above it -> long;
+    mirror for short. (Column name kept ``sig_sma_pullback`` for continuity.)
     """
-    ref = sma(df, ref_period)
+    regime = ema(df, regime_period)
     trend = ema(df, trend_period)
-    uptrend = ref > trend
-    downtrend = ref < trend
-    touched_up = (df["low"] <= ref) & (df["close"] > ref)
-    touched_dn = (df["high"] >= ref) & (df["close"] < ref)
+    uptrend = regime > trend
+    downtrend = regime < trend
+    touched_up = (df["low"] <= regime) & (df["close"] > regime)
+    touched_dn = (df["high"] >= regime) & (df["close"] < regime)
     sig = pd.Series(0, index=df.index, dtype="int8")
     sig[uptrend & touched_up] = 1
     sig[downtrend & touched_dn] = -1
@@ -346,9 +378,10 @@ def compute_indicators(
     out = out.join(supertrend(df, **p.get("supertrend", {})))
     out = out.join(cpr(df))
 
-    # 3-min strategy component signals
-    out["sig_ema_meanrev"] = ema_mean_reversion(df)
+    # 3-min strategy component signals (journal trio + the kept meanrev experiment)
+    out["sig_ema5_trigger"] = ema5_trigger(df)
     out["sig_bb_vrl"] = bollinger_vrl_breakout(df)
     out["sig_sma_pullback"] = sma_pullback_continuation(df)
+    out["sig_ema_meanrev"] = ema_mean_reversion(df)  # not in the journal trio
 
     return out

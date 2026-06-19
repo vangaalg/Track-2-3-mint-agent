@@ -76,6 +76,29 @@ def vote_supertrend(df: pd.DataFrame) -> pd.Series:
     return df["st_dir"].astype("int8").rename("vote_supertrend")
 
 
+def vote_regime_45(df: pd.DataFrame) -> pd.Series:
+    """The journal's MASTER regime filter: price vs the 45-EMA.
+
+    "Danger while spot > 45-EMA; need closes below it." Close above the 45-EMA
+    -> long-regime (+1), below -> short-regime (-1). Most meaningful on the bias
+    timeframes (daily/weekly), where the MTF htf_bias_trigger consumes it.
+    """
+    e = df["ema_45"]
+    v = pd.Series(0, index=df.index, dtype="int8")
+    v[df["close"] > e] = 1
+    v[df["close"] < e] = -1
+    return v.rename("vote_regime_45")
+
+
+def vote_ema5_trigger(df: pd.DataFrame) -> pd.Series:
+    """The journal's 3-min entry trigger: close holding above/below the 5-EMA.
+
+    Reads the engine's ``sig_ema5_trigger`` column. Pair with ``confirm_2_close``
+    at the resolver layer for the journal's "2 closes + volume" confirmation.
+    """
+    return df["sig_ema5_trigger"].astype("int8").rename("vote_ema5_trigger")
+
+
 def vote_cpr(df: pd.DataFrame) -> pd.Series:
     """CPR position: close above the top central line -> long, below the bottom
     central line -> short, inside the range -> flat.
@@ -138,17 +161,54 @@ def vote_bollinger(df: pd.DataFrame, mode: str = "reversion") -> pd.Series:
 
 
 def vote_three_min(df: pd.DataFrame) -> pd.Series:
-    """Aggregate the three 3-min strategy component signals into one vote.
+    """Aggregate the journal's 3-min strategy trio into one vote.
 
-    Sums the component signals and takes the sign; ties -> flat. The components
-    themselves are journal-derived stubs in engine.py.
+    Sums the three journal-faithful components — EMA-5 trigger + Bollinger
+    squeeze/VRL recovery + 45-EMA pullback continuation — and takes the sign;
+    ties -> flat. (The ``sig_ema_meanrev`` experiment is deliberately excluded;
+    the trader trends, he does not fade.)
     """
     combo = (
-        df["sig_ema_meanrev"].astype(int)
+        df["sig_ema5_trigger"].astype(int)
         + df["sig_bb_vrl"].astype(int)
         + df["sig_sma_pullback"].astype(int)
     )
     return np.sign(combo).astype("int8").rename("vote_3min")
+
+
+def confirm_2_close(
+    vote: pd.Series,
+    df: pd.DataFrame,
+    n_closes: int = 2,
+    vol_window: int = 20,
+) -> pd.Series:
+    """Gate a vote with the journal's confirmation rule.
+
+    "What confirms a signal? 2 closes + volume expanding + the stack agreeing —
+    NOT a candle count." Keep a vote only where the same non-zero sign has held
+    ``n_closes`` consecutive bars AND volume is expanding (``volume`` above its
+    ``vol_window`` rolling mean); everything else -> 0 (flat).
+
+    Zero/flat-volume instruments (FX / some indices, where volume is filled 0)
+    have no volume signal, so the gate falls back to price-persistence only —
+    it never blanks the whole series for want of volume. ``n_closes``/
+    ``vol_window`` PROVISIONAL (see JOURNAL_EXTRACTION.md).
+    """
+    v = vote.astype(int)
+    # same non-zero sign for the last n_closes bars
+    persisted = pd.Series(True, index=v.index)
+    for k in range(n_closes):
+        persisted &= (v.shift(k) == v) & (v != 0)
+
+    vol = df["volume"].astype(float)
+    if vol.abs().sum() == 0:  # no usable volume -> price-persistence only
+        vol_ok = pd.Series(True, index=v.index)
+    else:
+        # min_periods=2 so early bars aren't blanked waiting for a full window.
+        vol_ok = vol > vol.rolling(vol_window, min_periods=2).mean()
+
+    gated = v.where(persisted & vol_ok, 0)
+    return gated.astype("int8").rename(f"{vote.name or 'vote'}_confirmed")
 
 
 # Registry: name -> callable(df) -> vote Series. The config references voters by
@@ -156,6 +216,8 @@ def vote_three_min(df: pd.DataFrame) -> pd.Series:
 VOTERS = {
     "ema": vote_ema,
     "ema_stack": vote_ema_stack,
+    "regime_45": vote_regime_45,
+    "ema5_trigger": vote_ema5_trigger,
     "supertrend": vote_supertrend,
     "cpr": vote_cpr,
     "macd": vote_macd,

@@ -7,7 +7,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from indicators.engine import atr, supertrend, cpr, compute_indicators
+from indicators.engine import (
+    atr, supertrend, cpr, compute_indicators,
+    ema5_trigger, bollinger_vrl_breakout,
+)
 
 
 def _ramp(values) -> pd.DataFrame:
@@ -70,10 +73,32 @@ def test_compute_indicators_emits_full_stack():
         "ema_5", "ema_45", "ema_100", "ema_200", "sma_20",
         "bb_pctb", "rsi_14", "macd_hist",
         "supertrend", "st_dir", "cpr_pivot", "cpr_tc", "cpr_bc",
+        "sig_ema5_trigger", "sig_bb_vrl", "sig_sma_pullback",
     ):
         assert col in feats.columns, f"missing {col}"
     # Past the 200-bar warm-up the long EMA is populated.
     assert feats["ema_200"].iloc[-1] == feats["ema_200"].iloc[-1]  # not NaN
+
+
+def test_ema5_trigger_close_vs_ema5():
+    df = _ramp(np.linspace(100, 200, 80))
+    sig = ema5_trigger(df)
+    assert set(sig.unique()) <= {-1, 0, 1}
+    # On a pure up-ramp, close stays above the 5-EMA -> +1 late.
+    assert sig.iloc[-1] == 1
+
+
+def test_bollinger_vrl_requires_squeeze():
+    # Long flat (squeeze) section then a downward poke + recovery. The gated
+    # signal must be a subset of {-1,0,1} and only fire on re-expansion.
+    rng = np.random.default_rng(4)
+    flat = np.full(80, 100.0) + rng.standard_normal(80) * 0.01  # crushed width
+    move = np.array([100.0, 98.0, 101.0])                       # poke down + recover
+    df = _ramp(np.concatenate([flat, move]))
+    sig = bollinger_vrl_breakout(df)
+    assert set(sig.unique()) <= {-1, 0, 1}
+    # Inside the dead-flat squeeze region (no expansion yet) nothing fires.
+    assert (sig.iloc[5:75] == 0).all()
 
 
 def test_compute_indicators_honours_param_overrides():

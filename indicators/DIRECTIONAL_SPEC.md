@@ -35,11 +35,22 @@ momentum vs mean-reversion" is itself an empirical question):
 
 | voter | default reading | alt mode |
 |-------|-----------------|----------|
-| `ema` | fast EMA vs slow EMA cross | — |
+| `ema` | fast EMA (5) vs slow EMA (45) cross | — |
+| `ema_stack` | full 5/45/100/200 ribbon aligned up/down | — |
+| `regime_45` | close vs the 45-EMA (the journal's master regime filter) | — |
+| `ema5_trigger` | close holding above/below the 5-EMA (3-min entry trigger) | — |
+| `supertrend` | Supertrend direction | — |
+| `cpr` | close vs CPR top/bottom central (daily/weekly bias) | — |
 | `macd` | histogram sign | — |
 | `rsi` | `momentum`: >50 long / <50 short | `reversion`: <30 long / >70 short |
 | `bollinger` | `reversion`: below lower long / above upper short | `breakout`: opposite |
-| `three_min` | sign of summed 3-min component signals | — |
+| `three_min` | sign of the journal trio (ema5_trigger + bb_vrl + 45-EMA pullback) | — |
+
+**Confirmation gate.** `confirm_2_close(vote, df, n_closes=2, vol_window=20)`
+wraps any vote with the journal's confirmation rule — keep a vote only where the
+same sign has held `n_closes` consecutive bars **and** volume is expanding (with
+a price-only fallback on zero-volume instruments). It is an opt-in transform, not
+a voter. See [`JOURNAL_EXTRACTION.md`](JOURNAL_EXTRACTION.md).
 
 ## Method 1 — Confluence voting
 

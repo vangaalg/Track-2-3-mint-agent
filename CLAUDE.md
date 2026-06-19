@@ -92,5 +92,15 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
   This web env is network-locked (egress allowlist blocks api.twelvedata.com), so
   use it for dev/tests; do real pulls locally. See README "Run locally". User
   cloning to `E:\Track 2-3 mint` (Windows).
-- [ ] Fill 3-min strategy component thresholds from journal rules (Phase 2).
+- [x] **Phase-2 journal extraction (chart layer only):** mapped the live trade
+      journal → chart features in `indicators/JOURNAL_EXTRACTION.md` (IN/OUT scope
+      table + provisional-thresholds register). New voters `regime_45` (close vs
+      45-EMA, the master filter) + `ema5_trigger` (3-min entry); `confirm_2_close`
+      gate (2-close + volume, zero-vol fallback); squeeze-gated `bollinger_vrl`;
+      `sma_pullback` retargeted to the 45-EMA; `vote_three_min` = the journal trio
+      (ema5_trigger + bb_vrl + 45-EMA pullback). OI/PCR/VIX/gap-tree + discipline
+      stay OUT (separate repo). Tested in tests/test_directional.py +
+      tests/test_engine_indicators.py.
+- [ ] Calibrate the provisional numeric thresholds against logged data (the
+      register in JOURNAL_EXTRACTION.md lists every one).
 - [ ] Stage 2 (levels: entry/stop/target, R-multiple) on Stage-1 survivors.
