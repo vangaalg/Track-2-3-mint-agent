@@ -105,6 +105,27 @@ def settle_log(path: str | Path = DEFAULT_LOG,
     return decisions
 
 
+def settle_store(frames_by_tf: dict[str, pd.DataFrame] | None = None,
+                 path: str | Path | None = None) -> list[dict]:
+    """Settle the SQLite full-context store with the same 2x2 grading as the log.
+
+    Reads the rich decision rows, grades + (where forward bars exist) resolves each,
+    and writes the process grade / 2x2 cell / outcome back onto the row. Returns the
+    settled records (so the caller can summarise the track record from the store).
+    """
+    from journal import store as _store
+    p = path or _store.DB_PATH
+    records = _store.load_records(p)
+    if not records:
+        return []
+    settled, _ = settle(records, frames_by_tf or {})
+    for r in settled:
+        _store.update_outcome(
+            r["id"], r.get("outcome") or {}, r.get("process_grade"), r.get("matrix"),
+            path=p)
+    return settled
+
+
 def matrix_summary(decisions: list[dict]) -> dict:
     """Counts per 2x2 cell + net points/₹ of settled trades."""
     from collections import Counter

@@ -144,6 +144,66 @@ let _triggers = [];
 let chartTF = "3min";
 let LW = null;
 
+// --- indicator customization (color / show-hide / width), persisted locally ----- //
+const IND_KEY = "chartIndicators";
+const LINE_KEYS = ["bbU", "bbM", "bbL", "ema5", "ema45", "ema100", "ema200", "st", "macdL", "sigL", "rsi"];
+const PANEL_KEYS = ["candleUp", "candleDn", "ema5", "ema45", "ema100", "ema200",
+  "bbU", "bbM", "bbL", "st", "macdL", "sigL", "rsi"];
+const IND_DEFAULTS = {
+  candleUp: { label: "Candle up", color: "#26a69a", width: 1 },
+  candleDn: { label: "Candle down", color: "#ef5350", width: 1 },
+  bbU: { label: "BB upper", color: "#b0b4c0", width: 1 },
+  bbM: { label: "BB mid", color: "#b0b4c0", width: 1 },
+  bbL: { label: "BB lower", color: "#b0b4c0", width: 1 },
+  ema5: { label: "EMA 5", color: "#2962ff", width: 1 },
+  ema45: { label: "EMA 45", color: "#f0a000", width: 2 },
+  ema100: { label: "EMA 100", color: "#9c27b0", width: 1 },
+  ema200: { label: "EMA 200", color: "#787b86", width: 2 },
+  st: { label: "Supertrend", color: "#ff6d00", width: 2 },
+  macdL: { label: "MACD", color: "#2962ff", width: 1 },
+  sigL: { label: "Signal", color: "#ef5350", width: 1 },
+  rsi: { label: "RSI", color: "#9c27b0", width: 2 },
+};
+function loadIndCfg() {
+  const base = {};
+  for (const k in IND_DEFAULTS) base[k] = Object.assign({ visible: true }, IND_DEFAULTS[k]);
+  try {
+    const saved = JSON.parse(localStorage.getItem(IND_KEY) || "{}");
+    for (const k in saved) if (base[k]) Object.assign(base[k], saved[k]);
+  } catch (e) { /* ignore corrupt prefs */ }
+  return base;
+}
+let IND = loadIndCfg();
+function saveIndCfg() { try { localStorage.setItem(IND_KEY, JSON.stringify(IND)); } catch (e) { /* quota */ } }
+
+function applyIndicatorConfig() {
+  if (!LW) return;
+  LW.candle.applyOptions({
+    upColor: IND.candleUp.color, wickUpColor: IND.candleUp.color, borderUpColor: IND.candleUp.color,
+    downColor: IND.candleDn.color, wickDownColor: IND.candleDn.color, borderDownColor: IND.candleDn.color });
+  for (const k of LINE_KEYS) {
+    const cfg = IND[k];
+    if (LW[k] && cfg) LW[k].applyOptions({ color: cfg.color, lineWidth: cfg.width, visible: cfg.visible !== false });
+  }
+}
+
+function buildIndPanel() {
+  const rows = $("indRows"); if (!rows) return;
+  rows.innerHTML = "";
+  for (const k of PANEL_KEYS) {
+    const cfg = IND[k], hasVis = k !== "candleUp" && k !== "candleDn";
+    const row = document.createElement("div"); row.className = "indrow";
+    row.innerHTML = `<input type="color" value="${cfg.color}" data-k="${k}" class="ic-color" />`
+      + `<span class="ic-label">${cfg.label}</span>`
+      + (hasVis ? `<input type="checkbox" ${cfg.visible !== false ? "checked" : ""} data-k="${k}" class="ic-vis" />` : "");
+    rows.appendChild(row);
+  }
+  rows.querySelectorAll(".ic-color").forEach((el) => el.onchange = () => {
+    IND[el.dataset.k].color = el.value; saveIndCfg(); applyIndicatorConfig(); });
+  rows.querySelectorAll(".ic-vis").forEach((el) => el.onchange = () => {
+    IND[el.dataset.k].visible = el.checked; saveIndCfg(); applyIndicatorConfig(); });
+}
+
 // Lightweight Charts renders UTC; shift +5:30 so the axis shows IST wall-clock.
 const _lwTime = (iso) => Math.floor(Date.parse(iso) / 1000) + 19800;
 const _fmtT = (t) => { const d = new Date(t * 1000);
@@ -193,6 +253,7 @@ function initCharts() {
   sync(main, [macdC, rsiC]); sync(macdC, [main, rsiC]); sync(rsiC, [main, macdC]);
   o.loadedTf = null; o.cprLines = [];
   LW = o;
+  applyIndicatorConfig();    // honour saved colors / show-hide on first paint
 }
 
 async function fetchChart() {
@@ -315,4 +376,11 @@ document.querySelectorAll("#tfbar button").forEach((btn) => btn.onclick = () => 
   if (LW) LW.loadedTf = null;       // force a full reload for the new TF
   fetchChart();
 });
+$("indCfgBtn").onclick = () => { const p = $("indCfg"); p.hidden = !p.hidden; };
+$("indReset").onclick = (e) => {
+  e.preventDefault();
+  try { localStorage.removeItem(IND_KEY); } catch (err) { /* ignore */ }
+  IND = loadIndCfg(); buildIndPanel(); applyIndicatorConfig();
+};
+buildIndPanel();
 poll(); setInterval(poll, POLL_MS);

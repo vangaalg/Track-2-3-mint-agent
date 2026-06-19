@@ -21,11 +21,20 @@
   <section class="card price">
     <div class="charthead">
       <h2>🕯️ NIFTY — candles · BB · EMA 5/45/100/200 · Supertrend · CPR · MACD · RSI</h2>
-      <div class="tfbar" id="tfbar">
-        <button data-tf="1min">1m</button>
-        <button data-tf="3min" class="on">3m</button>
-        <button data-tf="15min">15m</button>
-        <button data-tf="60min">1h</button>
+      <div class="ctrls">
+        <div class="tfbar" id="tfbar">
+          <button data-tf="1min">1m</button>
+          <button data-tf="3min" class="on">3m</button>
+          <button data-tf="15min">15m</button>
+          <button data-tf="60min">1h</button>
+          <button data-tf="1day">1d</button>
+          <button data-tf="1week">1w</button>
+        </div>
+        <button id="indCfgBtn" class="gear" title="Customize indicators">⚙</button>
+        <div id="indCfg" class="indcfg" hidden>
+          <div class="indcfg-head"><span>Indicators</span><a id="indReset" href="#">reset</a></div>
+          <div id="indRows"></div>
+        </div>
       </div>
     </div>
     <div id="priceChart" class="lw price-main"></div>

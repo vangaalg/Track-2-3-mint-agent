@@ -64,11 +64,25 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .chatform { display:flex; gap:8px; } .chatform input[type=text] { flex:1; background:var(--tile);
   border:1px solid var(--line); border-radius:7px; color:var(--txt); padding:8px; }
 .btn.primary,.btn.ok,.btn.no { color:#fff; }
-.charthead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.charthead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; position:relative; }
 .charthead h2 { margin:0; }
+.ctrls { display:flex; align-items:center; gap:6px; }
 .tfbar button { background:var(--tile); border:1px solid var(--line); border-radius:6px;
   padding:3px 9px; margin-left:4px; cursor:pointer; font-size:12px; color:var(--txt); }
 .tfbar button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+.gear { background:var(--tile); border:1px solid var(--line); border-radius:6px;
+  padding:3px 8px; margin-left:8px; cursor:pointer; font-size:13px; color:var(--txt); }
+.gear:hover { border-color:var(--blue); }
+.indcfg { position:absolute; right:0; top:30px; z-index:20; width:230px; background:var(--card);
+  border:1px solid var(--line); border-radius:8px; padding:8px 10px; box-shadow:0 6px 20px rgba(0,0,0,.12); }
+.indcfg-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;
+  font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+.indcfg-head a { color:var(--blue); text-decoration:none; font-size:11px; }
+.indrow { display:flex; align-items:center; gap:8px; padding:2px 0; }
+.indrow .ic-color { width:24px; height:20px; border:1px solid var(--line); border-radius:4px;
+  padding:0; background:none; cursor:pointer; }
+.indrow .ic-label { flex:1; font-size:12px; }
+.indrow .ic-vis { width:15px; height:15px; cursor:pointer; }
 .lw { width:100%; }
 .price-main { height:380px; } .price-sub { height:104px; margin-top:4px; }
 @media (max-width:1100px){ .grid{ grid-template-columns:1fr; } }

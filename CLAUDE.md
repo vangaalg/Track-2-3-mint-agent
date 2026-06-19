@@ -178,6 +178,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       per-strike pull + CLI (`python -m feeds.oi_backfill --days 7`). Chart is NOT
       stored (re-pullable from Breeze history). Tested in tests/test_oi_store.py;
       live backfill verified by user. data/oi/ gitignored.
+- [x] **Customizable chart + full-context decision DB (the "save everything" store):**
+      Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
+      **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/
+      MACD/RSI + candle colours), applied live via Lightweight `applyOptions`, persisted
+      to localStorage. New `journal/store.py` (SQLite at results/journal.db) archives the
+      WHOLE decision moment at approve/reject: proposal + decision, Claude's full read,
+      the entire chat transcript, multi-TF chart datapoints, the raw per-strike chain,
+      and every macro value (VIX/USD-INR/US30/Nasdaq/crude). `journal.outcomes.settle_store`
+      grades the store on the same 2×2; `agent.memory.distill_context` feeds the past
+      reads-vs-outcomes back into Claude's system prompt (learning now). `web.server`:
+      `_chart_bundle` (shared serializer), `save_decision` in /api/decision, store wired
+      into _run_read + /api/record; `JOURNAL_DB` seam for tests. Decided with user:
+      colours+show/hide only, SQLite, feed-learning-now. results/*.db + *.jsonl gitignored.
+      Tested in tests/test_journal_store.py + extended test_web_server.py (103 pass).
+      Note: US index *futures* + GIFT Nifty still not in the macro feed (free-tier);
+      store captures whatever snap.macro holds, so they're picked up automatically later.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [ ] **Self-improving loop — Phase 3:** TRAINING MODE — replay past triggers,

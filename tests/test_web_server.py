@@ -46,7 +46,8 @@ def _chain() -> pd.DataFrame:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, tmp_path):
+    monkeypatch.setattr(srv, "JOURNAL_DB", str(tmp_path / "journal.db"))
     monkeypatch.setattr(srv, "PULL_FN", lambda sym: (_synth_1m(), _synth_daily()))
     monkeypatch.setattr(srv, "CHAIN_FN", lambda sym: _chain())
     monkeypatch.setattr(srv, "MACRO_FN", lambda sym: {"usd_inr": {"price": 1, "change_pct": 0.1}})
@@ -97,7 +98,7 @@ def test_decision_logs(client, tmp_path, monkeypatch):
     assert (tmp_path / "d.jsonl").exists()
 
 
-@pytest.mark.parametrize("tf", ["1min", "3min", "15min", "60min"])
+@pytest.mark.parametrize("tf", ["1min", "3min", "15min", "60min", "1day", "1week"])
 def test_chart_endpoint_per_timeframe(client, tf):
     client.get("/api/snapshot")
     d = client.get(f"/api/chart?tf={tf}&bars=50").json()
@@ -138,3 +139,24 @@ def test_record_endpoint_settles_and_grades(client, tmp_path, monkeypatch):
     d = client.get("/api/record").json()
     assert "cells" in d["summary"] and isinstance(d["recent"], list)
     assert d["recent"][0]["process"] == "good"
+
+
+def test_decision_persists_full_context(client, tmp_path, monkeypatch):
+    import journal.log as jlog
+    from journal import store
+    monkeypatch.setattr(srv, "DEFAULT_LOG", str(tmp_path / "d.jsonl"))
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    client.get("/api/snapshot")
+    client.post("/api/analyse")                         # populate Claude's read
+    client.post("/api/chat", data={"text": "why flat?"})  # populate chat
+    client.post("/api/decision", data={"action": "reject"})
+    rows = store.load_records(srv.JOURNAL_DB)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["decision"] == "rejected"
+    assert r["claude_read"]["chart_analysis"] == "ca"      # full Claude read saved
+    assert any((m.get("content") == "why flat?") for m in r["chat"])  # transcript saved
+    assert "3min" in r["chart"] and r["chart"]["3min"]["bars"]        # chart datapoints
+    assert r["chain"] and r["chain"][0]["strike"] is not None         # raw chain
+    assert r["macro"]["usd_inr"]["price"] == 1                        # macro values

@@ -28,12 +28,13 @@ from feeds import oi_store
 from analysis.trade1 import propose_trade1
 from analysis.triggers import replay_today
 from analysis.proposal import Recommendation
-from agent.memory import load_decisions, distill_memory
+from agent.memory import load_decisions, distill_memory, distill_context
 from agent.read import claude_read
 from agent.chat import spar_turn
 from execution import breeze_exec
 from journal.log import log_decision, DEFAULT_LOG
-from journal.outcomes import settle_log, matrix_summary
+from journal.outcomes import settle_log, settle_store, matrix_summary
+from journal import store
 
 ANCHOR = "9h15min"
 EXPIRY_WEEKDAY = 1
@@ -42,6 +43,7 @@ PULL_TTL = 60          # chart/snapshot re-pull cadence (s)
 OI_TTL = 300           # option chain + macro cadence (s)
 LOG_OI = True          # persist each fresh chain to feeds.oi_store (the flywheel)
 DEFAULT_SIZE = 75
+JOURNAL_DB = store.DB_PATH   # full-context SQLite store (overridden in tests)
 _STATIC = Path(__file__).parent / "static"
 
 # --- injectable seams (overridden in tests) -------------------------------- #
@@ -135,7 +137,12 @@ def _payload(symbol: str) -> dict:
 
 def _run_read() -> dict:
     snap, prop = _state["snap"], _state["prop"]
+    # Combine the fast JSONL tally with the rich store's past-reasoning-vs-outcome block.
     memory = distill_memory(load_decisions(DEFAULT_LOG))
+    try:
+        memory += "\n" + distill_context(store.load_records(JOURNAL_DB))
+    except Exception:
+        pass
     _state["memory"] = memory
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
     _state["read"] = read
@@ -175,14 +182,8 @@ def _jf(x):
         return None
 
 
-@app.get("/api/chart")
-def chart(tf: str = "3min", bars: int = 200):
-    """Candlestick + indicator overlays for the price panel (computed per TF)."""
-    if _state["snap"] is None:
-        raise HTTPException(status_code=409, detail="no snapshot yet")
-    frame = _state["snap"].frames.get(tf)
-    if frame is None or frame.empty:
-        raise HTTPException(status_code=404, detail=f"no frame for tf {tf!r}")
+def _serialize_chart(frame, bars: int) -> dict:
+    """Candlestick + indicator overlays for one TF frame (shared by the route + store)."""
     from indicators.engine import compute_indicators
     feats = compute_indicators(frame)
     f = feats.tail(bars)
@@ -201,7 +202,32 @@ def chart(tf: str = "3min", bars: int = 200):
     last = feats.iloc[-1]
     cpr = {"pivot": _jf(last.get("cpr_pivot")), "tc": _jf(last.get("cpr_tc")),
            "bc": _jf(last.get("cpr_bc"))}
-    return {"tf": tf, "bars": out, "cpr": cpr}
+    return {"bars": out, "cpr": cpr}
+
+
+def _chart_bundle(snap, tfs=("3min", "15min", "60min", "1day"), bars: int = 60) -> dict:
+    """Compact multi-TF chart datapoints saved with each decision (Training-Mode fuel)."""
+    out = {}
+    for tf in tfs:
+        frame = snap.frames.get(tf)
+        if frame is not None and not frame.empty:
+            try:
+                out[tf] = _serialize_chart(frame, bars)
+            except Exception:
+                pass
+    return out
+
+
+@app.get("/api/chart")
+def chart(tf: str = "3min", bars: int = 200):
+    """Candlestick + indicator overlays for the price panel (computed per TF)."""
+    if _state["snap"] is None:
+        raise HTTPException(status_code=409, detail="no snapshot yet")
+    frame = _state["snap"].frames.get(tf)
+    if frame is None or frame.empty:
+        raise HTTPException(status_code=404, detail=f"no frame for tf {tf!r}")
+    data = _serialize_chart(frame, bars)
+    return {"tf": tf, "bars": data["bars"], "cpr": data["cpr"]}
 
 
 @app.get("/api/record")
@@ -209,6 +235,10 @@ def record():
     """Settle the decision log against today's bars and return the 2x2 track record."""
     frames = _state["snap"].frames if _state["snap"] is not None else {}
     decisions = settle_log(DEFAULT_LOG, frames)
+    try:
+        settle_store(frames, path=JOURNAL_DB)   # grade the rich store too (same 2x2)
+    except Exception:
+        pass
     recent = decisions[-12:]
     return {"summary": matrix_summary(decisions),
             "recent": [{"decision": r.get("decision"), "process": r.get("process_grade"),
@@ -258,14 +288,43 @@ async def chat(text: str = Form(""), files: list[UploadFile] = File(default=[]))
     return {"reply": reply}
 
 
+def _save_context(decision: str, symbol: str, execution: dict | None) -> None:
+    """Archive the WHOLE decision moment to the SQLite store (chat, Claude read,
+    chart datapoints, raw chain, all macro) so the agent can learn from everything."""
+    snap, prop, chain = _state["snap"], _state["prop"], _state["chain"]
+    chain_rows = None
+    if chain is not None and not chain.empty:
+        try:
+            chain_rows = json.loads(chain_table(chain, snap.spot, window=VIZ_POINTS).to_json(orient="records"))
+        except Exception:
+            chain_rows = None
+    read = _state.get("read")
+    payload = {
+        "ts": snap.ts, "symbol": symbol, "decision": decision, "spot": snap.spot,
+        "proposal": prop.as_dict(),
+        "claude_read": asdict(read) if read is not None else None,
+        "chat": _state.get("chat") or None,
+        "chart": _chart_bundle(snap),
+        "chain": chain_rows,
+        "macro": snap.macro, "oi_summary": snap.oi, "notes": snap.notes,
+        "execution": execution,
+    }
+    try:
+        store.save_decision(payload, path=JOURNAL_DB)
+    except Exception:
+        pass
+
+
 @app.post("/api/decision")
-def decision(action: str = Form(...), live: bool = Form(False)):
+def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Form("NIFTY")):
     prop = _state["prop"]
     if prop is None:
         raise HTTPException(status_code=409, detail="no proposal yet")
     if action == "approve":
         result = breeze_exec.place(prop, live=live)
         rec = log_decision(prop, "approved", execution=result)
+        _save_context("approved", symbol, result)
         return {"status": result["status"], "logged": rec["decision"]}
     rec = log_decision(prop, "rejected")
+    _save_context("rejected", symbol, None)
     return {"status": "rejected", "logged": rec["decision"]}

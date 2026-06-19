@@ -17,7 +17,9 @@ data/*.parquet
 data/*.feather
 data/oi/                 # logged + backfilled option-chain OI snapshots
 
-# Results — keep human-readable reports, drop raw dumps.
+# Results — keep human-readable reports, drop raw dumps + runtime logs/DB.
 results/*.csv
 results/*.parquet
+results/*.jsonl
+results/*.db
 !results/*.md

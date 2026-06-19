@@ -91,3 +91,35 @@ def distill_memory(decisions: list[dict], max_recent: int = 15) -> str:
             f"trader {d.get('decision', '?')}"
         )
     return "\n".join(lines)
+
+
+def distill_context(records: list[dict], max_recent: int = 8) -> str:
+    """Distil the full-context store into the reasoning the agent should learn from.
+
+    Where ``distill_memory`` summarises *that* a trade was taken, this surfaces *why*:
+    Claude's verdict + key risk on each recent decision, the trader's final call, and
+    how it actually settled (with the 2x2 cell). Feeds richer self-improvement — the
+    agent sees its own past reads against outcomes, not just tallies.
+    """
+    rich = [r for r in records if r.get("claude_read") or r.get("chat")]
+    if not rich:
+        return ""
+    lines = ["", "Past reasoning vs. outcomes (learn from these — your own reads graded "
+             "by PROCESS, not P&L; never reinforce a 'dangerous' lucky win):"]
+    for r in rich[-max_recent:]:
+        prop = r.get("proposal") or {}
+        read = r.get("claude_read") or {}
+        outcome = r.get("outcome") or {}
+        verdict = read.get("recommendation") or "?"
+        risk = (read.get("key_risk") or "").strip().replace("\n", " ")
+        if len(risk) > 140:
+            risk = risk[:137] + "…"
+        settled = outcome.get("status")
+        tail = f"settled {settled}" if settled and settled != "open" else "open/unsettled"
+        cell = r.get("matrix")
+        lines.append(
+            f"  - {r.get('ts', '?')} {prop.get('direction', '?')} · Claude {verdict} "
+            f"(conf {read.get('confidence', '?')}/5), trader {r.get('decision', '?')} "
+            f"→ {tail}{f' [{cell}]' if cell else ''}"
+            + (f" · risk: {risk}" if risk else ""))
+    return "\n".join(lines)
