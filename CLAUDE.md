@@ -301,6 +301,12 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       triggers marked (▲/▼, win/loss/open coloured). Reuses compute_indicators —
       same columns as the trader's Zerodha export. Tested (/api/chart shape).
 - [ ] Calibrate provisional thresholds (JOURNAL_EXTRACTION register) on logged data.
+- [ ] **Refine the OI-confluence boost (next step, confirmed with user):** make the +1 a
+      WEIGHTED bump instead of flat — strong chain agreement (e.g. clear PCR + max-pain +
+      wall alignment) → +2, marginal lean → +1, conflicting OI → optional −1. Drive it off the
+      strength of Claude's `oi_bias` / the raw OI fields, still capped at the band top.
+      Also retune the strike agent's ~25-pt time-value cutoff (consider a %-of-premium variant)
+      once watched live. (`analysis/trade1.apply_oi_boost`, `analysis/strike.select_strike`.)
 - [ ] Confirm Breeze expiry weekday live (TUESDAY=1) + GIFT/macro source; Twelve
       Data free tier lacks indices/commodities (USD/INR works).
 - [ ] Phase 4/5 (CONTEXT) — harden Breeze live order path; port to more instruments.
