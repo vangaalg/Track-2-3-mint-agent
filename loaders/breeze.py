@@ -49,6 +49,39 @@ _INTERVAL_MAP = {
 _RESAMPLE_TO_3MIN = {"3minute", "3min"}
 
 
+def get_breeze_client(api_key=None, api_secret=None, session_token=None):
+    """Return a session-authenticated ``BreezeConnect`` client (creds from env).
+
+    Shared auth path for both the OHLCV loader and the option-chain feed so the
+    session handshake lives in one place. Raises a clear ``RuntimeError`` when the
+    SDK is missing or the daily ``API_Session`` token is rejected.
+    """
+    api_key = api_key or os.environ.get("BREEZE_API_KEY")
+    api_secret = api_secret or os.environ.get("BREEZE_API_SECRET")
+    session_token = session_token or os.environ.get("BREEZE_SESSION_TOKEN")
+    if not (api_key and api_secret and session_token):
+        raise RuntimeError(
+            "Breeze needs creds: set BREEZE_API_KEY, BREEZE_API_SECRET and "
+            "BREEZE_SESSION_TOKEN."
+        )
+    try:
+        from breeze_connect import BreezeConnect
+    except ImportError as exc:
+        raise RuntimeError(
+            "Breeze needs the official SDK: pip install breeze-connect"
+        ) from exc
+
+    client = BreezeConnect(api_key=api_key)
+    try:
+        client.generate_session(api_secret=api_secret, session_token=session_token)
+    except Exception as exc:
+        raise RuntimeError(
+            "Breeze session failed — check BREEZE_SESSION_TOKEN is today's fresh "
+            f"API_Session and BREEZE_API_KEY/SECRET are correct: {exc}"
+        ) from exc
+    return client
+
+
 class BreezeLoader(OHLCVLoader):
     source = "breeze"
 
@@ -94,27 +127,11 @@ class BreezeLoader(OHLCVLoader):
     # --- SDK session ------------------------------------------------------- #
     def _session(self):
         """Return a session-authenticated BreezeConnect client (cached)."""
-        if self._breeze is not None:
-            return self._breeze
-        try:
-            from breeze_connect import BreezeConnect
-        except ImportError as exc:
-            raise RuntimeError(
-                "BreezeLoader needs the official SDK: pip install breeze-connect"
-            ) from exc
-
-        client = BreezeConnect(api_key=self.api_key)
-        try:
-            client.generate_session(
-                api_secret=self.api_secret, session_token=self.session_token
+        if self._breeze is None:
+            self._breeze = get_breeze_client(
+                self.api_key, self.api_secret, self.session_token
             )
-        except Exception as exc:
-            raise RuntimeError(
-                "Breeze session failed — check BREEZE_SESSION_TOKEN is today's "
-                f"fresh API_Session and BREEZE_API_KEY/SECRET are correct: {exc}"
-            ) from exc
-        self._breeze = client
-        return client
+        return self._breeze
 
     @staticmethod
     def _to_iso(value, end: bool) -> str:

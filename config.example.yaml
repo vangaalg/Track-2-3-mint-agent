@@ -129,3 +129,16 @@ execution:
 agent:
   enabled: true                 # dashboard "Claude sparring" toggle default
   model: claude-opus-4-8
+
+# Live OI + macro feeds (feeds/breeze_oi.py, feeds/td_macro.py). OI = Breeze
+# option chain (PCR/walls/max-pain); macro = Twelve Data globals + Breeze India
+# VIX. The dashboard wires these from env creds (BREEZE_*, TWELVEDATA_API_KEY).
+feeds:
+  oi:
+    # Breeze option-chain expiry weekday (Mon=0..Sun=6). The NSE Nifty weekly
+    # weekday has shifted before — VERIFY yours. Dashboard default = 3 (Thursday).
+    expiry_weekday: 3
+  macro:
+    # scorecard sources live in feeds/td_macro.py: crude (WTI/USD), USD/INR,
+    # US30/Dow (DJI), Nasdaq (IXIC) via Twelve Data; India VIX via Breeze.
+    # GIFT Nifty has no reliable free feed — best-effort, degrades if absent.

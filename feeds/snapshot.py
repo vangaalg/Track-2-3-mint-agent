@@ -92,6 +92,7 @@ def build_snapshot(
     indicator_params: dict | None = None,
     oi_fetch_fn: Callable | None = None,
     macro_quote_fn: Callable | None = None,
+    macro_symbols: dict | None = None,
 ) -> Snapshot:
     """Assemble the snapshot from already-pulled 1m + daily frames.
 
@@ -112,7 +113,7 @@ def build_snapshot(
     oi = fetch_oi(instrument, spot, oi_fetch_fn)
     if oi is None:
         notes.append("oi: unavailable (no fetcher / pull failed) — degraded")
-    macro = fetch_macro(quote_fn=macro_quote_fn)
+    macro = fetch_macro(symbols=macro_symbols, quote_fn=macro_quote_fn)
     if macro is None:
         notes.append("macro: unavailable (no fetcher) — degraded")
 

@@ -36,11 +36,12 @@ results/      score tables / reports + decisions.jsonl (agent decision log)
 config.example.yaml   copy to config.yaml (gitignored) and edit
 
 # --- Live agent (Phase 1 slice — the end-to-end build, beyond Track 2) ---
-feeds/        snapshot.py (multi-TF ladder + chart read), oi.py, macro.py
+feeds/        snapshot.py (multi-TF ladder + chart read), oi.py + breeze_oi.py
+              (live option chain), macro.py + td_macro.py (Twelve Data + India VIX)
 analysis/     proposal.py (TradeProposal), trade1.py (directional bucket),
               discipline.py (six-line gate). Machine A read + Machine B levels.
-agent/        Claude sparring layer (claude-opus-4-8): read.py (claude_read +
-              injectable completer), prompt.py, memory.py (learning loop),
+agent/        Claude sparring layer (claude-opus-4-8): read.py (one-shot verdict),
+              chat.py (interactive spar_turn), prompt.py, memory.py (learning loop),
               SPARRING_PROMPT.md (the constitution). Needs ANTHROPIC_API_KEY.
 execution/    breeze_exec.py — PROPOSE-ONLY Breeze adapter (dry-run default)
 dashboard/    app.py — Streamlit one-pane: snapshot + proposal + Approve/Reject
@@ -133,7 +134,16 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       distills results/decisions.jsonl back into the system prompt (the learning
       loop). Wired into the dashboard (sidebar toggle). Tested offline (mocked
       completer) in tests/test_agent_read.py. Needs ANTHROPIC_API_KEY (live).
-- [ ] Phase 2 — broaden data (all feeds/TFs; OI+macro MODELLED, not just shown).
+- [x] **Interactive sparring chat + live OI/macro feeds:** `agent.spar_turn`
+      (multi-turn chat, trade context pinned in system, injectable completer) +
+      dashboard chat box. Live OI via `feeds.breeze_oi.make_chain_fetcher`
+      (Breeze option chain → PCR/walls/max-pain; expiry weekday config) and macro
+      via `feeds.td_macro.make_quote_fn` (Twelve Data globals + Breeze India VIX;
+      GIFT best-effort). Shared `loaders.breeze.get_breeze_client`. STAND-DOWN
+      panel now reads clearly. Mocked tests: test_agent_chat / test_feeds_oi_breeze
+      / test_feeds_macro_td.
+- [ ] Phase 2 — broaden data further (all TFs/feeds MODELLED into the signal,
+      caching/scheduling); confirm Breeze expiry weekday + GIFT source live.
 - [ ] Phase 3 — Trade 2/3 buckets + Stage-2 levels (real calibration).
 - [ ] Phase 4 — harden Breeze live order path + journal/grading loop.
 - [ ] Stage 2 (levels: entry/stop/target, R-multiple) on Stage-1 survivors.
