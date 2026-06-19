@@ -154,21 +154,73 @@ def test_vote_three_min_nan_safe():
 
 
 def test_trigger_only_ignores_htf_gate():
-    from indicators.directional import (
-        resolve_direction_mtf, journal_mtf_config, MTFDirectionalConfig)
+    from indicators.directional import resolve_direction_mtf, MTFDirectionalConfig
     up = compute_indicators(_frame(np.linspace(100, 300, 300)))
     down = compute_indicators(_frame(np.linspace(300, 100, 300)))
     feats = {"3min": up, "15min": down, "60min": down, "1day": down, "1week": down}
-    cfg = journal_mtf_config()
-    cfg.validate()
+    # a net-sign three_min base (no confirm gate) DOES fire long on a clean up-ramp.
+    base = DirectionalConfig(voters=["three_min"], min_agree=1)
+    cfg = MTFDirectionalConfig(base=base, mtf_method="trigger_only")
     calls = resolve_direction_mtf(feats, cfg)
-    # trigger_only == the pure 3-min read, regardless of an opposing HTF stack
-    solo = resolve_direction(up, cfg.base)
-    assert (calls == solo).all()
-    # the same setup under htf_bias_trigger WOULD be suppressed by the conflict
-    gated_cfg = MTFDirectionalConfig(base=cfg.base, mtf_method="htf_bias_trigger")
-    gated = resolve_direction_mtf(feats, gated_cfg)
+    solo = resolve_direction(up, base)
+    assert (calls == solo).all() and (calls == "long").any()   # not gated by the HTF
+    # the same setup under htf_bias_trigger IS suppressed by the conflicting HTF stack
+    gated = resolve_direction_mtf(feats, MTFDirectionalConfig(base=base,
+                                                              mtf_method="htf_bias_trigger"))
     assert (gated == "flat").all()
+
+
+# --- event-gated Bollinger-reversal trigger (the journal's real 3-min entry) ---- #
+def _trig_frame(ema5, bbv, n=None):
+    """Frame carrying just the two sig columns the bb_reversal voter reads."""
+    n = n or len(ema5)
+    idx = pd.date_range("2024-01-01 09:15", periods=n, freq="3min", tz="Asia/Kolkata")
+    return pd.DataFrame({"sig_ema5_trigger": ema5, "sig_bb_vrl": bbv}, index=idx)
+
+
+def test_bb_reversal_event_arms_holds_and_exits():
+    from indicators.directional import vote_bb_reversal
+    # bar2: bb event (+1) with EMA-5 agreeing (+1) -> arm long; hold while EMA-5 +1;
+    # bar5: EMA-5 flips to -1 -> exit to flat; no re-arm without a fresh event.
+    ema5 = [1,  1,  1,  1,  1, -1, -1,  1]
+    bbv  = [0,  0,  1,  0,  0,  0,  0,  0]
+    v = vote_bb_reversal(_trig_frame(ema5, bbv)).tolist()
+    assert v == [0, 0, 1, 1, 1, 0, 0, 0]
+
+
+def test_bb_reversal_ema5_alone_never_arms():
+    from indicators.directional import vote_bb_reversal
+    # price sits above the EMA-5 the whole time but NO Bollinger event -> never fires.
+    ema5 = [1] * 8
+    bbv = [0] * 8
+    assert vote_bb_reversal(_trig_frame(ema5, bbv)).abs().sum() == 0
+
+
+def test_bb_reversal_event_must_agree_with_ema5():
+    from indicators.directional import vote_bb_reversal
+    # bb event says long (+1) but the close is still below the EMA-5 (-1) -> no arm.
+    ema5 = [-1, -1, -1, -1]
+    bbv = [0, 1, 0, 0]
+    assert vote_bb_reversal(_trig_frame(ema5, bbv)).abs().sum() == 0
+
+
+def test_journal_config_fires_one_trigger_per_reversal():
+    from indicators.directional import resolve_direction, journal_trigger_config
+    # A held long reversal with EXPANDING volume -> confirm_2_close passes from the
+    # 2nd held bar; the call is a single long run (one trigger), not bar-by-bar chop.
+    n = 8
+    idx = pd.date_range("2024-01-01 09:15", periods=n, freq="3min", tz="Asia/Kolkata")
+    df = pd.DataFrame({
+        "sig_ema5_trigger": [1, 1, 1, 1, 1, -1, -1, -1],
+        "sig_bb_vrl":       [0, 0, 1, 0, 0, 0, 0, 0],
+        "volume": np.arange(1, n + 1, dtype=float) * 1000,   # strictly expanding
+    }, index=idx)
+    calls = resolve_direction(df, journal_trigger_config()).tolist()
+    longs = [i for i, c in enumerate(calls) if c == "long"]
+    assert longs and all(c in ("long", "flat") for c in calls)   # never flips to short
+    # exactly one flip into long (one trigger), starting at the confirmation bar (>=3)
+    flips = sum(1 for i in range(1, n) if calls[i] == "long" and calls[i-1] != "long")
+    assert flips == 1 and longs[0] >= 3
 
 
 # --- MTF 45-EMA confidence: multi-timeframe agreement grades conviction --------- #

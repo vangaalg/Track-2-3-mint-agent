@@ -44,7 +44,8 @@ momentum vs mean-reversion" is itself an empirical question):
 | `macd` | histogram sign | — |
 | `rsi` | `momentum`: >50 long / <50 short | `reversion`: <30 long / >70 short |
 | `bollinger` | `reversion`: below lower long / above upper short | `breakout`: opposite |
-| `three_min` | sign of the journal trio (ema5_trigger + bb_vrl + 45-EMA pullback) | — |
+| `three_min` | sign of the journal trio (ema5_trigger + bb_vrl + 45-EMA pullback) — net-sign OR, so EMA-5 state alone fires; **over-triggers, experimental only** | — |
+| `bb_reversal` | **the journal's real 3-min entry (default):** a squeeze-gated Bollinger breach→revert whose close agrees with the EMA-5 side *arms* a direction, *held* while the EMA-5 close stays on that side, cleared on an EMA-5 flip. EMA-5 alone never arms; 45-EMA pullback excluded. Pair with `confirm_closes=2` (2 closes + volume). | — |
 
 **Confirmation gate.** `confirm_2_close(vote, df, n_closes=2, vol_window=20)`
 wraps any vote with the journal's confirmation rule — keep a vote only where the

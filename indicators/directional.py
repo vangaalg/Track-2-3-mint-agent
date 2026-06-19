@@ -178,6 +178,33 @@ def vote_three_min(df: pd.DataFrame) -> pd.Series:
     return np.sign(combo).astype("int8").rename("vote_3min")
 
 
+def vote_bb_reversal(df: pd.DataFrame) -> pd.Series:
+    """The journal's REAL 3-min entry: a Bollinger breach -> revert, EMA-5 confirmed.
+
+    A squeeze-gated Bollinger reversal (``sig_bb_vrl``) whose close lands on the
+    matching side of the EMA-5 (``sig_ema5_trigger`` agrees) ARMS a direction; it is
+    HELD while the EMA-5 close stays on that side, and cleared when the EMA-5 flips.
+    Re-entry needs a FRESH Bollinger event — being above/below the EMA-5 alone never
+    arms a trade (that net-sign OR-aggregation in ``vote_three_min`` was the over-fire).
+
+    The latch turns the one-bar event into a held direction so the resolver's
+    ``confirm_2_close`` (2 closes on the held side + expanding volume) and the
+    trigger flip-detection fire exactly ONE trigger per confirmed reversal.
+    """
+    ema5 = df["sig_ema5_trigger"].fillna(0).to_numpy()
+    bbv = df["sig_bb_vrl"].fillna(0).to_numpy()
+    out = np.zeros(len(df), dtype="int8")
+    cur = 0
+    for i in range(len(df)):
+        if bbv[i] != 0 and bbv[i] == ema5[i]:   # event: revert agrees with the EMA-5 side
+            cur = int(bbv[i])
+        elif cur != 0 and ema5[i] != cur:        # EMA-5 no longer supports -> exit to flat
+            cur = 0
+        out[i] = cur
+    return pd.Series(out, index=df.index, dtype="int8").rename("vote_bb_reversal")
+
+
+
 def confirm_2_close(
     vote: pd.Series,
     df: pd.DataFrame,
@@ -226,6 +253,7 @@ VOTERS = {
     "rsi": vote_rsi,
     "bollinger": vote_bollinger,
     "three_min": vote_three_min,
+    "bb_reversal": vote_bb_reversal,
 }
 
 
@@ -555,11 +583,13 @@ def _resolve_trigger_only(
 # Preset: the trader's journal 3-min strategy
 # --------------------------------------------------------------------------- #
 def journal_trigger_config() -> DirectionalConfig:
-    """The journal's 3-min signal: the trio (EMA-5 trigger + Bollinger VRL + 45-EMA
-    pullback) confirmed by 2 closes + expanding volume. The signal is the 3-min read
-    alone — higher timeframes are trend context, not a gate (per the trader)."""
+    """The journal's 3-min signal: an event-gated **Bollinger breach -> revert**
+    confirmed by the EMA-5 close (``bb_reversal``), then 2 closes + expanding volume.
+    EMA-5 state alone never fires (that was the over-fire); the 45-EMA pullback does
+    not fire on its own. The signal is the 3-min read alone — higher timeframes are
+    trend context, not a gate (per the trader)."""
     return DirectionalConfig(
-        method="confluence", voters=["three_min"], min_agree=1,
+        method="confluence", voters=["bb_reversal"], min_agree=1,
         confirm_closes=2, confirm_vol_window=20)
 
 

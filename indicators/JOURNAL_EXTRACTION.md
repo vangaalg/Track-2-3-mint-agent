@@ -31,9 +31,20 @@ logged days validate them") — and are registered at the bottom.
 | **Step-0 gap-MAGNITUDE gate's chart half** — small gap → "read the levels (prior-day H/L, the actual walls), not the gap" | partially: prior-day levels are chart-readable; the *gap tree itself* is OUT (needs PCR/VIX/OI) | 🟡 partial — see OUT |
 
 > The journal's "3-min strategy" is therefore the trio **EMA-5 trigger + Bollinger
-> squeeze/VRL + 45-EMA pullback**, aggregated by `vote_three_min`. The old
-> `ema_mean_reversion` stub is kept for experimentation but **excluded** from the
-> trio — the trader is a documented trend-follower, not a mean-reverter.
+> squeeze/VRL + 45-EMA pullback**. The old `ema_mean_reversion` stub is kept for
+> experimentation but **excluded** — the trader is a documented trend-follower, not a
+> mean-reverter.
+>
+> **Trigger correction (confirmed with the trader).** `vote_three_min` aggregated the
+> trio as `np.sign(sum)` — net-sign OR, so **EMA-5 state alone** (`sign(close−EMA-5)`,
+> which flips on every 3-min cross) fired a trade and the signal massively over-triggered.
+> The journal's real 3-min entry is a single **event**: a Bollinger **breach → revert that
+> closes back across the EMA-5**, *confirmed by 2 closes + expanding volume*. Implemented as
+> the **`vote_bb_reversal`** voter (event arms a direction, held while the EMA-5 holds that
+> side, cleared on an EMA-5 flip) and made the journal default. The **45-EMA pullback does
+> NOT fire on its own** (it remains a `sig_sma_pullback` component for other configs). EMA-5
+> is now a confirmation/hold filter, never a standalone trigger. `vote_three_min` stays for
+> experimentation. (Over-fire check: a 600-bar chop went 119 → 2 triggers.)
 
 ---
 

@@ -253,8 +253,8 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       config.example.yaml default updated (voters [three_min], min_agree 1, confirm 2/20,
       mtf_method trigger_only). Tested in tests/test_directional.py (confirm gate, NaN-safe
       trio, trigger_only ignores a conflicting HTF) + suite green (127). NOTE: warm-up
-      artifacts at window start + the "three_min = net-sign of the trio (any 1 can fire)"
-      aggregation remain open tuning questions.
+      artifacts at window start remain an open tuning question. The "three_min = net-sign
+      (any 1 can fire)" over-fire was later FIXED via `vote_bb_reversal` (see below).
 - [x] **MTF 45-EMA confidence boost (conviction → size).** Confirmed with the trader: the
       3-min trio still FIRES the trade alone, but conviction rises with each higher TF whose
       **45-EMA sits on the signal's side** (price ABOVE it for a long, BELOW for a short) —
@@ -291,6 +291,21 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       time-value + auto +1. Tested in tests/test_strike.py (5), extended test_analysis_trade1 /
       test_agent_read / test_web_server + suite green (142). NOTE: no Greeks pulled (extrinsic IS
       the trader's theta criterion); ~25-pt cutoff + +1 increment are first cuts, easy to retune.
+- [x] **Fixed the 3-min over-firing (event-gated Bollinger reversal).** Trader flagged FAR too
+      many triggers. Root cause: `vote_three_min` aggregated the trio as `np.sign(sum)` = net-sign
+      OR, so **EMA-5 state alone** (`sign(close−EMA-5)`, flips on every 3-min cross) fired trades.
+      Per the journal + trader (confirmed: event-gated, EMA-5 confirms, Bollinger-reversal-only),
+      added **`vote_bb_reversal`** (`indicators/directional.py`): a squeeze-gated `sig_bb_vrl`
+      breach→revert whose close agrees with `sig_ema5_trigger` ARMS a direction, HELD while the
+      EMA-5 holds that side, cleared on an EMA-5 flip; re-entry needs a fresh event (EMA-5 alone
+      never arms; 45-EMA pullback excluded). The latch makes the existing `confirm_2_close`
+      (2 closes + volume) + `list_triggers` flip-detection fire exactly ONE trigger per confirmed
+      reversal. `journal_trigger_config` now `voters=["bb_reversal"]` (was `three_min`); registered
+      in VOTERS; `journal_mtf_config`/`trigger_only` + web wiring unchanged. Docs updated
+      (config.example, DIRECTIONAL_SPEC, JOURNAL_EXTRACTION). Over-fire check: a 600-bar chop went
+      **119 → 2 triggers**. Tested in tests/test_directional.py (arm/hold/exit, EMA-5-alone never
+      fires, event must agree, one-trigger-per-reversal) + suite green (146). `three_min` kept for
+      experimentation; squeeze params + EMA-5-exit are the next tuning knobs.
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

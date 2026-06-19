@@ -59,11 +59,13 @@ timeframes:
 directional:
   method: confluence            # confluence | hierarchical
   # Voters (keys of indicators.directional.VOTERS): ema, ema_stack, supertrend,
-  # cpr, macd, rsi, bollinger, regime_45, ema5_trigger, three_min. NOTE: cpr is a
-  # daily/weekly bias voter (on the 3m trigger it degenerates to a per-bar pivot).
-  # Default below = the trader's journal 3-min signal: the trio (EMA-5 trigger +
-  # Bollinger VRL + 45-EMA pullback) confirmed by 2 closes + expanding volume.
-  voters: [three_min]
+  # cpr, macd, rsi, bollinger, regime_45, ema5_trigger, three_min, bb_reversal.
+  # NOTE: cpr is a daily/weekly bias voter (on the 3m trigger it degenerates to a
+  # per-bar pivot). Default below = the trader's journal 3-min signal: the EVENT-GATED
+  # Bollinger breach->revert confirmed by the EMA-5 close (`bb_reversal`), then 2 closes
+  # + expanding volume. `three_min` is the LOOSER net-sign trio (EMA-5 state alone can
+  # fire -> over-triggers) kept only for experimentation.
+  voters: [bb_reversal]
   voter_kwargs:
     rsi: {mode: momentum}       # momentum | reversion (only if rsi is a voter)
     bollinger: {mode: reversion}  # reversion | breakout (only if bollinger is a voter)
