@@ -14,7 +14,7 @@ async function poll() {
     $("dot").className = "dot live";
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderChart(d); renderOI(d); renderProposal(d.proposal);
-    fetchTriggers(); fetchRecord();
+    fetchChart(); fetchTriggers(); fetchRecord();
     // auto-analyse once per new ENTER bar
     if (d.auto_trigger && d.ts !== lastBar && !analysing) { lastBar = d.ts; analyse(); }
   } catch (e) {
@@ -112,6 +112,7 @@ async function fetchTriggers() {
 }
 
 function renderTriggers(d) {
+  _triggers = d.triggers || [];
   const s = d.summary || {}, last = d.last;
   if (last) {
     const dir = last.direction.toUpperCase(), oc = last.outcome;
@@ -137,6 +138,74 @@ function renderTriggers(d) {
       + `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td></tr>`;
   }
   $("trigTbl").innerHTML = h + "</tbody>";
+}
+
+let _triggers = [];
+
+async function fetchChart() {
+  try { renderPriceChart(await (await fetch("/api/chart?tf=3min&bars=150")).json()); }
+  catch (e) { /* keep last */ }
+}
+
+function _line(x, ys, name, color, width = 1.3, axis = "y") {
+  return { x, y: ys, name, type: "scatter", mode: "lines", yaxis: axis,
+           line: { color, width }, hoverinfo: "skip" };
+}
+
+function renderPriceChart(d) {
+  const b = d.bars || [];
+  if (!b.length) return;
+  const x = b.map(r => r.t.slice(11, 16));
+  const get = (k) => b.map(r => r[k]);
+  const traces = [
+    { x, open: get("o"), high: get("h"), low: get("l"), close: get("c"),
+      type: "candlestick", name: "NIFTY", yaxis: "y",
+      increasing: { line: { color: "#54a24b" } }, decreasing: { line: { color: "#e45756" } } },
+    _line(x, get("bb_u"), "BB up", "#6b7280", 1), _line(x, get("bb_m"), "BB mid", "#6b7280", 1),
+    _line(x, get("bb_l"), "BB low", "#6b7280", 1),
+    _line(x, get("ema5"), "EMA5", "#4c8dff"), _line(x, get("ema45"), "EMA45", "#f0c000"),
+    _line(x, get("ema100"), "EMA100", "#c084fc"), _line(x, get("ema200"), "EMA200", "#9aa0b4", 1.6),
+    _line(x, get("st"), "Supertrend", "#ff7f0e", 1.6),
+    // MACD subplot
+    { x, y: get("hist"), name: "hist", type: "bar", yaxis: "y2",
+      marker: { color: get("hist").map(v => v >= 0 ? "#54a24b" : "#e45756") }, hoverinfo: "skip" },
+    _line(x, get("macd"), "MACD", "#4c8dff", 1.3, "y2"), _line(x, get("signal"), "signal", "#e45756", 1.3, "y2"),
+    // RSI subplot
+    _line(x, get("rsi"), "RSI", "#c084fc", 1.4, "y3"),
+  ];
+
+  // trigger markers on the price panel
+  const ent = _triggers.map(t => t.entry), tx = _triggers.map(t => t.ts.slice(11, 16));
+  if (_triggers.length) traces.push({
+    x: tx, y: ent, type: "scatter", mode: "markers", name: "trigger", yaxis: "y",
+    marker: {
+      size: 11, line: { width: 1, color: "#fff" },
+      symbol: _triggers.map(t => t.direction === "long" ? "triangle-up" : "triangle-down"),
+      color: _triggers.map(t => ({ win: "#54a24b", loss: "#e45756", open: "#4c8dff" }[t.outcome] || "#4c8dff")),
+    },
+    text: _triggers.map(t => `${t.direction} ${t.outcome} ${t.points >= 0 ? "+" : ""}${t.points}`),
+    hovertemplate: "%{text}<extra></extra>",
+  });
+
+  const cpr = d.cpr || {};
+  const hl = (y, ax, color, dash) => ({ type: "line", xref: "paper", x0: 0, x1: 1,
+    yref: ax, y0: y, y1: y, line: { color, width: 1, dash } });
+  const shapes = [];
+  if (cpr.pivot) shapes.push(hl(cpr.pivot, "y", "#888", "dash"));
+  if (cpr.tc) shapes.push(hl(cpr.tc, "y", "#666", "dot"));
+  if (cpr.bc) shapes.push(hl(cpr.bc, "y", "#666", "dot"));
+  shapes.push(hl(70, "y3", "#555", "dot"), hl(30, "y3", "#555", "dot"));
+
+  Plotly.react("priceChart", traces, {
+    showlegend: false, dragmode: "pan", shapes,
+    margin: { l: 8, r: 52, t: 6, b: 22 },
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+    font: { color: "#8b93ad", size: 10 },
+    xaxis: { type: "category", rangeslider: { visible: false }, showgrid: false, nticks: 12 },
+    yaxis: { domain: [0.42, 1], side: "right", showgrid: false },
+    yaxis2: { domain: [0.20, 0.38], side: "right", title: "MACD", showgrid: false },
+    yaxis3: { domain: [0, 0.18], side: "right", title: "RSI", range: [0, 100], showgrid: false },
+  }, { displayModeBar: false, responsive: true });
 }
 
 async function fetchRecord() {

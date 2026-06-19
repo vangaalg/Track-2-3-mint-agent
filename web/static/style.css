@@ -21,6 +21,8 @@ h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(
 .tile .v { display:block; font-size:15px; font-weight:600; }
 .row { margin:4px 0; } .row.small { font-size:12px; }
 
+.price { margin:0 12px 12px; }
+.pricechart { width:100%; height:520px; }
 .chart { width:100%; }                     /* height set by Plotly; no fixed box -> no overlap */
 .tablewrap { max-height:260px; overflow:auto; margin-top:10px; border-top:1px solid var(--line); }
 .triggers { margin:0 12px 12px; }

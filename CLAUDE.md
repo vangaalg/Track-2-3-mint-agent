@@ -187,8 +187,11 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,
       volume/OI-unwind confirmed, flat by close. Own rulebook (highest-discipline).
-- [ ] Web cockpit v2 — candlestick price panel (Plotly from snapshot.frames),
-      triggers marked on it.
+- [x] **Web cockpit candlestick panel:** `GET /api/chart` serialises the snapshot
+      feats (OHLC + BB/EMA5-45-100-200/Supertrend/CPR/MACD/RSI); frontend renders a
+      Plotly candlestick + overlays + MACD & RSI subplots + CPR lines, with today's
+      triggers marked (▲/▼, win/loss/open coloured). Reuses compute_indicators —
+      same columns as the trader's Zerodha export. Tested (/api/chart shape).
 - [ ] Calibrate provisional thresholds (JOURNAL_EXTRACTION register) on logged data.
 - [ ] Confirm Breeze expiry weekday live (TUESDAY=1) + GIFT/macro source; Twelve
       Data free tier lacks indices/commodities (USD/INR works).

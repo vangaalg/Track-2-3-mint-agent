@@ -166,6 +166,42 @@ def snapshot(symbol: str = "NIFTY", size: int = DEFAULT_SIZE):
     return payload
 
 
+def _jf(x):
+    import math
+    try:
+        x = float(x)
+        return None if math.isnan(x) else x
+    except (TypeError, ValueError):
+        return None
+
+
+@app.get("/api/chart")
+def chart(tf: str = "3min", bars: int = 150):
+    """Candlestick + indicator overlays for the price panel (from snapshot feats)."""
+    if _state["snap"] is None:
+        raise HTTPException(status_code=409, detail="no snapshot yet")
+    feats = _state["snap"].feats.get(tf)
+    if feats is None or feats.empty:
+        raise HTTPException(status_code=404, detail=f"no feats for tf {tf!r}")
+    f = feats.tail(bars)
+    out = []
+    for t, r in f.iterrows():
+        out.append({
+            "t": t.isoformat(), "o": _jf(r["open"]), "h": _jf(r["high"]),
+            "l": _jf(r["low"]), "c": _jf(r["close"]),
+            "bb_u": _jf(r.get("bb_upper")), "bb_m": _jf(r.get("bb_mid")), "bb_l": _jf(r.get("bb_lower")),
+            "ema5": _jf(r.get("ema_5")), "ema45": _jf(r.get("ema_45")),
+            "ema100": _jf(r.get("ema_100")), "ema200": _jf(r.get("ema_200")),
+            "st": _jf(r.get("supertrend")), "st_dir": int(r.get("st_dir", 0)),
+            "rsi": _jf(r.get("rsi_14")), "macd": _jf(r.get("macd")),
+            "signal": _jf(r.get("macd_signal")), "hist": _jf(r.get("macd_hist")),
+        })
+    last = feats.iloc[-1]
+    cpr = {"pivot": _jf(last.get("cpr_pivot")), "tc": _jf(last.get("cpr_tc")),
+           "bc": _jf(last.get("cpr_bc"))}
+    return {"tf": tf, "bars": out, "cpr": cpr}
+
+
 @app.get("/api/record")
 def record():
     """Settle the decision log against today's bars and return the 2x2 track record."""

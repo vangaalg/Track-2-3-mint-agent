@@ -97,6 +97,15 @@ def test_decision_logs(client, tmp_path, monkeypatch):
     assert (tmp_path / "d.jsonl").exists()
 
 
+def test_chart_endpoint_returns_candles_and_overlays(client):
+    client.get("/api/snapshot")
+    d = client.get("/api/chart?tf=3min&bars=50").json()
+    assert d["tf"] == "3min" and d["bars"]
+    row = d["bars"][-1]
+    assert {"o", "h", "l", "c", "ema45", "bb_u", "macd", "rsi", "st"} <= set(row)
+    assert "pivot" in d["cpr"]
+
+
 def test_analyse_without_snapshot_409(client):
     assert client.post("/api/analyse").status_code == 409
 
