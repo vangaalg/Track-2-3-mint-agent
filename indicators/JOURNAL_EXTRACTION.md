@@ -21,8 +21,8 @@ logged days validate them") — and are registered at the bottom.
 | **3-min EMA-5 trigger** — "price holds above/below the 3-min EMA" | `engine.ema5_trigger` → `sig_ema5_trigger`; `directional.vote_ema5_trigger` | ✅ |
 | **Confirmation** — "what confirms a signal? 2 closes + volume expanding + the stack agreeing — NOT a candle count" | `directional.confirm_2_close` (opt-in gate) | ✅ |
 | **EMA ribbon stack** — EMA 5/45/100/200 alignment | `directional.vote_ema_stack`; `engine.compute_indicators` | ✅ |
-| **Supertrend** — "weekly Supertrend bearish"; intraday Supertrend | `engine.supertrend`; `directional.vote_supertrend` | ✅ |
-| **CPR pivots** — daily/weekly central-pivot bias | `engine.cpr`; `directional.vote_cpr` | ✅ |
+| **Supertrend** — "weekly Supertrend bearish"; intraday Supertrend `(7,3)` | `engine.supertrend` (default 7/3, matching the chart); `directional.vote_supertrend` | ✅ |
+| **CPR pivots** — the day's central-pivot range overlaid on every bar | `engine.cpr` (classic **daily** CPR broadcast onto all TFs, no-lookahead); `directional.vote_cpr` | ✅ |
 | **Bollinger squeeze → VRL recovery** — "Bollinger crushed (~coil) → re-expands"; recovery back through a band edge | `engine.bollinger_vrl_breakout` (squeeze-gated) | ✅ |
 | **MACD** — "hourly MACD expanding positive/negative"; "daily MACD positive" | `engine.macd`; `directional.vote_macd` | ✅ |
 | **RSI not-extreme** — "RSI 81 overbought", "RSI 46 midline", "RSI 37.5" | `engine.rsi`; `directional.vote_rsi` (`momentum`/`reversion`) | ✅ |
@@ -74,4 +74,6 @@ against logged data, do not treat as the trader's calibrated edge.
 | `sma_pullback_continuation.trend_period` | `200` | `engine.sma_pullback_continuation` | long-trend EMA (200) |
 
 > Inherited (registered last round, also provisional): EMA periods `5/45/100/200`,
-> SMA `20`, Supertrend `10 / 3.0`, CPR (prior-bar HLC). See `config.example.yaml`.
+> SMA `20`. **Supertrend `7 / 3.0`** and **CPR = daily-session broadcast** were
+> pinned against the trader's real chart export (19 Jun 2026), not provisional.
+> See `config.example.yaml` and `scoring/validate_export.py`.

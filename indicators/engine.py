@@ -153,7 +153,7 @@ def atr(df: pd.DataFrame, period: int = 10) -> pd.Series:
 
 
 def supertrend(
-    df: pd.DataFrame, period: int = 10, multiplier: float = 3.0
+    df: pd.DataFrame, period: int = 7, multiplier: float = 3.0
 ) -> pd.DataFrame:
     """Supertrend trailing line + direction.
 
@@ -209,31 +209,47 @@ def supertrend(
 # CPR — Central Pivot Range (from the PRIOR period's H/L/C)
 # --------------------------------------------------------------------------- #
 def cpr(df: pd.DataFrame) -> pd.DataFrame:
-    """Central Pivot Range derived from the previous bar's H/L/C.
+    """Central Pivot Range — the classic **daily** CPR, broadcast onto every bar.
 
-    On a DAILY frame this is the classic daily CPR (today's levels from
-    yesterday's range) — the form the trader uses, and the role it plays in the
-    MTF bias. Columns: ``cpr_pivot``, ``cpr_tc`` (top central), ``cpr_bc``
-    (bottom central), ``cpr_r1``, ``cpr_s1``. (On an intraday frame it degenerates
-    to a per-bar pivot, so it is meaningful mainly on daily/weekly.)
+    CPR is defined off the daily session regardless of the chart timeframe: each
+    session's levels come from the PRIOR session's H/L/C and are constant for the
+    whole day — exactly how a charting platform overlays CPR on a 3-min chart.
+
+    Implementation: group bars by trading session (``index.normalize()``),
+    aggregate per-session H/L/C, take the prior session (``shift(1)`` →
+    **no lookahead**: today's CPR uses yesterday's completed session, known at the
+    open; today's still-forming session is never used), then broadcast each
+    session's levels back onto its bars. On a daily frame each bar is its own
+    session, so this reduces to "prior bar's HLC".
+
+    Columns: ``cpr_pivot``, ``cpr_tc`` (top central), ``cpr_bc`` (bottom central),
+    ``cpr_r1``, ``cpr_s1``.
     """
     _require_columns(df, ["high", "low", "close"])
-    ph, pl, pc = df["high"].shift(1), df["low"].shift(1), df["close"].shift(1)
-    pivot = (ph + pl + pc) / 3.0
-    bc = (ph + pl) / 2.0
+    sess = df.index.normalize()
+    g = df.groupby(sess)
+    daily = pd.DataFrame(
+        {"high": g["high"].max(), "low": g["low"].min(), "close": g["close"].last()}
+    )
+    prior = daily.shift(1)
+
+    pivot = (prior["high"] + prior["low"] + prior["close"]) / 3.0
+    bc = (prior["high"] + prior["low"]) / 2.0
     tc = 2.0 * pivot - bc
     # TC/BC are orientation-free — order them so cpr_bc <= cpr_pivot <= cpr_tc.
     top = pd.concat([tc, bc], axis=1).max(axis=1)
     bot = pd.concat([tc, bc], axis=1).min(axis=1)
-    return pd.DataFrame(
+    levels = pd.DataFrame(
         {
             "cpr_pivot": pivot,
             "cpr_tc": top,
             "cpr_bc": bot,
-            "cpr_r1": 2.0 * pivot - pl,
-            "cpr_s1": 2.0 * pivot - ph,
+            "cpr_r1": 2.0 * pivot - prior["low"],
+            "cpr_s1": 2.0 * pivot - prior["high"],
         }
     )
+    # Broadcast each session's levels back onto all of that session's bars.
+    return levels.reindex(sess).set_axis(df.index)
 
 
 # --------------------------------------------------------------------------- #

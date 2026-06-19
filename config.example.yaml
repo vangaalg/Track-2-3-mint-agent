@@ -21,7 +21,7 @@ indicators:
     slow: 26
     signal: 9
   supertrend:
-    period: 10
+    period: 7                   # matches the trader's chart: Supertrend (7,3)
     multiplier: 3.0
   # CPR pivots take no params (derived from the prior bar's H/L/C).
 

@@ -77,10 +77,12 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       cells) → write ranked CSV + markdown to results/. Skips instruments whose
       loader can't pull. Tested in tests/test_stage1_sweep.py.
 - [x] Real indicator stack (the trader's actual chart read): EMA 5/45/100/200,
-      SMA 20, Bollinger, RSI, MACD, **Supertrend** (10/3), **CPR pivots**
-      (prior-bar HLC; daily/weekly bias). New voters `ema_stack`, `supertrend`,
-      `cpr` in `indicators/directional.py`. Tested in tests/test_engine_indicators.py
-      + tests/test_directional.py.
+      SMA 20, Bollinger, RSI, MACD, **Supertrend (7/3)**, **CPR pivots** (classic
+      daily CPR broadcast onto every TF, no-lookahead). New voters `ema_stack`,
+      `supertrend`, `cpr` in `indicators/directional.py`. Supertrend 7/3 + CPR
+      broadcast pinned against the trader's real 3-min chart export (19 Jun 2026)
+      and checked by `scoring/validate_export.py`. Tested in
+      tests/test_engine_indicators.py + tests/test_directional.py.
 - [x] **BreezeLoader ported to real HTTP** (`loaders/breeze.py`): ICICI Breeze
       historicalcharts, checksum auth, creds from env (`BREEZE_API_KEY` /
       `BREEZE_API_SECRET` / `BREEZE_SESSION_TOKEN`). No native 3min → pulls

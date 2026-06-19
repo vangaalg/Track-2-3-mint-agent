@@ -103,8 +103,9 @@ def vote_cpr(df: pd.DataFrame) -> pd.Series:
     """CPR position: close above the top central line -> long, below the bottom
     central line -> short, inside the range -> flat.
 
-    Primarily a daily/weekly *bias* voter — on the 3-min trigger CPR degenerates
-    to a per-bar pivot (see engine.cpr), so prefer it on the higher TFs.
+    ``engine.cpr`` broadcasts the classic **daily** CPR onto every bar, so this
+    voter is meaningful on the 3-min trigger as well as the higher TFs (close vs
+    the day's central range — the level the trader's chart overlays).
     """
     close, tc, bc = df["close"], df["cpr_tc"], df["cpr_bc"]
     v = pd.Series(0, index=df.index, dtype="int8")
