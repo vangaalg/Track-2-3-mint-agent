@@ -29,9 +29,9 @@ def _pull(symbol: str):
     """Pull Breeze 1-minute base + daily (cached per session)."""
     loader = get_loader("breeze")
     today = date.today()
-    base_1m = loader.load(symbol, "3minute", start=today - timedelta(days=10))
-    daily = loader.load(symbol, "1day", start=today - timedelta(days=800))
-    return base_1m, daily
+    base_min = loader.load(symbol, "minute", start=today - timedelta(days=10))
+    daily = loader.load(symbol, "day", start=today - timedelta(days=800))
+    return base_min, daily
 
 
 def main() -> None:
@@ -44,8 +44,8 @@ def main() -> None:
         live = st.toggle("Live execution (else dry-run)", value=False)
         st.caption("Live also needs EXECUTION_LIVE=1 in the environment.")
         if st.button("Refresh snapshot & propose", type="primary"):
-            base_1m, daily = _pull(symbol)
-            snap = build_snapshot(symbol, base_1m, daily, anchor=ANCHOR)
+            base_min, daily = _pull(symbol)
+            snap = build_snapshot(symbol, base_min, daily, anchor=ANCHOR)
             st.session_state["proposal"] = propose_trade1(snap, size_lots)
 
     prop = st.session_state.get("proposal")

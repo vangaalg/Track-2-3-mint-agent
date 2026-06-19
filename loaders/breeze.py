@@ -37,20 +37,22 @@ from loaders.base import OHLCVLoader
 _BASE_URL = "https://api.icicidirect.com/breezeapi/api/v1"
 _HIST_ENDPOINT = f"{_BASE_URL}/historicalcharts"
 
-# Our canonical interval names -> Breeze interval strings. Breeze has no 3min,
-# so 3min is pulled as 1minute and resampled (see _fetch).
+# Our canonical interval names -> Breeze interval strings. The live Breeze
+# historicalcharts API accepts only: minute, 5minute, 30minute, day. There is no
+# native 3min, so 3min is pulled as "minute" and resampled (see _fetch).
 _INTERVAL_MAP = {
-    "1minute": "1minute",
-    "1min": "1minute",
-    "3minute": "1minute",   # resampled to 3min after the pull
-    "3min": "1minute",
+    "minute": "minute",
+    "1minute": "minute",
+    "1min": "minute",
+    "3minute": "minute",    # resampled to 3min after the pull
+    "3min": "minute",
     "5minute": "5minute",
     "5min": "5minute",
     "30minute": "30minute",
     "30min": "30minute",
-    "1day": "1day",
-    "1d": "1day",
-    "day": "1day",
+    "day": "day",
+    "1day": "day",
+    "1d": "day",
 }
 _RESAMPLE_TO_3MIN = {"3minute", "3min"}
 

@@ -88,9 +88,9 @@ def test_3min_request_pulls_1minute_and_resamples(monkeypatch):
 
     df = loader.load("NIFTY", "3min", use_cache=False)
 
-    # Breeze body asked for 1minute (no native 3min), and we resampled 6x1min
+    # Breeze body asked for "minute" (no native 3min), and we resampled 6x1min
     # into 2x3min bars.
-    assert '"interval":"1minute"' in captured["data"]
+    assert '"interval":"minute"' in captured["data"]
     assert len(df) == 2
     # First 3-min bar aggregates minutes 0,1,2: open=first, high=max, close=last.
     assert df.iloc[0]["open"] == pytest.approx(100.0)
