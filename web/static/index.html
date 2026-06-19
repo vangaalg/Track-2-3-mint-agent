@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nifty Agent — cockpit</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+  <header>
+    <h1>Nifty Agent <span class="muted">— Trade 1 (propose-only)</span></h1>
+    <div class="status">
+      <span id="dot" class="dot"></span>
+      <span id="meta" class="muted">connecting…</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <!-- Chart indicators -->
+    <section class="card" id="chartCard">
+      <h2>📈 Chart</h2>
+      <div class="tiles">
+        <div class="tile"><span class="k">Spot</span><span class="v" id="spot">—</span></div>
+        <div class="tile"><span class="k">MTF read</span><span class="v" id="mtf">—</span></div>
+        <div class="tile"><span class="k">RSI</span><span class="v" id="rsi">—</span></div>
+        <div class="tile"><span class="k">MACD hist</span><span class="v" id="macd">—</span></div>
+        <div class="tile"><span class="k">Supertrend</span><span class="v" id="st">—</span></div>
+        <div class="tile"><span class="k">CPR pivot</span><span class="v" id="cpr">—</span></div>
+      </div>
+      <div class="row" id="emas">EMA 5/45/100/200: —</div>
+      <div class="row muted" id="cprband">CPR TC/BC: —</div>
+      <div class="row muted" id="macro">Macro: —</div>
+      <details id="diag"><summary>Feed diagnostics</summary><div id="notes"></div></details>
+    </section>
+
+    <!-- Option chain -->
+    <section class="card" id="oiCard">
+      <h2>🧮 Option chain</h2>
+      <div class="row" id="oiSummary">—</div>
+      <div class="row small" id="walls">—</div>
+      <div id="oichart" class="chart"></div>
+      <div class="tablewrap"><table id="chainTbl"></table></div>
+    </section>
+
+    <!-- Proposal + Claude -->
+    <section class="card" id="callCard">
+      <div id="propBox" class="propbox">—</div>
+      <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>
+      <div id="readBox" class="readbox"><span class="muted">No Claude read yet — fires on an ENTER, or press Analyse.</span></div>
+      <div id="decision" class="decision" hidden>
+        <button id="approveBtn" class="btn ok">✅ Approve</button>
+        <button id="rejectBtn" class="btn no">❌ Reject</button>
+      </div>
+      <div id="decisionMsg" class="muted small"></div>
+    </section>
+  </main>
+
+  <!-- Chat -->
+  <section class="card chat">
+    <h2>💬 Spar with Claude</h2>
+    <div id="chatLog" class="chatlog"></div>
+    <form id="chatForm" class="chatform">
+      <input id="chatText" type="text" placeholder="Defend your thesis, ask why…" autocomplete="off" />
+      <input id="chatFile" type="file" accept="image/*" />
+      <button class="btn" type="submit">Send</button>
+    </form>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

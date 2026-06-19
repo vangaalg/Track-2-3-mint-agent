@@ -44,7 +44,9 @@ agent/        Claude sparring layer (claude-opus-4-8): read.py (one-shot verdict
               chat.py (interactive spar_turn), prompt.py, memory.py (learning loop),
               SPARRING_PROMPT.md (the constitution). Needs ANTHROPIC_API_KEY.
 execution/    breeze_exec.py — PROPOSE-ONLY Breeze adapter (dry-run default)
-dashboard/    app.py — Streamlit one-pane: snapshot + proposal + Approve/Reject
+dashboard/    app.py — Streamlit one-pane (fallback UI)
+web/          server.py (FastAPI JSON API over the engine) + static/ (index.html,
+              app.js, style.css) — flicker-free single-screen cockpit, polls ~15s
 journal/      log.py — append-only decision log (results/decisions.jsonl)
 ```
 
@@ -150,6 +152,15 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       not every tick. Expiry confirmed TUESDAY (weekday=1). `merge_chain` carries
       LTP; `build_snapshot` accepts a pre-fetched `macro`. Tests in
       tests/test_feeds_oi_breeze.py.
+- [x] **Flicker-free web cockpit (`web/`):** FastAPI JSON API over the engine
+      (server-side TTL caches: snapshot ~60s, OI/macro ~5min) + a static JS page
+      that polls ~15s and updates in place (no fade). Dense one screen: chart
+      tiles, option-chain Plotly OI bars (value labels) + time-value table
+      (walls/shelves marked, deep-ITM low-extrinsic visible), proposal, Claude's
+      4-part read with a manual Analyse button + auto-on-ENTER, chat with
+      screenshot upload, approve/reject. Streamlit kept as fallback. Tested
+      offline (FastAPI TestClient + mocked seams) in tests/test_web_server.py.
+- [ ] Web cockpit v2 — candlestick price panel (Plotly from snapshot.frames).
 - [ ] Phase 2 — broaden data further (all TFs/feeds MODELLED into the signal,
       caching/scheduling); confirm Breeze expiry weekday + GIFT source live.
 - [ ] Phase 3 — Trade 2/3 buckets + Stage-2 levels (real calibration).

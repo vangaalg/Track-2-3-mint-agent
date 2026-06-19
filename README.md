@@ -162,12 +162,26 @@ learning loop). It needs an Anthropic API key (separate from a Claude.ai chat
 plan): `set ANTHROPIC_API_KEY=...` before launching. Toggle it off in the sidebar
 to run engine-only.
 
-Run locally (Breeze creds in the env, as above):
+### Two UIs
+
+**Web cockpit (recommended — no-flicker, single screen):** a FastAPI backend +
+a lightweight JS page that polls and updates in place (chart ~15s, OI ~5 min) —
+dense one-screen layout with the option-chain OI bars (value labels) + time-value
+table, the proposal, Claude's read, a manual *Analyse* button, and the chat.
 
 ```bash
-pip install -r requirements.txt        # now includes streamlit
+pip install -r requirements.txt
+uvicorn web.server:app          # then open http://localhost:8000
+```
+
+**Streamlit (fallback):**
+
+```bash
 streamlit run dashboard/app.py
 ```
+
+Both reuse the same engine and need the same env (`BREEZE_*`,
+`TWELVEDATA_API_KEY`, `ANTHROPIC_API_KEY`).
 
 Pick a size, press **Refresh snapshot & propose**, read the agent's recommendation
 (ENTER / STAND-DOWN) and reasons, then **Approve** (dry-run unless live) or
