@@ -63,6 +63,24 @@ def distill_memory(decisions: list[dict], max_recent: int = 15) -> str:
         top = "; ".join(f"{r} (x{c})" for r, c in stand_reasons.most_common(3))
         lines.append(f"Recurring stand-down reasons: {top}.")
 
+    # Process x outcome 2x2 (settled trades) — grade by PROCESS, not P&L.
+    cells = Counter(d.get("matrix") for d in decisions if d.get("matrix"))
+    if any(cells.get(k) for k in ("deserved", "accept", "dangerous", "correct")):
+        lines.append(
+            "Track record (process×outcome): "
+            f"deserved {cells.get('deserved', 0)} (good process, won), "
+            f"accept {cells.get('accept', 0)} (good process, lost — variance), "
+            f"dangerous {cells.get('dangerous', 0)} (BAD process, won — luck), "
+            f"correct {cells.get('correct', 0)} (bad process, lost)."
+        )
+    if cells.get("dangerous"):
+        lines.append(
+            f"⚠️ {cells['dangerous']} 'dangerous' trade(s) made money on BAD process. "
+            "Do NOT let these reinforce — they are the Session-002 trap. Grade by "
+            "process: challenge oversize / mid-box / override-the-gate entries even "
+            "when the last one paid."
+        )
+
     recent = decisions[-max_recent:]
     lines.append("Recent decisions (oldest→newest):")
     for d in recent:

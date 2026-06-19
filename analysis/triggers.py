@@ -26,6 +26,29 @@ def _f(x):
         return None
 
 
+def simulate_trade(direction, entry, stop, target, highs, lows, close_last):
+    """Walk forward bars and resolve a trade to the first of stop/target.
+
+    If a bar touches both, the stop wins (conservative). If neither is touched,
+    the trade is left ``open`` and marked to ``close_last``. Returns
+    ``(outcome, exit_px, points)`` where outcome ∈ win/loss/open and points are
+    signed in the trade's favour.
+    """
+    long = direction == "long"
+    outcome, exit_px = "open", float(close_last)
+    for h, lo in zip(highs, lows):
+        if long and lo <= stop:
+            outcome, exit_px = "loss", stop; break
+        if long and h >= target:
+            outcome, exit_px = "win", target; break
+        if (not long) and h >= stop:
+            outcome, exit_px = "loss", stop; break
+        if (not long) and lo <= target:
+            outcome, exit_px = "win", target; break
+    points = (exit_px - entry) if long else (entry - exit_px)
+    return outcome, round(exit_px, 2), round(points, 2)
+
+
 def replay_today(
     feats_by_tf: dict[str, pd.DataFrame],
     frames_by_tf: dict[str, pd.DataFrame],
@@ -70,19 +93,8 @@ def replay_today(
         if stop is None or target is None:
             continue
 
-        long = direction == "long"
-        outcome, exit_px = "open", float(close[-1])
-        for j in range(i + 1, len(c)):
-            if long and low[j] <= stop:
-                outcome, exit_px = "loss", stop; break
-            if long and high[j] >= target:
-                outcome, exit_px = "win", target; break
-            if not long and high[j] >= stop:
-                outcome, exit_px = "loss", stop; break
-            if not long and low[j] <= target:
-                outcome, exit_px = "win", target; break
-
-        points = (exit_px - entry) if long else (entry - exit_px)
+        outcome, exit_px, points = simulate_trade(
+            direction, entry, stop, target, high[i + 1:], low[i + 1:], close[-1])
         triggers.append({
             "ts": ts[i].isoformat(), "direction": direction,
             "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2),

@@ -160,9 +160,34 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       4-part read with a manual Analyse button + auto-on-ENTER, chat with
       screenshot upload, approve/reject. Streamlit kept as fallback. Tested
       offline (FastAPI TestClient + mocked seams) in tests/test_web_server.py.
-- [ ] Web cockpit v2 — candlestick price panel (Plotly from snapshot.frames).
-- [ ] Phase 2 — broaden data further (all TFs/feeds MODELLED into the signal,
-      caching/scheduling); confirm Breeze expiry weekday + GIFT source live.
+- [x] **Self-improving loop — Phase 1 (close the live outcome loop):**
+      `journal.outcomes` grades every logged decision on the journal's 2x2
+      (process: good/override/no_trade × outcome: win/loss/open via
+      `analysis.triggers.simulate_trade`); `settle_log` resolves approved/rejected
+      ENTERs against today's bars and persists. `agent.memory.distill_memory`
+      now feeds the 2x2 tallies back + a hard "do NOT reinforce dangerous lucky
+      wins (Session-002 trap)" line. Cockpit `/api/record` + Track-record panel
+      (2x2 cells). Decided with user: grade by PROCESS+outcome, not P&L. Tested in
+      tests/test_outcomes.py + test_web_server.py.
+
+## PENDING ROADMAP (keep visible — confirmed with user)
+- [ ] **Self-improving loop — Phase 2:** OI/chart snapshot LOGGER (persist every
+      fetched chain+chart from now) + **reconstruct last ~7 days of OI** from Breeze
+      per-strike historical `open_interest` (paced backfill, cached to disk) — the
+      data behind training mode.
+- [ ] **Self-improving loop — Phase 3:** TRAINING MODE — replay past triggers,
+      show chart+OI as-it-was, trader labels take/skip → enriches the learning
+      memory/trader-profile.
+- [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
+      combined SL, intraday-only. Own rulebook + proposal + replay + grading.
+- [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,
+      volume/OI-unwind confirmed, flat by close. Own rulebook (highest-discipline).
+- [ ] Web cockpit v2 — candlestick price panel (Plotly from snapshot.frames),
+      triggers marked on it.
+- [ ] Calibrate provisional thresholds (JOURNAL_EXTRACTION register) on logged data.
+- [ ] Confirm Breeze expiry weekday live (TUESDAY=1) + GIFT/macro source; Twelve
+      Data free tier lacks indices/commodities (USD/INR works).
+- [ ] Phase 4/5 (CONTEXT) — harden Breeze live order path; port to more instruments.
 - [ ] Phase 3 — Trade 2/3 buckets + Stage-2 levels (real calibration).
 - [ ] Phase 4 — harden Breeze live order path + journal/grading loop.
 - [ ] Stage 2 (levels: entry/stop/target, R-multiple) on Stage-1 survivors.

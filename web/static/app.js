@@ -14,7 +14,7 @@ async function poll() {
     $("dot").className = "dot live";
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderChart(d); renderOI(d); renderProposal(d.proposal);
-    fetchTriggers();
+    fetchTriggers(); fetchRecord();
     // auto-analyse once per new ENTER bar
     if (d.auto_trigger && d.ts !== lastBar && !analysing) { lastBar = d.ts; analyse(); }
   } catch (e) {
@@ -137,6 +137,34 @@ function renderTriggers(d) {
       + `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td></tr>`;
   }
   $("trigTbl").innerHTML = h + "</tbody>";
+}
+
+async function fetchRecord() {
+  try { renderRecord(await (await fetch("/api/record")).json()); } catch (e) { /* keep */ }
+}
+
+const CELL = {
+  deserved: ["✅ Deserved", "good process · won"], accept: ["😐 Accept", "good process · lost (variance)"],
+  dangerous: ["⚠️ Dangerous", "BAD process · won (luck — don't repeat)"], correct: ["🔴 Correct", "bad process · lost"],
+};
+function renderRecord(d) {
+  const c = (d.summary && d.summary.cells) || {};
+  $("recMatrix").innerHTML = Object.entries(CELL).map(([k, [lbl, sub]]) =>
+    `<div class="cell ${k}"><span class="cn">${c[k] || 0}</span><span class="cl">${lbl}</span>`
+    + `<span class="cs">${sub}</span></div>`).join("");
+  const s = d.summary || {};
+  $("recSummary").innerHTML = `${s.n_settled || 0} settled · net `
+    + `<b class="${s.net_points >= 0 ? "win-txt" : "loss-txt"}">${s.net_points >= 0 ? "+" : ""}${s.net_points || 0} pts `
+    + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees || 0})</b> · graded by process, not P&L`;
+  let h = "<thead><tr><th>Time</th><th>Decision</th><th>Process</th><th>Outcome</th><th>Pts</th><th>Cell</th></tr></thead><tbody>";
+  for (const r of (d.recent || []).slice().reverse()) {
+    const o = r.outcome || {}, t = r.ts ? r.ts.slice(11, 16) : "—";
+    h += `<tr><td>${t}</td><td>${r.decision || "—"} ${r.direction || ""}</td><td>${r.process || "—"}</td>`
+      + `<td class="${o.status || ""}">${o.status || "—"}</td>`
+      + `<td class="${(o.points || 0) >= 0 ? "win" : "loss"}">${o.points != null ? (o.points >= 0 ? "+" : "") + o.points : "—"}</td>`
+      + `<td>${r.matrix || "—"}</td></tr>`;
+  }
+  $("recTbl").innerHTML = h + "</tbody>";
 }
 
 async function analyse() {

@@ -107,3 +107,19 @@ def test_triggers_endpoint_shape(client):
     assert set(d) >= {"session", "triggers", "last", "summary"}
     assert set(d["summary"]) >= {"n", "wins", "losses", "open", "net_points", "net_rupees"}
     assert isinstance(d["triggers"], list)
+
+
+def test_record_endpoint_settles_and_grades(client, tmp_path, monkeypatch):
+    import json as _json
+    from journal.outcomes import grade_process
+    log = tmp_path / "d.jsonl"
+    log.write_text(_json.dumps({
+        "decision": "approved",
+        "proposal": {"recommendation": "enter", "direction": "long", "entry": 24000.0,
+                     "stop": 23980.0, "target": 24060.0, "size_lots": 75,
+                     "ts": "2024-01-01T09:18:00+05:30"}}) + "\n")
+    monkeypatch.setattr(srv, "DEFAULT_LOG", str(log))
+    client.get("/api/snapshot")
+    d = client.get("/api/record").json()
+    assert "cells" in d["summary"] and isinstance(d["recent"], list)
+    assert d["recent"][0]["process"] == "good"

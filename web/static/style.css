@@ -28,6 +28,12 @@ h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(
 .trig-last.win { background:rgba(84,162,75,.18); } .trig-last.loss { background:rgba(228,87,86,.16); }
 .trig-last.open { background:rgba(76,141,255,.14); }
 td.win,.win-txt { color:var(--green); } td.loss,.loss-txt { color:var(--red); }
+.matrix { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:8px; }
+.cell { background:#0d1120; border:1px solid var(--line); border-radius:8px; padding:8px; text-align:center; }
+.cell .cn { display:block; font-size:20px; font-weight:700; } .cell .cl { display:block; font-size:12px; }
+.cell .cs { display:block; font-size:10px; color:var(--muted); }
+.cell.deserved { border-color:var(--green); } .cell.correct { border-color:var(--red); }
+.cell.dangerous { border-color:var(--amber); } .cell.accept { border-color:var(--line); }
 table { width:100%; border-collapse:collapse; font-size:12px; }
 th,td { padding:3px 6px; text-align:right; border-bottom:1px solid var(--line); }
 th { position:sticky; top:0; background:var(--card); color:var(--muted); font-weight:500; }

@@ -32,6 +32,7 @@ from agent.read import claude_read
 from agent.chat import spar_turn
 from execution import breeze_exec
 from journal.log import log_decision, DEFAULT_LOG
+from journal.outcomes import settle_log, matrix_summary
 
 ANCHOR = "9h15min"
 EXPIRY_WEEKDAY = 1
@@ -153,6 +154,19 @@ def snapshot(symbol: str = "NIFTY", size: int = DEFAULT_SIZE):
         and _state.get("analysed_bar") != _state["snap"].ts
     )
     return payload
+
+
+@app.get("/api/record")
+def record():
+    """Settle the decision log against today's bars and return the 2x2 track record."""
+    frames = _state["snap"].frames if _state["snap"] is not None else {}
+    decisions = settle_log(DEFAULT_LOG, frames)
+    recent = decisions[-12:]
+    return {"summary": matrix_summary(decisions),
+            "recent": [{"decision": r.get("decision"), "process": r.get("process_grade"),
+                        "matrix": r.get("matrix"), "ts": (r.get("proposal") or {}).get("ts"),
+                        "direction": (r.get("proposal") or {}).get("direction"),
+                        "outcome": r.get("outcome")} for r in recent]}
 
 
 @app.get("/api/triggers")
