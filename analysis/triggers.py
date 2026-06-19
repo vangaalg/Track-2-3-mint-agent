@@ -49,6 +49,73 @@ def simulate_trade(direction, entry, stop, target, highs, lows, close_last):
     return outcome, round(exit_px, 2), round(points, 2)
 
 
+def simulate_intraday(frame3m: pd.DataFrame, ts, direction: str, entry: float,
+                      stop: float, target: float) -> tuple[str, float, float]:
+    """Resolve a trigger's outcome within its OWN session (Trade 1 is intraday).
+
+    Walks the 3-min bars after ``ts`` up to that session's close and returns
+    ``(outcome, exit_px, points)`` via ``simulate_trade`` (mark-to-close if neither
+    stop nor target is touched by the bell).
+    """
+    t = pd.Timestamp(ts)
+    sess = frame3m[(frame3m.index > t) & (frame3m.index.normalize() == t.normalize())]
+    if sess.empty:
+        return "open", round(float(entry), 2), 0.0
+    return simulate_trade(direction, entry, stop, target,
+                          sess["high"].to_numpy(), sess["low"].to_numpy(),
+                          sess["close"].iloc[-1])
+
+
+def list_triggers(
+    feats_by_tf: dict[str, pd.DataFrame],
+    frames_by_tf: dict[str, pd.DataFrame],
+    cfg: MTFDirectionalConfig | None = None,
+    size_lots: int = DEFAULT_SIZE_LOTS,
+    lot_size: int = LOT_SIZE,
+) -> list[dict]:
+    """Enumerate EVERY Trade-1 trigger across the full history (all sessions).
+
+    Same flip-detection as ``replay_today`` but without the single-day filter, and
+    each trigger's outcome is bounded to its own session via ``simulate_intraday``.
+    Returns trigger dicts (engine levels + the true outcome) ordered oldest→newest;
+    the index in the list is the ``tid`` the training UI replays.
+    """
+    cfg = cfg or MTFDirectionalConfig()
+    if "3min" not in feats_by_tf or "3min" not in frames_by_tf:
+        return []
+    calls = resolve_direction_mtf(feats_by_tf, cfg)
+    if calls.empty:
+        return []
+    bars = frames_by_tf["3min"].reindex(calls.index)
+    feats = feats_by_tf["3min"].reindex(calls.index)
+    c = calls.to_numpy()
+    close = bars["close"].to_numpy()
+    ts = calls.index
+
+    out: list[dict] = []
+    for i in range(len(c)):
+        prev = c[i - 1] if i > 0 else "flat"
+        if c[i] not in ("long", "short") or c[i] == prev:
+            continue
+        direction, entry = c[i], float(close[i])
+        row = feats.iloc[i]
+        levels = {k: _f(row.get(k)) for k in
+                  ("ema_45", "supertrend", "cpr_pivot", "cpr_tc", "cpr_bc")}
+        stop, target, rr = trade1_levels(direction, entry, levels)
+        if stop is None or target is None:
+            continue
+        outcome, exit_px, points = simulate_intraday(
+            frames_by_tf["3min"], ts[i], direction, entry, stop, target)
+        out.append({
+            "tid": len(out), "ts": ts[i].isoformat(), "date": str(ts[i].date()),
+            "direction": direction, "entry": round(entry, 2),
+            "eng_stop": round(stop, 2), "eng_target": round(target, 2), "eng_rr": rr,
+            "outcome": outcome, "points": round(points, 2),
+            "rupees": round(points * lot_size * size_lots, 0),
+        })
+    return out
+
+
 def replay_today(
     feats_by_tf: dict[str, pd.DataFrame],
     frames_by_tf: dict[str, pd.DataFrame],

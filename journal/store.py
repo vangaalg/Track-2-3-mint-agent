@@ -30,7 +30,7 @@ DB_PATH = "results/journal.db"
 
 # Scalar columns mirrored out of the payload for easy querying/filtering.
 _SCALAR_COLS = (
-    "logged_at", "ts", "symbol", "decision", "recommendation", "direction",
+    "logged_at", "ts", "symbol", "kind", "decision", "recommendation", "direction",
     "entry", "stop", "target", "size_lots", "rr_ratio", "vehicle", "spot",
     "confidence", "agrees_with_engine",
     "process_grade", "matrix", "outcome_status", "outcome_points", "outcome_rupees",
@@ -54,7 +54,7 @@ def init_db(path: str | Path = DB_PATH) -> None:
     """Create the ``decisions`` table if it does not exist."""
     cols = [
         "id INTEGER PRIMARY KEY AUTOINCREMENT",
-        "logged_at TEXT", "ts TEXT", "symbol TEXT", "decision TEXT",
+        "logged_at TEXT", "ts TEXT", "symbol TEXT", "kind TEXT", "decision TEXT",
         "recommendation TEXT", "direction TEXT",
         "entry REAL", "stop REAL", "target REAL", "size_lots INTEGER",
         "rr_ratio REAL", "vehicle TEXT", "spot REAL",
@@ -65,6 +65,10 @@ def init_db(path: str | Path = DB_PATH) -> None:
     with _connect(path) as conn:
         conn.execute(f"CREATE TABLE IF NOT EXISTS decisions ({', '.join(cols)})")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_decisions_ts ON decisions(ts)")
+        # Migration: add the `kind` column to a pre-existing DB that lacks it.
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(decisions)")}
+        if "kind" not in have:
+            conn.execute("ALTER TABLE decisions ADD COLUMN kind TEXT")
 
 
 def save_decision(payload: dict, path: str | Path = DB_PATH) -> int:
@@ -76,10 +80,12 @@ def save_decision(payload: dict, path: str | Path = DB_PATH) -> int:
     init_db(path)
     prop = payload.get("proposal") or {}
     read = payload.get("claude_read") or {}
+    outc = payload.get("outcome") or {}
     row = {
         "logged_at": datetime.now(timezone.utc).isoformat(),
         "ts": payload.get("ts") or prop.get("ts"),
         "symbol": payload.get("symbol") or prop.get("instrument"),
+        "kind": payload.get("kind") or "live",
         "decision": payload.get("decision"),
         "recommendation": prop.get("recommendation"),
         "direction": prop.get("direction"),
@@ -90,8 +96,10 @@ def save_decision(payload: dict, path: str | Path = DB_PATH) -> int:
         "confidence": read.get("confidence"),
         "agrees_with_engine": (None if read.get("agrees_with_engine") is None
                                else int(bool(read.get("agrees_with_engine")))),
-        "process_grade": None, "matrix": None,
-        "outcome_status": None, "outcome_points": None, "outcome_rupees": None,
+        # Live decisions settle later (None); training records carry their grade now.
+        "process_grade": payload.get("process_grade"), "matrix": payload.get("matrix"),
+        "outcome_status": outc.get("status"), "outcome_points": outc.get("points"),
+        "outcome_rupees": outc.get("rupees"),
     }
     for c in _BLOB_COLS:
         row[f"{c}_json"] = json.dumps(payload.get(c)) if payload.get(c) is not None else None
@@ -126,13 +134,24 @@ def _row_to_dict(r: sqlite3.Row) -> dict:
     return d
 
 
-def load_records(path: str | Path = DB_PATH, limit: int | None = None) -> list[dict]:
-    """Read decision rows (newest last), JSON columns parsed back to objects."""
+def load_records(path: str | Path = DB_PATH, limit: int | None = None,
+                 kind: str | None = None) -> list[dict]:
+    """Read decision rows (newest last), JSON columns parsed back to objects.
+
+    ``kind`` optionally filters to "live" or "training" (legacy rows have NULL kind,
+    treated as "live").
+    """
     p = Path(path)
     if not p.exists():
         return []
-    q = "SELECT * FROM decisions ORDER BY id"
+    where = ""
+    if kind == "live":
+        where = "WHERE kind='live' OR kind IS NULL"
+    elif kind:
+        where = f"WHERE kind='{kind}'"
+    q = f"SELECT * FROM decisions {where} ORDER BY id"
     if limit:
-        q = f"SELECT * FROM (SELECT * FROM decisions ORDER BY id DESC LIMIT {int(limit)}) ORDER BY id"
+        q = (f"SELECT * FROM (SELECT * FROM decisions {where} ORDER BY id DESC "
+             f"LIMIT {int(limit)}) ORDER BY id")
     with _connect(path) as conn:
         return [_row_to_dict(r) for r in conn.execute(q).fetchall()]

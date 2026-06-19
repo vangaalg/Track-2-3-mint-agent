@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nifty Agent — training</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header>
+    <h1>🎮 Training <span class="muted">— replay past 3-min triggers, label them, back-train</span></h1>
+    <div class="status">
+      <a class="navlink" href="/">← Live cockpit</a>
+      <span id="progress" class="muted">loading…</span>
+    </div>
+  </header>
+
+  <!-- Trigger header -->
+  <section class="card trigbar">
+    <div class="trighead">
+      <div id="trigMeta" class="trigmeta">—</div>
+      <button id="nextBtn" class="btn primary">Next trigger ▶</button>
+    </div>
+    <div class="muted small">Decide as you would live: read the chart + OI + Claude, then take or skip. The outcome is hidden until you answer.</div>
+  </section>
+
+  <!-- 1) DATA — chart (as-of the trigger, no future) -->
+  <section class="card price">
+    <div class="charthead">
+      <h2>🕯️ As-of chart — candles · BB · EMA · Supertrend · CPR · MACD · RSI</h2>
+      <div class="ctrls">
+        <div class="tfbar" id="tfbar">
+          <button data-tf="1min">1m</button>
+          <button data-tf="3min" class="on">3m</button>
+          <button data-tf="15min">15m</button>
+          <button data-tf="60min">1h</button>
+          <button data-tf="1day">1d</button>
+          <button data-tf="1week">1w</button>
+        </div>
+        <button id="indCfgBtn" class="gear" title="Customize indicators">⚙</button>
+        <div id="indCfg" class="indcfg" hidden>
+          <div class="indcfg-head"><span>Indicators</span><a id="indReset" href="#">reset</a></div>
+          <div id="indRows"></div>
+        </div>
+      </div>
+    </div>
+    <div id="priceChart" class="lw price-main"></div>
+    <div id="macdChart" class="lw price-sub"></div>
+    <div id="rsiChart" class="lw price-sub"></div>
+  </section>
+
+  <main class="grid">
+    <!-- 1) DATA — option chain as-of -->
+    <section class="card" id="oiCard">
+      <h2>🧮 Option chain — as of the trigger</h2>
+      <div class="row" id="oiSummary">—</div>
+      <div class="row small" id="walls">—</div>
+      <div id="oichart" class="chart"></div>
+      <div class="tablewrap"><table id="chainTbl"></table></div>
+      <div class="row muted small" id="macroNote">Macro / India VIX: not recorded for past triggers.</div>
+    </section>
+
+    <!-- 2) CLAUDE READ + 3) YOUR CALL -->
+    <section class="card" id="callCard">
+      <h2>🤖 Claude's read — before you decide</h2>
+      <div id="readBox" class="readbox"><span class="muted">Loading Claude's read…</span></div>
+      <div class="takeform" id="takeForm">
+        <div class="row">Entry (trigger close): <b id="entryShow">—</b> · direction <b id="dirShow">—</b></div>
+        <div class="levels">
+          <label>Target <input id="inTarget" type="number" step="0.05" /></label>
+          <label>Stop <input id="inStop" type="number" step="0.05" /></label>
+        </div>
+        <div class="decision">
+          <button id="takeBtn" class="btn ok">✅ Take</button>
+          <button id="skipBtn" class="btn no">⏭ Skip</button>
+        </div>
+        <div id="formMsg" class="muted small"></div>
+      </div>
+      <!-- 4) REVEAL -->
+      <div id="revealBox" class="reveal" hidden></div>
+    </section>
+  </main>
+
+  <script src="/static/chart.js"></script>
+  <script src="/static/train.js"></script>
+</body>
+</html>

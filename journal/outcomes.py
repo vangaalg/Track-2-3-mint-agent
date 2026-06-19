@@ -47,6 +47,24 @@ def grade_process(record: dict) -> str:
     return "unknown"
 
 
+_TRAINING_MATRIX = {
+    ("take", "win"): "deserved",   ("take", "loss"): "accept",
+    ("skip", "win"): "missed",     ("skip", "loss"): "avoided",
+}
+
+
+def grade_training(action: str, outcome_status: str | None) -> str:
+    """2x2 cell for a TRAINING replay (trader take/skip vs the known outcome).
+
+    take+win -> deserved (good entry), take+loss -> accept (valid signal, variance),
+    skip+would-win -> missed (passed a winner), skip+would-loss -> avoided (good
+    discipline). Unresolved -> open.
+    """
+    if outcome_status in (None, "open"):
+        return "open"
+    return _TRAINING_MATRIX.get((action, outcome_status), "pending")
+
+
 def _matrix(process: str, outcome: str | None) -> str:
     if process == "no_trade":
         return "no_trade"
@@ -115,7 +133,7 @@ def settle_store(frames_by_tf: dict[str, pd.DataFrame] | None = None,
     """
     from journal import store as _store
     p = path or _store.DB_PATH
-    records = _store.load_records(p)
+    records = _store.load_records(p, kind="live")   # training rows grade at save time
     if not records:
         return []
     settled, _ = settle(records, frames_by_tf or {})

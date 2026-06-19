@@ -85,4 +85,24 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .indrow .ic-vis { width:15px; height:15px; cursor:pointer; }
 .lw { width:100%; }
 .price-main { height:380px; } .price-sub { height:104px; margin-top:4px; }
+
+/* training mode */
+.navlink { color:var(--blue); text-decoration:none; font-weight:600; font-size:13px;
+  border:1px solid var(--line); border-radius:7px; padding:5px 10px; }
+.navlink:hover { background:var(--tile); }
+.trigbar { margin:12px; }
+.trighead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.trigmeta { font-size:16px; font-weight:600; }
+.takeform { margin-top:10px; border-top:1px solid var(--line); padding-top:10px; }
+.takeform .levels { display:flex; gap:12px; margin:8px 0; }
+.takeform .levels label { font-size:12px; color:var(--muted); }
+.takeform .levels input { width:110px; margin-left:6px; padding:6px; border:1px solid var(--line);
+  border-radius:6px; background:var(--tile); color:var(--txt); }
+.reveal { margin-top:10px; border-top:1px solid var(--line); padding-top:10px; font-size:13px; }
+.reveal p { margin:6px 0; }
+.reveal-cell { display:flex; flex-direction:column; padding:8px 10px; border-radius:8px;
+  margin-bottom:8px; background:var(--tile); border:1px solid var(--line); }
+.reveal-cell .rc-lbl { font-weight:700; font-size:15px; } .reveal-cell .rc-sub { font-size:12px; color:var(--muted); }
+.reveal-cell.deserved { border-color:var(--green); } .reveal-cell.avoided { border-color:var(--green); }
+.reveal-cell.missed { border-color:var(--amber); } .reveal-cell.accept { border-color:var(--line); }
 @media (max-width:1100px){ .grid{ grid-template-columns:1fr; } }

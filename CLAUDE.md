@@ -196,9 +196,25 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       store captures whatever snap.macro holds, so they're picked up automatically later.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
-- [ ] **Self-improving loop — Phase 3:** TRAINING MODE — replay past triggers,
-      show chart+OI as-it-was, trader labels take/skip → enriches the learning
-      memory/trader-profile.
+- [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
+      last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
+      exactly: **data → Claude's read → trader take/skip+target/stop → reveal+compare**.
+      `analysis.triggers.list_triggers` (multi-day flip enumeration) + `simulate_intraday`
+      (session-bounded outcome); `feeds.snapshot.build_snapshot_at` rebuilds the as-of world
+      with NO future leakage (truncate base + causal partial-today daily bar, tz-matched).
+      `web.server`: `_train` cache + `TRAIN_PULL_FN` seam + `/train`, `/api/train/triggers`
+      (no outcome), `/api/train/case/{tid}` (as-of chart via `_serialize_chart` + OI via
+      `oi_store.load_nearest` + Claude read with the live learning memory; outcome hidden),
+      `/api/train/answer` (grade take/skip vs known outcome, persist kind="training").
+      `journal.store` gained a **`kind`** column (live/training, migrated in init_db);
+      `journal.outcomes.grade_training` (take/skip × win/loss → deserved/accept/missed/
+      avoided) + `settle_store` skips training rows; `agent.memory.distill_context` labels
+      training replays so they feed Claude's memory. Frontend: shared **`web/static/chart.js`**
+      (Lightweight module extracted from app.js — same 1m…1w + ⚙ customization on both pages)
+      + `train.html`/`train.js` + nav links. Decisions w/ user: show direction, chart+OI only
+      (macro never stored historically → "not recorded"), add Claude's read (3-way compare).
+      Tested in tests/test_training.py (14) + suite green (117). Macro as-of past triggers
+      stays out (live-only); Trade 2/3 training still pending.
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

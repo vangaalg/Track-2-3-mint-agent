@@ -117,8 +117,9 @@ def distill_context(records: list[dict], max_recent: int = 8) -> str:
         settled = outcome.get("status")
         tail = f"settled {settled}" if settled and settled != "open" else "open/unsettled"
         cell = r.get("matrix")
+        tag = "TRAINING replay" if r.get("kind") == "training" else "Live"
         lines.append(
-            f"  - {r.get('ts', '?')} {prop.get('direction', '?')} · Claude {verdict} "
+            f"  - [{tag}] {r.get('ts', '?')} {prop.get('direction', '?')} · Claude {verdict} "
             f"(conf {read.get('confidence', '?')}/5), trader {r.get('decision', '?')} "
             f"→ {tail}{f' [{cell}]' if cell else ''}"
             + (f" · risk: {risk}" if risk else ""))

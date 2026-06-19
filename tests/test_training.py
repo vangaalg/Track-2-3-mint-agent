@@ -1,0 +1,180 @@
+"""Training mode — multi-day trigger enumeration, as-of reconstruction, grading,
+the kind-tagged store, and the /api/train/* endpoints (all offline/mocked)."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+from fastapi.testclient import TestClient
+
+import analysis.triggers as tg
+import web.server as srv
+from agent.read import ClaudeRead
+from feeds.snapshot import build_snapshot_at
+from journal import store
+from journal.outcomes import grade_training, settle_store
+
+
+# --- synthetic data ---------------------------------------------------------- #
+def _synth_1m(days: int = 2) -> pd.DataFrame:
+    rng = np.random.default_rng(0)
+    frames, start = [], pd.Timestamp("2024-01-01 09:15", tz="Asia/Kolkata")
+    for d in range(days):
+        idx = pd.date_range(start + pd.Timedelta(days=d), periods=375, freq="1min", tz="Asia/Kolkata")
+        p = 24000 + np.cumsum(rng.standard_normal(len(idx)))
+        frames.append(pd.DataFrame({"open": p, "high": p + 2, "low": p - 2, "close": p,
+                                    "volume": rng.integers(100, 1000, len(idx))}, index=idx))
+    df = pd.concat(frames); df.index.name = "datetime"; return df
+
+
+def _synth_daily() -> pd.DataFrame:
+    rng = np.random.default_rng(1)
+    idx = pd.date_range("2023-11-01", periods=80, freq="1D", tz="Asia/Kolkata")
+    p = 24000 + np.cumsum(rng.standard_normal(80) * 20)
+    df = pd.DataFrame({"open": p, "high": p + 30, "low": p - 30, "close": p,
+                       "volume": rng.integers(1000, 5000, 80)}, index=idx)
+    df.index.name = "datetime"; return df
+
+
+# --- list_triggers (multi-day) + intraday outcome ---------------------------- #
+def test_list_triggers_multi_day(monkeypatch):
+    d1 = pd.date_range("2024-01-01 09:15", periods=10, freq="3min", tz="Asia/Kolkata")
+    d2 = pd.date_range("2024-01-02 09:15", periods=10, freq="3min", tz="Asia/Kolkata")
+    index = d1.append(d2)
+    calls = pd.Series(
+        ["flat", "flat", "long", "long", "long", "flat", "flat", "flat", "flat", "flat",
+         "flat", "short", "short", "short", "flat", "flat", "flat", "flat", "flat", "flat"],
+        index=index)
+    high = [100.4] * 20; low = [99.6] * 20
+    high[5] = 102.0          # day-1 long hits target 101
+    low[15] = 98.0           # day-2 short hits target 99
+    frame3m = pd.DataFrame({"open": 100.0, "high": high, "low": low, "close": 100.0,
+                            "volume": 1}, index=index)
+    feats3m = pd.DataFrame({"ema_45": 99.0, "supertrend": 98.0, "cpr_pivot": np.nan,
+                            "cpr_tc": 101.0, "cpr_bc": 97.0}, index=index)
+    monkeypatch.setattr(tg, "resolve_direction_mtf", lambda feats, cfg: calls)
+
+    out = tg.list_triggers({"3min": feats3m}, {"3min": frame3m})
+    assert len(out) == 2
+    long_t, short_t = out
+    assert long_t["direction"] == "long" and long_t["outcome"] == "win" and long_t["points"] == 1.0
+    assert long_t["eng_stop"] == 99.0 and long_t["eng_target"] == 101.0
+    assert short_t["direction"] == "short" and short_t["outcome"] == "win" and short_t["points"] == 1.0
+    assert short_t["tid"] == 1 and short_t["date"] == "2024-01-02"
+
+
+def test_simulate_intraday_bounds_to_session():
+    idx = pd.date_range("2024-01-01 09:15", periods=6, freq="3min", tz="Asia/Kolkata")
+    frame = pd.DataFrame({"open": 100.0, "high": [100, 100, 105, 100, 100, 100],
+                          "low": 99.0, "close": 100.0}, index=idx)
+    outcome, exit_px, points = tg.simulate_intraday(frame, idx[0], "long", 100.0, 98.0, 104.0)
+    assert outcome == "win" and exit_px == 104.0 and points == 4.0
+
+
+# --- as-of reconstruction (no future leakage) -------------------------------- #
+def test_build_snapshot_at_truncates():
+    base, daily = _synth_1m(2), _synth_daily()
+    target = pd.Timestamp("2024-01-02 11:00", tz="Asia/Kolkata")
+    snap = build_snapshot_at("NIFTY", base, daily, target, macro={})
+    assert pd.Timestamp(snap.ts) <= target                     # latest bar at/just before T
+    assert snap.frames["1min"].index[-1] <= target             # no future 1m bar
+    # the daily series ends with a partial bar for the target session, not a future day
+    assert snap.frames["1day"].index[-1].normalize() == target.normalize()
+
+
+# --- training 2x2 grade ------------------------------------------------------ #
+@pytest.mark.parametrize("action,status,cell", [
+    ("take", "win", "deserved"), ("take", "loss", "accept"),
+    ("skip", "win", "missed"), ("skip", "loss", "avoided"),
+    ("take", "open", "open"), ("skip", None, "open"),
+])
+def test_grade_training(action, status, cell):
+    assert grade_training(action, status) == cell
+
+
+# --- kind-tagged store + settle skips training ------------------------------- #
+def _train_payload():
+    return {"kind": "training", "ts": "2024-01-02T09:30:00+05:30", "symbol": "NIFTY",
+            "decision": "training_take", "spot": 24000.0,
+            "proposal": {"direction": "long", "entry": 24000.0, "stop": 23980.0,
+                         "target": 24060.0, "recommendation": "enter"},
+            "outcome": {"status": "win", "points": 60.0, "rupees": 4500.0},
+            "matrix": "deserved", "process_grade": "training_take"}
+
+
+def test_store_kind_round_trip_and_settle_skips_training(tmp_path):
+    db = tmp_path / "journal.db"
+    store.save_decision(_train_payload(), path=db)
+    store.save_decision({"kind": "live", "ts": "2024-01-02T09:31:00+05:30", "symbol": "NIFTY",
+                         "decision": "rejected",
+                         "proposal": {"direction": "long", "recommendation": "stand_down"}},
+                        path=db)
+    trains = store.load_records(db, kind="training")
+    assert len(trains) == 1 and trains[0]["matrix"] == "deserved"
+    assert trains[0]["outcome_status"] == "win" and trains[0]["kind"] == "training"
+    assert len(store.load_records(db, kind="live")) == 1
+    # settling must NOT touch the training row's pre-graded cell
+    idx = pd.date_range("2024-01-02 09:33", periods=5, freq="3min", tz="Asia/Kolkata")
+    bars = pd.DataFrame({"open": 24000.0, "high": 24010.0, "low": 23990.0, "close": 24000.0},
+                        index=idx)
+    settle_store({"3min": bars}, path=db)
+    assert store.load_records(db, kind="training")[0]["matrix"] == "deserved"
+
+
+# --- /api/train/* endpoints -------------------------------------------------- #
+@pytest.fixture
+def tclient(monkeypatch, tmp_path):
+    monkeypatch.setattr(srv, "JOURNAL_DB", str(tmp_path / "journal.db"))
+    monkeypatch.setattr(srv, "TRAIN_PULL_FN", lambda sym, days: (_synth_1m(2), _synth_daily()))
+    monkeypatch.setattr(srv, "READ_COMPLETER", lambda system, user: ClaudeRead(
+        agrees_with_engine=True, chart_analysis="ca", oi_analysis="oa", where_moving="wm",
+        right_trade="rt", challenge="ch", recommendation="stand_down", confidence=3, key_risk="kr"))
+    # deterministic trigger list at a real 3-min boundary on day 2
+    trig = {"tid": 0, "ts": "2024-01-02T09:30:00+05:30", "date": "2024-01-02",
+            "direction": "long", "entry": 24000.0, "eng_stop": 23960.0,
+            "eng_target": 24080.0, "eng_rr": 2.0, "outcome": "open", "points": 0.0, "rupees": 0.0}
+    monkeypatch.setattr(srv, "list_triggers", lambda feats, frames: [trig])
+    srv._train.update(symbol=None, base=None, daily=None, frame3m=None,
+                      triggers=None, at=0.0, cases={})
+    return TestClient(srv.app)
+
+
+def test_train_triggers_lists_without_outcome(tclient):
+    d = tclient.get("/api/train/triggers?days=8").json()
+    assert d["n"] == 1
+    t = d["triggers"][0]
+    assert t["tid"] == 0 and t["direction"] == "long"
+    assert "outcome" not in t and "eng_stop" not in t      # the game hides these
+
+
+def test_train_case_has_read_and_no_outcome(tclient):
+    tclient.get("/api/train/triggers")
+    d = tclient.get("/api/train/case/0?tf=3min&bars=100").json()
+    assert d["direction"] == "long" and d["entry"] == 24000.0
+    assert d["bars"] and d["read"]["chart_analysis"] == "ca"
+    assert d["macro_available"] is False
+    assert "outcome" not in d and "engine_outcome" not in d
+
+
+def test_train_answer_reveals_and_persists(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")                       # must open the case first
+    r = tclient.post("/api/train/answer",
+                     data={"tid": 0, "action": "take", "target": 24100.0, "stop": 23900.0})
+    d = r.json()
+    assert d["action"] == "take"
+    assert d["your_outcome"]["status"] in ("win", "loss", "open")
+    assert "engine_outcome" in d and d["claude"]["recommendation"] == "stand_down"
+    rows = store.load_records(srv.JOURNAL_DB, kind="training")
+    assert len(rows) == 1 and rows[0]["decision"] == "training_take"
+    assert rows[0]["claude_read"]["oi_analysis"] == "oa"
+
+
+def test_train_answer_rejects_bad_levels(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")
+    # long trade with target below entry -> 400
+    r = tclient.post("/api/train/answer",
+                     data={"tid": 0, "action": "take", "target": 23900.0, "stop": 23800.0})
+    assert r.status_code == 400

@@ -19,21 +19,21 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from loaders import get_loader
-from feeds.snapshot import build_snapshot
+from feeds.snapshot import build_snapshot, build_snapshot_at
 from feeds.breeze_oi import make_chain_fetcher
-from feeds.oi import chain_table
+from feeds.oi import chain_table, summarise_chain
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store
-from analysis.trade1 import propose_trade1
-from analysis.triggers import replay_today
+from analysis.trade1 import propose_trade1, LOT_SIZE
+from analysis.triggers import replay_today, list_triggers, simulate_intraday
 from analysis.proposal import Recommendation
 from agent.memory import load_decisions, distill_memory, distill_context
 from agent.read import claude_read
 from agent.chat import spar_turn
 from execution import breeze_exec
 from journal.log import log_decision, DEFAULT_LOG
-from journal.outcomes import settle_log, settle_store, matrix_summary
+from journal.outcomes import settle_log, settle_store, matrix_summary, grade_training
 from journal import store
 
 ANCHOR = "9h15min"
@@ -64,9 +64,20 @@ def _default_macro(symbol: str):
     return fetch_macro(SCORECARD_SYMBOLS, make_quote_fn(), errors=[])
 
 
+def _default_train_pull(symbol: str, days: int):
+    """~`days` of 3-min base + the long daily history, for trigger reconstruction."""
+    loader = get_loader("breeze")
+    base_min = loader.load(symbol, "minute", start=date.today() - timedelta(days=days + 2),
+                           use_cache=False)
+    daily = loader.load(symbol, "day", start=date.today() - timedelta(days=800),
+                        use_cache=False)
+    return base_min, daily
+
+
 PULL_FN = _default_pull
 CHAIN_FN = _default_chain
 MACRO_FN = _default_macro
+TRAIN_PULL_FN = _default_train_pull
 READ_COMPLETER = None    # claude_read completer (None -> live Anthropic call)
 CHAT_COMPLETER = None     # spar_turn completer (None -> live Anthropic call)
 
@@ -77,6 +88,11 @@ _state: dict = {
     "read": None, "analysed_bar": None,
     "chat": [],
 }
+
+# --- training-mode state (separate from the live cockpit) ------------------- #
+TRAIN_TTL = 900          # re-pull the 7-day history every ~15 min
+_train: dict = {"symbol": None, "base": None, "daily": None, "frame3m": None,
+                "triggers": None, "at": 0.0, "cases": {}}
 
 app = FastAPI(title="Nifty Agent cockpit")
 if _STATIC.exists():
@@ -135,14 +151,20 @@ def _payload(symbol: str) -> dict:
     }
 
 
-def _run_read() -> dict:
-    snap, prop = _state["snap"], _state["prop"]
-    # Combine the fast JSONL tally with the rich store's past-reasoning-vs-outcome block.
+def _learning_memory() -> str:
+    """Combine the fast JSONL tally with the rich store's past-reasoning-vs-outcome
+    block — the same memory the live read and the training read both learn from."""
     memory = distill_memory(load_decisions(DEFAULT_LOG))
     try:
         memory += "\n" + distill_context(store.load_records(JOURNAL_DB))
     except Exception:
         pass
+    return memory
+
+
+def _run_read() -> dict:
+    snap, prop = _state["snap"], _state["prop"]
+    memory = _learning_memory()
     _state["memory"] = memory
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
     _state["read"] = read
@@ -328,3 +350,151 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     rec = log_decision(prop, "rejected")
     _save_context("rejected", symbol, None)
     return {"status": "rejected", "logged": rec["decision"]}
+
+
+# --- training mode (replay past 3-min triggers, label them, back-train) ----- #
+@app.get("/train")
+def train_index():
+    f = _STATIC / "train.html"
+    return FileResponse(f) if f.exists() else JSONResponse({"status": "training cockpit"})
+
+
+def _train_refresh(symbol: str, days: int) -> None:
+    """Pull ~`days` of history once and enumerate every Trade-1 trigger across it."""
+    now = time.time()
+    if (_train["triggers"] is None or _train["symbol"] != symbol
+            or now - _train["at"] > TRAIN_TTL):
+        base, daily = TRAIN_PULL_FN(symbol, days)
+        snap = build_snapshot(symbol, base, daily, anchor=ANCHOR, macro={})
+        _train.update(symbol=symbol, base=base, daily=daily,
+                      frame3m=snap.frames["3min"],
+                      triggers=list_triggers(snap.feats, snap.frames),
+                      at=now, cases={})
+
+
+@app.get("/api/train/triggers")
+def train_triggers(symbol: str = "NIFTY", days: int = 8):
+    """List every past 3-min trigger (NO levels/outcome — that's the game)."""
+    try:
+        _train_refresh(symbol, days)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"training pull failed: {exc}")
+    trigs = _train["triggers"] or []
+    return {"symbol": symbol, "days": days, "n": len(trigs),
+            "triggers": [{"tid": t["tid"], "ts": t["ts"], "date": t["date"],
+                          "direction": t["direction"]} for t in trigs]}
+
+
+def _train_case(tid: int) -> dict:
+    """Build (and cache) the as-of world for one trigger: snapshot + OI + Claude read."""
+    case = _train["cases"].get(tid)
+    if case is not None:
+        return case
+    trig = _train["triggers"][tid]
+    snap = build_snapshot_at(_train["symbol"], _train["base"], _train["daily"],
+                             trig["ts"], anchor=ANCHOR, macro={})
+    chain = oi_store.load_nearest(_train["symbol"], trig["ts"])
+    oi_summary = (summarise_chain(chain, snap.spot)
+                  if chain is not None and not chain.empty else None)
+    snap.oi = oi_summary
+    prop = propose_trade1(snap, DEFAULT_SIZE)
+    read, read_err = None, None
+    try:
+        read = claude_read(snap, prop, _learning_memory(), completer=READ_COMPLETER)
+    except Exception as exc:
+        read_err = str(exc)
+    case = {"snap": snap, "prop": prop, "chain": chain, "oi": oi_summary,
+            "read": read, "read_err": read_err}
+    _train["cases"][tid] = case
+    return case
+
+
+def _chain_rows(chain, spot):
+    if chain is None or chain.empty:
+        return None
+    try:
+        return json.loads(chain_table(chain, spot, window=VIZ_POINTS).to_json(orient="records"))
+    except Exception:
+        return None
+
+
+@app.get("/api/train/case/{tid}")
+def train_case(tid: int, tf: str = "3min", bars: int = 200):
+    """The as-of moment for trigger `tid`: chart + OI + Claude's read. NO outcome."""
+    if _train["triggers"] is None:
+        raise HTTPException(status_code=409, detail="no trigger list yet")
+    if tid < 0 or tid >= len(_train["triggers"]):
+        raise HTTPException(status_code=404, detail="unknown trigger id")
+    try:
+        case = _train_case(tid)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"case build failed: {exc}")
+    trig, snap = _train["triggers"][tid], _train["cases"][tid]["snap"]
+    frame = snap.frames.get(tf)
+    chart = (_serialize_chart(frame, bars) if frame is not None and not frame.empty
+             else {"bars": [], "cpr": {}})
+    return {
+        "tid": tid, "ts": trig["ts"], "date": trig["date"],
+        "direction": trig["direction"], "entry": trig["entry"], "spot": snap.spot,
+        "tf": tf, "bars": chart["bars"], "cpr": chart["cpr"],
+        "oi": case["oi"], "chain": _chain_rows(case["chain"], snap.spot),
+        "macro_available": False,
+        "read": asdict(case["read"]) if case["read"] else None,
+        "read_err": case["read_err"],
+    }
+
+
+@app.post("/api/train/answer")
+def train_answer(tid: int = Form(...), action: str = Form(...),
+                 target: float = Form(0.0), stop: float = Form(0.0)):
+    """Grade the trader's take/skip vs the known outcome, save it, feed learning."""
+    if _train["triggers"] is None or tid < 0 or tid >= len(_train["triggers"]):
+        raise HTTPException(status_code=404, detail="unknown trigger id")
+    case = _train["cases"].get(tid)
+    if case is None:
+        raise HTTPException(status_code=409, detail="open the case first")
+    trig = _train["triggers"][tid]
+    direction, entry, frame3m = trig["direction"], trig["entry"], _train["frame3m"]
+    action = action.lower()
+
+    if action == "take":
+        ok = (target > entry > stop) if direction == "long" else (target < entry < stop)
+        if not ok:
+            raise HTTPException(status_code=400,
+                                detail="target/stop must straddle entry on the trade's side")
+        outcome, exit_px, points = simulate_intraday(frame3m, trig["ts"], direction,
+                                                      entry, stop, target)
+        your_levels = {"stop": stop, "target": target}
+    else:  # skip — would-be result with the engine's own levels
+        outcome, exit_px, points = simulate_intraday(frame3m, trig["ts"], direction,
+                                                      entry, trig["eng_stop"], trig["eng_target"])
+        your_levels = None
+
+    your = {"status": outcome, "exit": exit_px, "points": points,
+            "rupees": round(points * LOT_SIZE * DEFAULT_SIZE, 0)}
+    engine = {"status": trig["outcome"], "points": trig["points"], "rupees": trig["rupees"],
+              "stop": trig["eng_stop"], "target": trig["eng_target"]}
+    cell = grade_training(action, outcome)
+
+    snap, read = case["snap"], case["read"]
+    proposal = case["prop"].as_dict()
+    if action == "take":
+        proposal = {**proposal, "direction": direction, "entry": entry,
+                    "stop": stop, "target": target}
+    payload = {
+        "kind": "training", "ts": trig["ts"], "symbol": _train["symbol"],
+        "decision": f"training_{action}", "spot": snap.spot,
+        "proposal": proposal,
+        "claude_read": asdict(read) if read is not None else None,
+        "chart": _chart_bundle(snap), "chain": _chain_rows(case["chain"], snap.spot),
+        "macro": None, "oi_summary": case["oi"], "notes": snap.notes,
+        "outcome": your, "matrix": cell, "process_grade": f"training_{action}",
+    }
+    try:
+        store.save_decision(payload, path=JOURNAL_DB)
+    except Exception:
+        pass
+    return {"action": action, "direction": direction, "entry": entry,
+            "your_levels": your_levels, "your_outcome": your,
+            "engine_outcome": engine, "cell": cell,
+            "claude": asdict(read) if read is not None else None}

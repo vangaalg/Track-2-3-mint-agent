@@ -133,3 +133,39 @@ def build_snapshot(
         instrument=instrument, ts=ts, spot=spot, frames=frames, feats=feats,
         chart_read=read, oi=oi, macro=macro, notes=notes,
     )
+
+
+def build_snapshot_at(
+    instrument: str,
+    base_1m: pd.DataFrame,
+    daily: pd.DataFrame,
+    target_ts,
+    **kw,
+) -> Snapshot:
+    """Reconstruct the snapshot AS-OF a past timestamp with no future leakage.
+
+    Truncates the 1-minute base to ``index <= target_ts`` and rebuilds the daily
+    series as *completed prior sessions + a partial bar for the target session*
+    (built from the truncated intraday) — exactly what the live loop would have held
+    at that moment, so today's full-day close never leaks into the daily-based
+    regime. The causal indicator/resample stack does the rest. Used by the training
+    replay to drive the as-of chart and Claude's read.
+    """
+    t = pd.Timestamp(target_ts)
+    base = base_1m[base_1m.index <= t]
+    prior = daily[daily.index.normalize() < t.normalize()]
+    day_bars = base[base.index.normalize() == t.normalize()]
+    if not day_bars.empty:
+        vol = day_bars["volume"].sum() if "volume" in day_bars else 0
+        # match the daily series' tz dtype exactly so the concat stays a DatetimeIndex
+        tz = daily.index.tz
+        day0 = (t.tz_convert(tz) if tz is not None else t).normalize()
+        partial = pd.DataFrame(
+            {"open": day_bars["open"].iloc[0], "high": day_bars["high"].max(),
+             "low": day_bars["low"].min(), "close": day_bars["close"].iloc[-1],
+             "volume": vol},
+            index=pd.DatetimeIndex([day0], name=daily.index.name))
+        d = pd.concat([prior, partial])
+    else:
+        d = prior
+    return build_snapshot(instrument, base, d, **kw)
