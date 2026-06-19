@@ -103,6 +103,7 @@ def build_snapshot(
     oi_fetch_fn: Callable | None = None,
     macro_quote_fn: Callable | None = None,
     macro_symbols: dict | None = None,
+    macro: dict | None = None,
 ) -> Snapshot:
     """Assemble the snapshot from already-pulled 1m + daily frames.
 
@@ -123,9 +124,10 @@ def build_snapshot(
     oi = fetch_oi(instrument, spot, oi_fetch_fn, errors=notes)
     if oi is None and oi_fetch_fn is None:
         notes.append("oi: no fetcher configured")
-    macro = fetch_macro(symbols=macro_symbols, quote_fn=macro_quote_fn, errors=notes)
-    if macro is None and macro_quote_fn is None:
-        notes.append("macro: no fetcher configured")
+    if macro is None:  # pre-fetched override skips the call (live loop throttles it)
+        macro = fetch_macro(symbols=macro_symbols, quote_fn=macro_quote_fn, errors=notes)
+        if macro is None and macro_quote_fn is None:
+            notes.append("macro: no fetcher configured")
 
     return Snapshot(
         instrument=instrument, ts=ts, spot=spot, frames=frames, feats=feats,

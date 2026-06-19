@@ -19,12 +19,16 @@ import pandas as pd
 _CHAIN_COLUMNS = ("strike", "call_oi", "put_oi")
 
 
-def summarise_chain(chain: pd.DataFrame, spot: float) -> dict:
+def summarise_chain(chain: pd.DataFrame, spot: float, atm_window: float = 600.0) -> dict:
     """Reduce an option-chain frame to the OI context the read uses.
 
     Returns ``pcr`` (total put_oi / call_oi), ``call_wall`` / ``put_shelf`` (the
     strikes with the most call / put OI — the ceiling / floor), ``max_pain`` (the
     strike minimising total intrinsic payout to option buyers), and the ATM strike.
+
+    Walls are picked **within ``atm_window`` points of spot** so the result is the
+    near-money ceiling/floor the trader watches, not a far positional strike that
+    happens to carry the most OI (e.g. a 25,000 LEAP-style strike).
     """
     missing = [c for c in _CHAIN_COLUMNS if c not in chain.columns]
     if missing:
@@ -32,10 +36,12 @@ def summarise_chain(chain: pd.DataFrame, spot: float) -> dict:
     c = chain.sort_values("strike").reset_index(drop=True)
 
     pcr = float(c["put_oi"].sum() / c["call_oi"].sum()) if c["call_oi"].sum() else float("nan")
-
-    call_wall = c.loc[c["call_oi"].idxmax()]
-    put_shelf = c.loc[c["put_oi"].idxmax()]
     atm = float(c.iloc[(c["strike"] - spot).abs().idxmin()]["strike"])
+
+    near = c[(c["strike"] - spot).abs() <= atm_window]
+    near = near if not near.empty else c            # fall back if window too tight
+    call_wall = near.loc[near["call_oi"].idxmax()]
+    put_shelf = near.loc[near["put_oi"].idxmax()]
 
     return {
         "pcr": pcr,

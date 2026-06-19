@@ -134,10 +134,15 @@ agent:
 # option chain (PCR/walls/max-pain); macro = Twelve Data globals + Breeze India
 # VIX. The dashboard wires these from env creds (BREEZE_*, TWELVEDATA_API_KEY).
 feeds:
+  refresh:
+    chart_secs: 30              # dashboard auto-refreshes the chart this often (live)
+    oi_secs: 300               # option chain + macro re-pulled every 5 min (heavier)
   oi:
     # Breeze option-chain expiry weekday (Mon=0..Sun=6). NSE Nifty weekly expiry
     # is now TUESDAY (=1); it was Thursday until a few months ago. Verify yours.
     expiry_weekday: 1
+    atm_window: 600            # walls picked within ± this many points of spot
+    viz_strikes: 8             # ± strikes shown in the chain visualization
   macro:
     # scorecard sources live in feeds/td_macro.py: crude (WTI/USD), USD/INR,
     # US30/Dow (DJI), Nasdaq (IXIC) via Twelve Data; India VIX via Breeze.

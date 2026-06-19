@@ -18,25 +18,39 @@ from loaders.breeze import get_breeze_client
 
 
 def merge_chain(call_rows: list[dict], put_rows: list[dict]) -> pd.DataFrame:
-    """Merge Breeze call/put rows into the canonical chain frame."""
-    def _oi(rows):
+    """Merge Breeze call/put rows into the canonical chain frame.
+
+    Columns: ``strike, call_oi, put_oi, call_ltp, put_ltp`` — OI for the analysis
+    layer, LTP for the per-strike visualization.
+    """
+    def _index(rows):
         out = {}
         for r in rows:
             try:
-                out[float(r["strike_price"])] = float(r.get("open_interest") or 0)
+                k = float(r["strike_price"])
             except (KeyError, TypeError, ValueError):
                 continue
+            out[k] = (float(r.get("open_interest") or 0), _f(r.get("ltp")))
         return out
 
-    calls, puts = _oi(call_rows), _oi(put_rows)
+    calls, puts = _index(call_rows), _index(put_rows)
     strikes = sorted(set(calls) | set(puts))
     return pd.DataFrame(
         {
             "strike": strikes,
-            "call_oi": [calls.get(s, 0.0) for s in strikes],
-            "put_oi": [puts.get(s, 0.0) for s in strikes],
+            "call_oi": [calls.get(s, (0.0, None))[0] for s in strikes],
+            "put_oi": [puts.get(s, (0.0, None))[0] for s in strikes],
+            "call_ltp": [calls.get(s, (0.0, None))[1] for s in strikes],
+            "put_ltp": [puts.get(s, (0.0, None))[1] for s in strikes],
         }
     )
+
+
+def _f(x):
+    try:
+        return None if x in (None, "") else float(x)
+    except (TypeError, ValueError):
+        return None
 
 
 def nearest_weekly(weekday: int = 3, today: date | None = None) -> date:

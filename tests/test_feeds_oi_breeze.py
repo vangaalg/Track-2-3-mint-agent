@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import pandas as pd
 import pytest
 
 from feeds.breeze_oi import merge_chain, nearest_weekly, make_chain_fetcher
@@ -23,6 +24,29 @@ def test_merge_chain_aligns_calls_and_puts():
     s = summarise_chain(df, spot=24010.0)
     assert s["call_wall"]["strike"] == 24100.0
     assert s["put_shelf"]["strike"] == 24000.0
+
+
+def test_merge_chain_keeps_ltp():
+    calls = [{"strike_price": "24000", "open_interest": "50", "ltp": "120.5"}]
+    puts = [{"strike_price": "24000", "open_interest": "70", "ltp": "72.35"}]
+    df = merge_chain(calls, puts)
+    row = df.loc[df["strike"] == 24000.0].iloc[0]
+    assert row["call_ltp"] == 120.5 and row["put_ltp"] == 72.35
+
+
+def test_summarise_chain_wall_within_atm_window():
+    # Near call peak at 24,000; far positional spike at 25,000 must NOT win.
+    strikes = [float(s) for s in range(23800, 25001, 50)]
+    df = pd.DataFrame({
+        "strike": strikes,
+        "call_oi": [200.0 if s == 25000 else (90.0 if s == 24000 else 10.0) for s in strikes],
+        "put_oi": [80.0 if s == 23900 else 10.0 for s in strikes],
+        "call_ltp": [None] * len(strikes),
+        "put_ltp": [None] * len(strikes),
+    })
+    s = summarise_chain(df, spot=24042.0, atm_window=600)
+    assert s["call_wall"]["strike"] == 24000.0     # not the far 25,000 spike
+    assert s["put_shelf"]["strike"] == 23900.0
 
 
 def test_nearest_weekly_thursday():

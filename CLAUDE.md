@@ -142,6 +142,14 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       GIFT best-effort). Shared `loaders.breeze.get_breeze_client`. STAND-DOWN
       panel now reads clearly. Mocked tests: test_agent_chat / test_feeds_oi_breeze
       / test_feeds_macro_td.
+- [x] **Live dashboard + option-chain viz + decoupled Claude:** `st.fragment`
+      auto-refresh (chart ~30s, OI/macro ~5min, time-bucket caches); per-strike
+      OI mirrored bar chart + LTP table (Altair); `summarise_chain` walls picked
+      within an ATM window (fixes far-strike wall bug); Claude runs only on a
+      Trade-1 ENTER trigger (deduped per bar) or the manual "Analyse" button —
+      not every tick. Expiry confirmed TUESDAY (weekday=1). `merge_chain` carries
+      LTP; `build_snapshot` accepts a pre-fetched `macro`. Tests in
+      tests/test_feeds_oi_breeze.py.
 - [ ] Phase 2 — broaden data further (all TFs/feeds MODELLED into the signal,
       caching/scheduling); confirm Breeze expiry weekday + GIFT source live.
 - [ ] Phase 3 — Trade 2/3 buckets + Stage-2 levels (real calibration).
