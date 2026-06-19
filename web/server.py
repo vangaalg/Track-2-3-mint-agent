@@ -25,6 +25,7 @@ from feeds.oi import chain_table
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from analysis.trade1 import propose_trade1
+from analysis.triggers import replay_today
 from analysis.proposal import Recommendation
 from agent.memory import load_decisions, distill_memory
 from agent.read import claude_read
@@ -152,6 +153,14 @@ def snapshot(symbol: str = "NIFTY", size: int = DEFAULT_SIZE):
         and _state.get("analysed_bar") != _state["snap"].ts
     )
     return payload
+
+
+@app.get("/api/triggers")
+def triggers(size: int = DEFAULT_SIZE):
+    if _state["snap"] is None:
+        raise HTTPException(status_code=409, detail="no snapshot yet")
+    snap = _state["snap"]
+    return replay_today(snap.feats, snap.frames, size_lots=size)
 
 
 @app.post("/api/analyse")

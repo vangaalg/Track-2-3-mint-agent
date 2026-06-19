@@ -40,6 +40,40 @@ def _round_strike(x: float) -> int:
     return int(round(x / STRIKE_STEP) * STRIKE_STEP)
 
 
+def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = None):
+    """Place stop & target for a Trade-1 entry from chart structure (+ OI walls).
+
+    Reusable by both ``propose_trade1`` (latest bar) and ``analysis.triggers``
+    (per-bar replay). ``levels`` is the chart-read levels dict (ema_45, supertrend,
+    cpr_*); ``oi`` optionally adds the call wall / put shelf. Returns
+    ``(stop, target, rr)`` — target falls back to an R-multiple when no structural
+    level lies ahead.
+    """
+    oi = oi or {}
+    long = direction == "long"
+    supports = [levels.get("ema_45"), levels.get("supertrend"),
+                levels.get("cpr_bc"), levels.get("cpr_pivot")]
+    resists = [levels.get("cpr_tc"), levels.get("cpr_pivot")]
+    if oi.get("call_wall"):
+        resists.append(oi["call_wall"]["strike"])
+    if oi.get("put_shelf"):
+        supports.append(oi["put_shelf"]["strike"])
+
+    if long:
+        stop = _nearest_below(entry, supports)
+        target = _nearest_above(entry, resists)
+    else:
+        stop = _nearest_above(entry, resists)
+        target = _nearest_below(entry, supports)
+
+    risk = abs(entry - stop) if stop is not None else None
+    if target is None and risk:
+        target = entry + R_MULTIPLE * risk * (1 if long else -1)
+    reward = abs(target - entry) if target is not None else None
+    rr = round(reward / risk, 2) if (risk and reward) else None
+    return stop, target, rr
+
+
 def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposal:
     """Build a Trade-1 proposal from a ``feeds.snapshot.Snapshot``."""
     read = snapshot.chart_read
@@ -61,29 +95,11 @@ def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposa
         return TradeProposal(recommendation=rec, reasons=reasons, **base)
 
     long = direction == "long"
-    supports = [lv.get("ema_45"), lv.get("supertrend"), lv.get("cpr_bc"), lv.get("cpr_pivot")]
-    resists = [lv.get("cpr_tc"), lv.get("cpr_pivot")]
-    if oi.get("call_wall"):
-        resists.append(oi["call_wall"]["strike"])
-    if oi.get("put_shelf"):
-        supports.append(oi["put_shelf"]["strike"])
-
     entry = spot
-    if long:
-        stop = _nearest_below(spot, supports)
-        target = _nearest_above(spot, resists)
-    else:
-        stop = _nearest_above(spot, resists)
-        target = _nearest_below(spot, supports)
+    stop, target, rr = trade1_levels(direction, entry, lv, oi)
 
-    # Fall back to an R-multiple target when no structural level lies ahead.
     risk_pts = abs(entry - stop) if stop is not None else None
-    if target is None and risk_pts:
-        target = entry + R_MULTIPLE * risk_pts * (1 if long else -1)
-
-    reward_pts = abs(target - entry) if target is not None else None
     rupee_risk = round(risk_pts * LOT_SIZE * size_lots, 2) if risk_pts else None
-    rr = round(reward_pts / risk_pts, 2) if (risk_pts and reward_pts) else None
 
     right = "CE" if long else "PE"
     strike = _round_strike(spot - ITM_OFFSET) if long else _round_strike(spot + ITM_OFFSET)

@@ -99,3 +99,11 @@ def test_decision_logs(client, tmp_path, monkeypatch):
 
 def test_analyse_without_snapshot_409(client):
     assert client.post("/api/analyse").status_code == 409
+
+
+def test_triggers_endpoint_shape(client):
+    client.get("/api/snapshot")
+    d = client.get("/api/triggers").json()
+    assert set(d) >= {"session", "triggers", "last", "summary"}
+    assert set(d["summary"]) >= {"n", "wins", "losses", "open", "net_points", "net_rupees"}
+    assert isinstance(d["triggers"], list)

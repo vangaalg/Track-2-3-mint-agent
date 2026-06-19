@@ -1,5 +1,5 @@
 "use strict";
-const SYMBOL = "NIFTY", SIZE = 75, POLL_MS = 15000, CHART_STRIKES = 12;
+const SYMBOL = "NIFTY", SIZE = 75, POLL_MS = 15000, CHART_STRIKES = 8;
 const $ = (id) => document.getElementById(id);
 const n = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? "—" : Number(x).toFixed(d);
 const lakh = (x) => (x === null || x === undefined) ? "—" : (x / 1e5).toFixed(2);
@@ -14,6 +14,7 @@ async function poll() {
     $("dot").className = "dot live";
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderChart(d); renderOI(d); renderProposal(d.proposal);
+    fetchTriggers();
     // auto-analyse once per new ENTER bar
     if (d.auto_trigger && d.ts !== lastBar && !analysing) { lastBar = d.ts; analyse(); }
   } catch (e) {
@@ -101,6 +102,41 @@ function renderRead(rd) {
     + `<p><b>📈 Chart:</b> ${rd.chart_analysis}</p><p><b>🧮 OI:</b> ${rd.oi_analysis}</p>`
     + `<p><b>🧭 Where:</b> ${rd.where_moving}</p><p><b>🎯 Trade:</b> ${rd.right_trade}</p>`
     + `<p><b>⚔️ Challenge:</b> ${rd.challenge}</p><p><b>⚠️ Risk:</b> ${rd.key_risk}</p>`;
+}
+
+async function fetchTriggers() {
+  try {
+    const d = await (await fetch(`/api/triggers?size=${SIZE}`)).json();
+    renderTriggers(d);
+  } catch (e) { /* keep last */ }
+}
+
+function renderTriggers(d) {
+  const s = d.summary || {}, last = d.last;
+  if (last) {
+    const dir = last.direction.toUpperCase(), oc = last.outcome;
+    const t = last.ts.slice(11, 16);
+    $("trigLast").className = "trig-last " + oc;
+    $("trigLast").innerHTML = `Last trigger ${t} · <b>${dir}</b> @ ${last.entry} `
+      + `→ stop ${last.stop} / target ${last.target} · <b>${oc.toUpperCase()}</b> `
+      + `${last.points >= 0 ? "+" : ""}${last.points} pts (${last.rupees >= 0 ? "+" : ""}₹${last.rupees})`;
+  } else {
+    $("trigLast").className = "trig-last";
+    $("trigLast").textContent = `No triggers yet today (${d.session || "—"}).`;
+  }
+  $("trigSummary").innerHTML = `${s.n || 0} triggers · ${s.wins || 0}W / ${s.losses || 0}L / ${s.open || 0} open`
+    + ` · net <b class="${s.net_points >= 0 ? "win-txt" : "loss-txt"}">${s.net_points >= 0 ? "+" : ""}${s.net_points || 0} pts `
+    + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees || 0})</b> if all taken`
+    + (s.hit_rate != null ? ` · hit-rate ${(s.hit_rate * 100).toFixed(0)}%` : "");
+  let h = "<thead><tr><th>Time</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th>"
+    + "<th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>";
+  for (const t of (d.triggers || [])) {
+    h += `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.direction}</td><td>${t.entry}</td>`
+      + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>`
+      + `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`
+      + `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td></tr>`;
+  }
+  $("trigTbl").innerHTML = h + "</tbody>";
 }
 
 async function analyse() {
