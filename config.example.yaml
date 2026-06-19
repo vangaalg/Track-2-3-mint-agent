@@ -121,3 +121,11 @@ execution:
   default_size_lots: 75
   live: false                   # dashboard toggle default; live also needs EXECUTION_LIVE=1
   # Breeze order key must be Trade+View with WITHDRAW DISABLED (SEBI non-algo).
+
+# Claude reasoning + sparring layer (agent/). Reads the snapshot + proposal and
+# challenges the trade like the journal does, then feeds the decision log back as
+# memory (the learning loop). Needs an Anthropic API key in the environment:
+#   ANTHROPIC_API_KEY=...   (separate from a Claude.ai chat subscription)
+agent:
+  enabled: true                 # dashboard "Claude sparring" toggle default
+  model: claude-opus-4-8

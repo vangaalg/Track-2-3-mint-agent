@@ -39,6 +39,9 @@ config.example.yaml   copy to config.yaml (gitignored) and edit
 feeds/        snapshot.py (multi-TF ladder + chart read), oi.py, macro.py
 analysis/     proposal.py (TradeProposal), trade1.py (directional bucket),
               discipline.py (six-line gate). Machine A read + Machine B levels.
+agent/        Claude sparring layer (claude-opus-4-8): read.py (claude_read +
+              injectable completer), prompt.py, memory.py (learning loop),
+              SPARRING_PROMPT.md (the constitution). Needs ANTHROPIC_API_KEY.
 execution/    breeze_exec.py — PROPOSE-ONLY Breeze adapter (dry-run default)
 dashboard/    app.py — Streamlit one-pane: snapshot + proposal + Approve/Reject
 journal/      log.py — append-only decision log (results/decisions.jsonl)
@@ -123,6 +126,13 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       Decisions confirmed with user: monorepo, thin-slice-first, Breeze+TwelveData+
       NSE feeds, Breeze execution. Tested (mocked) in tests/test_feeds_snapshot.py,
       test_analysis_trade1.py, test_breeze_exec.py.
+- [x] **Claude reasoning + sparring layer (`agent/`):** claude_read (Anthropic
+      SDK, claude-opus-4-8, structured output; injectable completer) reads the
+      snapshot + deterministic proposal against SPARRING_PROMPT.md (journal
+      constitution) and challenges the trade → ENTER/STAND_DOWN; `agent.memory`
+      distills results/decisions.jsonl back into the system prompt (the learning
+      loop). Wired into the dashboard (sidebar toggle). Tested offline (mocked
+      completer) in tests/test_agent_read.py. Needs ANTHROPIC_API_KEY (live).
 - [ ] Phase 2 — broaden data (all feeds/TFs; OI+macro MODELLED, not just shown).
 - [ ] Phase 3 — Trade 2/3 buckets + Stage-2 levels (real calibration).
 - [ ] Phase 4 — harden Breeze live order path + journal/grading loop.

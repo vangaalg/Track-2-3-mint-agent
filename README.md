@@ -148,10 +148,19 @@ the SEBI non-algo, human-in-the-loop constraint).
 ```
 feeds/      one market SNAPSHOT (multi-TF OHLCV + OI + macro)
 analysis/   chart read + Trade-1 rulebook + the six-line discipline gate
+agent/      Claude (claude-opus-4-8) reads + challenges the trade, learns from the log
 execution/  propose-only Breeze order adapter (dry-run by default)
-dashboard/  Streamlit one pane: snapshot + proposal + Approve / Reject
+dashboard/  Streamlit one pane: snapshot + proposal + Claude's read + Approve / Reject
 journal/    append-only decision log (results/decisions.jsonl)
 ```
+
+The **`agent/` layer is the sparring partner**: the deterministic engine pins the
+numbers (entry/stop/target, the six-line gate), and Claude reads them against the
+journal, challenges the bias that loses money, and recommends ENTER / STAND-DOWN —
+then the decision log is distilled back into its system prompt as memory (the
+learning loop). It needs an Anthropic API key (separate from a Claude.ai chat
+plan): `set ANTHROPIC_API_KEY=...` before launching. Toggle it off in the sidebar
+to run engine-only.
 
 Run locally (Breeze creds in the env, as above):
 

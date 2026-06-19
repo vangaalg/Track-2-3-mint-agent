@@ -14,5 +14,8 @@ breeze-connect>=1.0.59     # ICICI Breeze SDK — Indian instruments (loaders/br
 # Live agent dashboard (Phase 1 slice — propose & approve):
 streamlit>=1.30            # dashboard/app.py (local one-pane approval UI)
 
+# Claude reasoning + sparring layer (agent/) — needs ANTHROPIC_API_KEY:
+anthropic>=0.40            # official SDK; model claude-opus-4-8
+
 # Dev / testing:
 # pytest>=7.0

@@ -19,7 +19,9 @@ from feeds.snapshot import build_snapshot
 from analysis.trade1 import propose_trade1
 from analysis.proposal import Recommendation
 from execution import breeze_exec
-from journal.log import log_decision
+from journal.log import log_decision, DEFAULT_LOG
+from agent.memory import load_decisions, distill_memory
+from agent.read import claude_read
 
 ANCHOR = "9h15min"
 
@@ -43,10 +45,20 @@ def main() -> None:
         size_lots = st.slider("Size (lots)", 65, 130, 75, step=5)
         live = st.toggle("Live execution (else dry-run)", value=False)
         st.caption("Live also needs EXECUTION_LIVE=1 in the environment.")
+        spar = st.toggle("Claude sparring (ANTHROPIC_API_KEY)", value=True)
         if st.button("Refresh snapshot & propose", type="primary"):
             base_min, daily = _pull(symbol)
             snap = build_snapshot(symbol, base_min, daily, anchor=ANCHOR)
-            st.session_state["proposal"] = propose_trade1(snap, size_lots)
+            prop = propose_trade1(snap, size_lots)
+            st.session_state["proposal"] = prop
+            st.session_state["claude_read"] = None
+            st.session_state["claude_error"] = None
+            if spar:
+                try:
+                    memory = distill_memory(load_decisions(DEFAULT_LOG))
+                    st.session_state["claude_read"] = claude_read(snap, prop, memory)
+                except Exception as exc:  # missing key / network / SDK
+                    st.session_state["claude_error"] = str(exc)
 
     prop = st.session_state.get("proposal")
     if prop is None:
@@ -75,6 +87,24 @@ def main() -> None:
         st.metric("R:R", prop.rr_ratio)
         st.metric("Approx ₹ risk", prop.rupee_risk)
         st.write(f"**Vehicle:** {prop.vehicle}")
+
+    st.divider()
+    st.subheader("🤖 Claude's read & challenge")
+    read = st.session_state.get("claude_read")
+    err = st.session_state.get("claude_error")
+    if err:
+        st.warning(f"Claude sparring unavailable: {err}")
+    elif read is None:
+        st.caption("Claude sparring is off, or no read yet.")
+    else:
+        verdict = "ENTER" if read.enter else "STAND DOWN"
+        agree = "agrees with" if read.agrees_with_engine else "DISAGREES with"
+        (st.success if read.enter else st.error)(
+            f"Claude: {verdict}  ·  {agree} the engine  ·  confidence {read.confidence}/5"
+        )
+        st.write(f"**Thesis:** {read.thesis}")
+        st.write(f"**Challenge:** {read.challenge}")
+        st.write(f"**Key risk:** {read.key_risk}")
 
     st.divider()
     if prop.recommendation is Recommendation.ENTER:
