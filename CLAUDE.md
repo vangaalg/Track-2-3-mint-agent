@@ -170,11 +170,16 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       (2x2 cells). Decided with user: grade by PROCESS+outcome, not P&L. Tested in
       tests/test_outcomes.py + test_web_server.py.
 
+- [x] **Self-improving loop — Phase 2 (OI data flywheel):** `feeds.oi_store`
+      (parquet snapshot store: save/list/load_nearest under data/oi/<symbol>/) +
+      live logging wired into `web.server` (persists each fresh chain). 7-day
+      backfill in `feeds.oi_backfill` — pure `assemble_day` (per-strike OI series →
+      chain snapshots on a time grid) + paced Breeze `get_historical_data_v2`
+      per-strike pull + CLI (`python -m feeds.oi_backfill --days 7`). Chart is NOT
+      stored (re-pullable from Breeze history). Tested in tests/test_oi_store.py;
+      live backfill verified by user. data/oi/ gitignored.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
-- [ ] **Self-improving loop — Phase 2:** OI/chart snapshot LOGGER (persist every
-      fetched chain+chart from now) + **reconstruct last ~7 days of OI** from Breeze
-      per-strike historical `open_interest` (paced backfill, cached to disk) — the
-      data behind training mode.
 - [ ] **Self-improving loop — Phase 3:** TRAINING MODE — replay past triggers,
       show chart+OI as-it-was, trader labels take/skip → enriches the learning
       memory/trader-profile.

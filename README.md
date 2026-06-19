@@ -183,6 +183,14 @@ streamlit run dashboard/app.py
 Both reuse the same engine and need the same env (`BREEZE_*`,
 `TWELVEDATA_API_KEY`, `ANTHROPIC_API_KEY`).
 
+**OI history (for training mode):** the cockpit logs every option chain to
+`data/oi/` automatically. To seed the last week of history, run the one-time
+backfill (paced; many Breeze calls):
+
+```bash
+python -m feeds.oi_backfill --days 7        # reconstruct ~7 days of chain OI
+```
+
 Pick a size, press **Refresh snapshot & propose**, read the agent's recommendation
 (ENTER / STAND-DOWN) and reasons, then **Approve** (dry-run unless live) or
 **Reject** (a logged no-trade — a good decision). This is the thin first slice;

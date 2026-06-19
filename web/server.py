@@ -24,6 +24,7 @@ from feeds.breeze_oi import make_chain_fetcher
 from feeds.oi import chain_table
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
+from feeds import oi_store
 from analysis.trade1 import propose_trade1
 from analysis.triggers import replay_today
 from analysis.proposal import Recommendation
@@ -39,6 +40,7 @@ EXPIRY_WEEKDAY = 1
 VIZ_POINTS = 1000
 PULL_TTL = 60          # chart/snapshot re-pull cadence (s)
 OI_TTL = 300           # option chain + macro cadence (s)
+LOG_OI = True          # persist each fresh chain to feeds.oi_store (the flywheel)
 DEFAULT_SIZE = 75
 _STATIC = Path(__file__).parent / "static"
 
@@ -105,6 +107,14 @@ def _refresh(symbol: str, size: int) -> None:
         _state["snap"] = snap
         _state["prop"] = propose_trade1(snap, size)
         _state["snap_at"] = now
+        # log the chain snapshot (the OI flywheel) once per fresh OI bucket
+        if LOG_OI and chain is not None and not chain.empty \
+                and _state.get("oi_logged_at") != _state["oi_at"]:
+            try:
+                oi_store.save_chain(symbol, snap.ts, snap.spot, chain)
+                _state["oi_logged_at"] = _state["oi_at"]
+            except Exception:
+                pass
 
 
 def _payload(symbol: str) -> dict:

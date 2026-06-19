@@ -15,6 +15,7 @@ config.yaml
 data/*.csv
 data/*.parquet
 data/*.feather
+data/oi/                 # logged + backfilled option-chain OI snapshots
 
 # Results — keep human-readable reports, drop raw dumps.
 results/*.csv
