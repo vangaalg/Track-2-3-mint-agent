@@ -13,16 +13,34 @@ async function loadList() {
   try {
     const d = await (await fetch(`/api/train/triggers?symbol=${SYMBOL}&days=8`)).json();
     TRIGGERS = d.triggers || [];
-    $("progress").textContent = `${TRIGGERS.length} triggers · last ${d.days} days`;
+    refreshProgress(d.days);
     if (TRIGGERS.length) nextTrigger();
     else $("trigMeta").textContent = "No triggers found in the window.";
   } catch (e) { $("progress").textContent = "error: " + e.message; }
 }
 
+function refreshProgress(days) {
+  const left = TRIGGERS.filter((t) => !t.answered).length;
+  $("progress").textContent = `${left} of ${TRIGGERS.length} triggers left · last ${days || 7} days`;
+}
+
 function nextTrigger() {
-  if (!TRIGGERS.length) return;
-  curTid = TRIGGERS[Math.floor(Math.random() * TRIGGERS.length)].tid;
+  // walk the UNANSWERED triggers chronologically — never re-ask an answered one
+  const pending = TRIGGERS.filter((t) => !t.answered);
+  if (!pending.length) {
+    $("trigMeta").innerHTML = "✅ <b>All triggers answered</b> — pull a longer window for more.";
+    $("takeForm").style.display = "none"; $("revealBox").hidden = true;
+    refreshProgress();
+    return;
+  }
+  curTid = pending[0].tid;
   loadCase();
+}
+
+function markAnswered(tid) {
+  const t = TRIGGERS.find((x) => x.tid === tid);
+  if (t) t.answered = true;
+  refreshProgress();
 }
 
 async function loadCase() {
@@ -129,8 +147,9 @@ async function answer(action) {
   const r = await fetch("/api/train/answer", { method: "POST", body: fd });
   const d = await r.json();
   if (!r.ok) { $("formMsg").textContent = d.detail || "error"; return; }
+  markAnswered(curTid);
   renderReveal(d);
-  if (d.score) renderScore(d.score);
+  if (d.record) renderScore(d.record);
 }
 
 function _oc(o) {
@@ -146,6 +165,7 @@ const CELL_TXT = {
   avoided: ["🛡️ Avoided", "you skipped a loser — good discipline"],
   open: ["• Open", "never resolved intraday"],
 };
+const ROUND_TXT = { you: "🏆 You win the round", claude: "🤖 Claude wins the round", tie: "🤝 Tie" };
 function renderReveal(d) {
   $("takeForm").style.display = "none";
   const [lbl, sub] = CELL_TXT[d.cell] || [d.cell, ""];
@@ -154,29 +174,38 @@ function renderReveal(d) {
     ? `You <b>TOOK</b> it (entry ${d.your_levels.entry} · target ${d.your_levels.target} / stop ${d.your_levels.stop} · R:R ${d.rr ?? "—"}) → ${_oc(d.your_outcome)}`
     : `You <b>SKIPPED</b> it → would-be ${_oc(d.your_outcome)}`;
   const reasonLine = d.reason ? `<p class="muted">Your reason: ${d.reason}</p>` : "";
+  const vsLine = d.claude
+    ? `<p class="vs">You <b>${d.agree ? "AGREED" : "DISAGREED"}</b> with Claude · <b>${ROUND_TXT[d.round_winner] || ""}</b></p>`
+    : "";
   $("revealBox").hidden = false;
   $("revealBox").innerHTML =
     `<div class="reveal-cell ${d.cell}"><span class="rc-lbl">${lbl}</span><span class="rc-sub">${sub}</span></div>`
     + `<p>${youLine}</p>` + reasonLine
     + `<p>Engine levels → ${_oc(d.engine_outcome)} (target ${d.engine_outcome.target} / stop ${d.engine_outcome.stop} · R:R ${d.engine_outcome.rr ?? "—"})</p>`
-    + `<p>Claude had said: <b>${claude}</b></p>`
+    + `<p>Claude had said: <b>${claude}</b></p>` + vsLine
     + `<p class="muted small">Saved to the learning store (kind=training, 2 lots) — the agent will see this.</p>`
     + `<button id="next2" class="btn primary">Next trigger ▶</button>`;
   $("next2").onclick = nextTrigger;
 }
 
+const _pl = (p, rs) => `${p >= 0 ? "+" : ""}${p} pts (${rs >= 0 ? "+" : ""}₹${rs})`;
+const _pct = (x) => x == null ? "—" : `${Math.round(x * 100)}%`;
 function renderScore(s) {
-  if (!s || !s.n) { $("scoreboard").textContent = "Session P&L: no trades graded yet."; return; }
-  const cls = s.net_points >= 0 ? "win-txt" : "loss-txt";
-  const c = s.cells || {};
-  $("scoreboard").innerHTML = `Session P&L (${s.lots} lots): `
-    + `<b class="${cls}">${s.net_points >= 0 ? "+" : ""}${s.net_points} pts `
-    + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees})</b> · ${s.takes} taken `
-    + `(${s.wins}W / ${s.losses}L) · ${c.missed || 0} missed · ${c.avoided || 0} avoided`;
+  if (!s || !s.n) { $("scoreboard").textContent = "⚔️ Claude vs You — no rounds played yet."; return; }
+  const r = s.rounds || {}, you = s.you || {}, cl = s.claude || {};
+  const lead = r.you > r.claude ? "win-txt" : (r.claude > r.you ? "loss-txt" : "");
+  $("scoreboard").innerHTML =
+    `<div class="hh"><span class="hh-h">⚔️ Head-to-head</span> `
+    + `<b class="${lead}">Claude ${r.claude || 0} – ${r.you || 0} You</b> `
+    + `<span class="muted">(${r.ties || 0} ties · agreed ${s.agree || 0}/${(s.agree || 0) + (s.disagree || 0)})</span></div>`
+    + `<div class="hh-row">P&L (${s.lots} lots): Claude <b>${_pl(cl.net_points || 0, cl.net_rupees || 0)}</b> · `
+    + `You <b>${_pl(you.net_points || 0, you.net_rupees || 0)}</b></div>`
+    + `<div class="hh-row">Hit-rate: Claude <b>${_pct(cl.hit_rate)}</b> (${cl.correct || 0}/${(cl.correct || 0) + (cl.wrong || 0)}) · `
+    + `You <b>${_pct(you.hit_rate)}</b> (${you.correct || 0}/${(you.correct || 0) + (you.wrong || 0)})</div>`;
 }
 
 async function fetchScore() {
-  try { renderScore(await (await fetch("/api/train/score")).json()); } catch (e) { /* keep */ }
+  try { renderScore(await (await fetch("/api/train/record")).json()); } catch (e) { /* keep */ }
 }
 
 $("nextBtn").onclick = nextTrigger;

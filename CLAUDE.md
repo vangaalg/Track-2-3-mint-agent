@@ -227,6 +227,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     on the trader's entry/target/stop, **live R:R** in the form, fixed **2-lot** sizing
     (`TRAIN_LOTS=2`), and a **running cumulative P&L** scoreboard (`GET /api/train/score`,
     realized = taken trades). Tested in tests/test_training.py (18) + suite green (121).
+  - **Claude-vs-you head-to-head + dedup:** the game no longer re-asks an answered trigger —
+    `/api/train/triggers` flags `answered` (from store ts) and `train.js nextTrigger` walks
+    the UNANSWERED ones chronologically (done → "all answered"). Each trigger is now a scored
+    round: `train_answer` grades **Claude's** call too (ENTER=take/STAND_DOWN=skip, engine
+    levels) on the same 2×2 and stores `proposal.claude_eval`+`agree`; `GET /api/train/record`
+    (`_train_record`) tallies the head-to-head — **rounds won** (correct=deserved/avoided,
+    wrong=accept/missed; winner = one correct & other not, else tie), **net P&L** (2 lots,
+    realized=taken), and **hit-rate**, per side + agreement rate. Reveal shows agreed/
+    disagreed + round winner; header shows `Claude X – Y You` + P&L + hit-rate. Explained the
+    3-min trigger to the user (generic 6-voter confluence gated by HTF bias — NOT the journal
+    trio/confirmation; that alignment is a deferred STRATEGY decision). Tested in
+    tests/test_training.py (21) + suite green (124).
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

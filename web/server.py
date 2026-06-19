@@ -376,6 +376,11 @@ def _train_refresh(symbol: str, days: int) -> None:
                       at=now, cases={})
 
 
+def _answered_ts() -> set:
+    """Timestamps already answered in training (so the game stops re-asking them)."""
+    return {r.get("ts") for r in store.load_records(JOURNAL_DB, kind="training")}
+
+
 @app.get("/api/train/triggers")
 def train_triggers(symbol: str = "NIFTY", days: int = 8):
     """List every past 3-min trigger (NO levels/outcome — that's the game)."""
@@ -384,9 +389,11 @@ def train_triggers(symbol: str = "NIFTY", days: int = 8):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"training pull failed: {exc}")
     trigs = _train["triggers"] or []
+    answered = _answered_ts()
     return {"symbol": symbol, "days": days, "n": len(trigs),
             "triggers": [{"tid": t["tid"], "ts": t["ts"], "date": t["date"],
-                          "direction": t["direction"]} for t in trigs]}
+                          "direction": t["direction"], "answered": t["ts"] in answered}
+                         for t in trigs]}
 
 
 def _train_case(tid: int) -> dict:
@@ -506,9 +513,20 @@ def train_answer(tid: int = Form(...), action: str = Form(...),
     cell = grade_training(action, outcome)
 
     snap, read = case["snap"], case["read"]
+    # Claude's call graded on the same 2x2 (ENTER=take / STAND_DOWN=skip, engine levels)
+    claude_eval, agree, round_winner = None, None, None
+    if read is not None:
+        c_action = "take" if read.recommendation == "enter" else "skip"
+        c_cell = grade_training(c_action, engine["status"])
+        claude_eval = {"action": c_action, "status": engine["status"],
+                       "points": engine["points"], "rupees": engine["rupees"], "cell": c_cell}
+        agree = (c_action == action)
+        round_winner = _round_winner(cell, c_cell)
+
     proposal = case["prop"].as_dict()
     proposal = {**proposal, "direction": direction, "size_lots": TRAIN_LOTS,
-                "reason": reason.strip() or None}
+                "reason": reason.strip() or None,
+                "claude_eval": claude_eval, "agree": agree}
     if action == "take":
         proposal.update(entry=entry, stop=stop, target=target, rr_ratio=rr)
     payload = {
@@ -527,8 +545,67 @@ def train_answer(tid: int = Form(...), action: str = Form(...),
     return {"action": action, "direction": direction, "entry": entry, "rr": rr,
             "reason": reason.strip() or None, "your_levels": your_levels,
             "your_outcome": your, "engine_outcome": engine, "cell": cell,
+            "agree": agree, "round_winner": round_winner,
             "claude": asdict(read) if read is not None else None,
-            "score": _train_score()}
+            "score": _train_score(), "record": _train_record()}
+
+
+_CORRECT = {"deserved", "avoided"}     # took a winner / skipped a loser
+_WRONG = {"accept", "missed"}          # took a loser / skipped a winner
+
+
+def _round_winner(you_cell: str, claude_cell: str) -> str:
+    yc, cc = you_cell in _CORRECT, claude_cell in _CORRECT
+    if yc and not cc:
+        return "you"
+    if cc and not yc:
+        return "claude"
+    return "tie"
+
+
+def _tally(items: list[dict]) -> dict:
+    """Per-side training tally; realized P&L counts taken trades only."""
+    from collections import Counter
+    takes = [i for i in items if i["action"] == "take"]
+    correct = sum(1 for i in items if i["cell"] in _CORRECT)
+    wrong = sum(1 for i in items if i["cell"] in _WRONG)
+    return {"answered": len(items), "takes": len(takes),
+            "wins": sum(1 for i in takes if i["status"] == "win"),
+            "losses": sum(1 for i in takes if i["status"] == "loss"),
+            "net_points": round(sum(i["rp"] for i in items), 2),
+            "net_rupees": round(sum(i["rr"] for i in items), 0),
+            "correct": correct, "wrong": wrong,
+            "hit_rate": round(correct / (correct + wrong), 2) if (correct + wrong) else None,
+            "cells": dict(Counter(i["cell"] for i in items if i["cell"]))}
+
+
+def _train_record() -> dict:
+    """Claude-vs-you head-to-head from the store: rounds won, net P&L, hit-rate."""
+    recs = store.load_records(JOURNAL_DB, kind="training")
+    you_items, cl_items = [], []
+    rounds = {"you": 0, "claude": 0, "ties": 0}
+    agree = disagree = 0
+    for r in recs:
+        ya = "take" if r.get("decision") == "training_take" else "skip"
+        yo = r.get("outcome") or {}
+        yi = {"action": ya, "cell": r.get("matrix"), "status": yo.get("status"),
+              "rp": (yo.get("points", 0) or 0) if ya == "take" else 0,
+              "rr": (yo.get("rupees", 0) or 0) if ya == "take" else 0}
+        you_items.append(yi)
+        ce = (r.get("proposal") or {}).get("claude_eval")
+        if not ce:
+            continue
+        ca = ce.get("action")
+        ci = {"action": ca, "cell": ce.get("cell"), "status": ce.get("status"),
+              "rp": (ce.get("points", 0) or 0) if ca == "take" else 0,
+              "rr": (ce.get("rupees", 0) or 0) if ca == "take" else 0}
+        cl_items.append(ci)
+        agree, disagree = (agree + (ca == ya), disagree + (ca != ya))
+        rounds[{"you": "you", "claude": "claude", "tie": "ties"}[
+            _round_winner(yi["cell"], ci["cell"])]] += 1
+    return {"n": len(recs), "rounds": rounds, "agree": agree, "disagree": disagree,
+            "agree_rate": round(agree / (agree + disagree), 2) if (agree + disagree) else None,
+            "you": _tally(you_items), "claude": _tally(cl_items), "lots": TRAIN_LOTS}
 
 
 def _train_score() -> dict:
@@ -549,3 +626,8 @@ def _train_score() -> dict:
 @app.get("/api/train/score")
 def train_score():
     return _train_score()
+
+
+@app.get("/api/train/record")
+def train_record():
+    return _train_record()

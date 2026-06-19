@@ -93,8 +93,11 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .trigbar { margin:12px; }
 .trighead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
 .trigmeta { font-size:16px; font-weight:600; }
-.scoreboard { font-size:13px; margin:2px 0 6px; padding:6px 10px; background:var(--tile);
+.scoreboard { font-size:13px; margin:2px 0 6px; padding:8px 10px; background:var(--tile);
   border:1px solid var(--line); border-radius:8px; }
+.scoreboard .hh { font-size:15px; margin-bottom:3px; } .scoreboard .hh-h { margin-right:6px; }
+.scoreboard .hh-row { font-size:12.5px; color:var(--txt); }
+.reveal .vs { padding:6px 8px; background:var(--tile); border-radius:6px; }
 .takeform { margin-top:10px; border-top:1px solid var(--line); padding-top:10px; }
 .takeform .levels { display:flex; gap:12px; align-items:center; margin:8px 0; flex-wrap:wrap; }
 .takeform .levels label { font-size:12px; color:var(--muted); }

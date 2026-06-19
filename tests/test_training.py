@@ -212,6 +212,40 @@ def test_train_case_exposes_oi_age_fields(tclient):
     assert "oi_as_of" in d and "oi_age_min" in d            # present even when no snapshot
 
 
+def test_train_answer_records_claude_eval(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")
+    d = tclient.post("/api/train/answer",
+                     data={"tid": 0, "action": "skip", "entry": 24000.0}).json()
+    assert d["agree"] in (True, False)                       # Claude STAND_DOWN vs your skip
+    assert d["round_winner"] in ("you", "claude", "tie")
+    assert d["record"]["n"] == 1
+    ce = store.load_records(srv.JOURNAL_DB, kind="training")[0]["proposal"]["claude_eval"]
+    assert ce["action"] == "skip"                            # READ_COMPLETER → stand_down
+    assert ce["cell"] in ("deserved", "accept", "missed", "avoided", "open")
+
+
+def test_train_record_head_to_head(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")
+    tclient.post("/api/train/answer", data={"tid": 0, "action": "skip", "entry": 24000.0})
+    d = tclient.get("/api/train/record").json()
+    assert set(d) >= {"rounds", "you", "claude", "agree", "disagree", "lots"}
+    assert d["lots"] == 2
+    r = d["rounds"]
+    assert r["you"] + r["claude"] + r["ties"] == 1
+    assert d["you"]["answered"] == 1 and d["claude"]["answered"] == 1
+    assert d["agree"] + d["disagree"] == 1
+
+
+def test_train_triggers_answered_flag(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")
+    tclient.post("/api/train/answer", data={"tid": 0, "action": "skip", "entry": 24000.0})
+    d = tclient.get("/api/train/triggers").json()
+    assert d["triggers"][0]["answered"] is True              # no longer re-asked
+
+
 def test_load_nearest_max_age(tmp_path):
     from feeds import oi_store
     chain = pd.DataFrame({"strike": [24000.0], "call_oi": [1.0], "put_oi": [1.0],
