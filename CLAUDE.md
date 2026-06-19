@@ -30,10 +30,18 @@ loaders/      base.py (OHLCVLoader ABC + canonical contract), twelvedata.py,
 indicators/   engine.py (EMA/BB/RSI/MACD/3-min), timeframes.py (resample +
               no-lookahead align), directional.py (single-TF + MTF resolvers),
               DIRECTIONAL_SPEC.md (the spec)
-scoring/      stage1.py (directional-read scoring + MTF wiring, sweep loop TODO)
+scoring/      stage1.py (directional-read scoring + MTF wiring), validate_export.py
 tests/        test_mtf_smoke.py (resample, no-lookahead, MTF methods, e2e score)
-results/      score tables / reports
+results/      score tables / reports + decisions.jsonl (agent decision log)
 config.example.yaml   copy to config.yaml (gitignored) and edit
+
+# --- Live agent (Phase 1 slice — the end-to-end build, beyond Track 2) ---
+feeds/        snapshot.py (multi-TF ladder + chart read), oi.py, macro.py
+analysis/     proposal.py (TradeProposal), trade1.py (directional bucket),
+              discipline.py (six-line gate). Machine A read + Machine B levels.
+execution/    breeze_exec.py — PROPOSE-ONLY Breeze adapter (dry-run default)
+dashboard/    app.py — Streamlit one-pane: snapshot + proposal + Approve/Reject
+journal/      log.py — append-only decision log (results/decisions.jsonl)
 ```
 
 ## Multi-timeframe (confirmed with user)
@@ -105,4 +113,17 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       tests/test_engine_indicators.py.
 - [ ] Calibrate the provisional numeric thresholds against logged data (the
       register in JOURNAL_EXTRACTION.md lists every one).
+- [x] **Full-agent build — Phase 1 thin vertical slice (Nifty + Trade 1):**
+      monorepo expansion (feeds/ analysis/ execution/ dashboard/ journal/).
+      `feeds.build_snapshot` (multi-TF ladder 1m..month + chart read + injectable
+      OI/macro), `analysis.propose_trade1` (entry/stop/target/size/deep-ITM
+      vehicle) gated by `analysis.discipline` (six-line check → ENTER/STAND_DOWN),
+      `execution.breeze_exec.place` (PROPOSE-ONLY, dry-run unless live+EXECUTION_LIVE=1),
+      `dashboard/app.py` (Streamlit approve/reject), `journal.log_decision`.
+      Decisions confirmed with user: monorepo, thin-slice-first, Breeze+TwelveData+
+      NSE feeds, Breeze execution. Tested (mocked) in tests/test_feeds_snapshot.py,
+      test_analysis_trade1.py, test_breeze_exec.py.
+- [ ] Phase 2 — broaden data (all feeds/TFs; OI+macro MODELLED, not just shown).
+- [ ] Phase 3 — Trade 2/3 buckets + Stage-2 levels (real calibration).
+- [ ] Phase 4 — harden Breeze live order path + journal/grading loop.
 - [ ] Stage 2 (levels: entry/stop/target, R-multiple) on Stage-1 survivors.

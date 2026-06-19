@@ -135,6 +135,36 @@ Notes:
 - Each instrument is pulled once and cached to `data\*.parquet`; reruns are
   offline.
 
+## Run the live agent (Phase 1 slice — propose & approve)
+
+Beyond the batch breadth test, the repo now hosts the **end-to-end agent slice**:
+it sources a Nifty snapshot, analyses it, proposes a **Trade 1** (directional)
+with entry / stop / target / size / vehicle, and shows it on a dashboard where
+**you approve or reject every trade**. Nothing fires without your tap, and an
+approved order is **dry-run** unless you flip the live toggle *and* set
+`EXECUTION_LIVE=1` (the Breeze key must be Trade+View with **Withdraw disabled** —
+the SEBI non-algo, human-in-the-loop constraint).
+
+```
+feeds/      one market SNAPSHOT (multi-TF OHLCV + OI + macro)
+analysis/   chart read + Trade-1 rulebook + the six-line discipline gate
+execution/  propose-only Breeze order adapter (dry-run by default)
+dashboard/  Streamlit one pane: snapshot + proposal + Approve / Reject
+journal/    append-only decision log (results/decisions.jsonl)
+```
+
+Run locally (Breeze creds in the env, as above):
+
+```bash
+pip install -r requirements.txt        # now includes streamlit
+streamlit run dashboard/app.py
+```
+
+Pick a size, press **Refresh snapshot & propose**, read the agent's recommendation
+(ENTER / STAND-DOWN) and reasons, then **Approve** (dry-run unless live) or
+**Reject** (a logged no-trade — a good decision). This is the thin first slice;
+Trade 2/3, full OI/macro modelling, and the live order path land in later phases.
+
 ## Status
 
 Phase 1 in place and tested (`pytest -q`, 11 tests): indicator engine, MTF

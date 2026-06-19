@@ -110,3 +110,14 @@ instruments:
     symbol: "USD/INR"
     tz: Asia/Kolkata
     session_anchor: null        # 24x5 FX — no session anchor
+
+# --- Live agent (Phase 1 slice: feeds -> analysis -> propose -> approve) ------
+# The dashboard (dashboard/app.py) and the analysis/execution layers. Execution
+# is PROPOSE-ONLY: nothing fires without your tap, and an approved order is still
+# DRY-RUN unless `live` is on AND EXECUTION_LIVE=1 is set in the environment.
+execution:
+  lot_size: 75                  # NIFTY contract multiplier
+  normal_size_lots: [65, 130]   # the journal's discipline band
+  default_size_lots: 75
+  live: false                   # dashboard toggle default; live also needs EXECUTION_LIVE=1
+  # Breeze order key must be Trade+View with WITHDRAW DISABLED (SEBI non-algo).
