@@ -1,17 +1,15 @@
 """Breeze loader — Indian instruments (Nifty, Bank Nifty, Fin Nifty, F&O stocks).
 
-Real ICICI Direct **Breeze** historical-data pull, ported into the repo so the
-Indian instruments run without a separate ``breeze_pull.py`` script. Credentials
-come from the environment:
+Uses ICICI Direct's official **breeze-connect** SDK, which performs the daily
+session handshake (exchange the ``API_Session`` for a real session token via
+``generate_session``) and the checksum auth for us — the part a hand-rolled HTTP
+client gets wrong ("Invalid User Details"). Credentials come from the env:
 
-    BREEZE_API_KEY       (a.k.a. App Key)
-    BREEZE_API_SECRET    (a.k.a. Secret Key)
-    BREEZE_SESSION_TOKEN (the daily api-session token from the login flow)
+    BREEZE_API_KEY       (App Key)
+    BREEZE_API_SECRET    (Secret Key)
+    BREEZE_SESSION_TOKEN (the daily API_Session from the login flow — expires daily)
 
-Missing creds raise a clear ``RuntimeError`` so the Stage-1 sweep skips the
-instrument (global instruments still run). Live pulls happen on the user's local
-machine — this web env is egress-locked, so the HTTP call is exercised via a
-mocked ``requests`` in tests.
+Install the SDK:  ``pip install breeze-connect``
 
 Breeze has **no native 3-minute interval**, so a ``3min``/``3minute`` request
 pulls ``1minute`` bars and resamples to 3-min locally (midnight-anchored 3-min
@@ -23,9 +21,6 @@ no creds are configured but a pull function is supplied.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
 import os
 from datetime import date, datetime
 from typing import Callable
@@ -34,25 +29,22 @@ import pandas as pd
 
 from loaders.base import OHLCVLoader
 
-_BASE_URL = "https://api.icicidirect.com/breezeapi/api/v1"
-_HIST_ENDPOINT = f"{_BASE_URL}/historicalcharts"
-
-# Our canonical interval names -> Breeze interval strings. The live Breeze
-# historicalcharts API accepts only: minute, 5minute, 30minute, day. There is no
-# native 3min, so 3min is pulled as "minute" and resampled (see _fetch).
+# Our canonical interval names -> breeze-connect get_historical_data_v2 intervals.
+# The v2 endpoint accepts: 1second, 1minute, 5minute, 30minute, 1day. No native
+# 3min, so 3min is pulled as "1minute" and resampled (see _fetch).
 _INTERVAL_MAP = {
-    "minute": "minute",
-    "1minute": "minute",
-    "1min": "minute",
-    "3minute": "minute",    # resampled to 3min after the pull
-    "3min": "minute",
+    "minute": "1minute",
+    "1minute": "1minute",
+    "1min": "1minute",
+    "3minute": "1minute",   # resampled to 3min after the pull
+    "3min": "1minute",
     "5minute": "5minute",
     "5min": "5minute",
     "30minute": "30minute",
     "30min": "30minute",
-    "day": "day",
-    "1day": "day",
-    "1d": "day",
+    "day": "1day",
+    "1day": "1day",
+    "1d": "1day",
 }
 _RESAMPLE_TO_3MIN = {"3minute", "3min"}
 
@@ -79,13 +71,13 @@ class BreezeLoader(OHLCVLoader):
         self.exchange_code = exchange_code
         self.product_type = product_type
         self.tz = tz
+        self._breeze = None  # cached, session-authenticated SDK client
 
     # --- legacy hook ------------------------------------------------------- #
     def _resolve_pull_fn(self) -> Callable | None:
-        """Return an explicit/legacy pull function if one is available, else None.
+        """Return an explicit/legacy pull function if available, else None.
 
-        Used only as a fallback when API creds are absent; the primary path is
-        the native HTTP pull in ``_fetch``.
+        Used only when API creds are absent; the primary path is the SDK.
         """
         if self._pull_fn is not None:
             return self._pull_fn
@@ -99,22 +91,30 @@ class BreezeLoader(OHLCVLoader):
                 return fn
         return None
 
-    # --- HTTP auth --------------------------------------------------------- #
-    def _headers(self, body: str) -> dict:
-        """Breeze checksum auth headers for a given JSON body string."""
-        timestamp = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        raw = timestamp + body + self.api_secret
-        checksum = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-        token = base64.b64encode(
-            f"{self.api_key}:{self.session_token}".encode("utf-8")
-        ).decode("utf-8")
-        return {
-            "Content-Type": "application/json",
-            "X-Checksum": "token " + checksum,
-            "X-Timestamp": timestamp,
-            "X-AppKey": self.api_key,
-            "X-SessionToken": token,
-        }
+    # --- SDK session ------------------------------------------------------- #
+    def _session(self):
+        """Return a session-authenticated BreezeConnect client (cached)."""
+        if self._breeze is not None:
+            return self._breeze
+        try:
+            from breeze_connect import BreezeConnect
+        except ImportError as exc:
+            raise RuntimeError(
+                "BreezeLoader needs the official SDK: pip install breeze-connect"
+            ) from exc
+
+        client = BreezeConnect(api_key=self.api_key)
+        try:
+            client.generate_session(
+                api_secret=self.api_secret, session_token=self.session_token
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Breeze session failed — check BREEZE_SESSION_TOKEN is today's "
+                f"fresh API_Session and BREEZE_API_KEY/SECRET are correct: {exc}"
+            ) from exc
+        self._breeze = client
+        return client
 
     @staticmethod
     def _to_iso(value, end: bool) -> str:
@@ -132,50 +132,40 @@ class BreezeLoader(OHLCVLoader):
 
     # --- fetch ------------------------------------------------------------- #
     def _fetch(self, symbol: str, interval: str, start, end) -> pd.DataFrame:
-        breeze_interval = _INTERVAL_MAP.get(interval, interval)
+        sdk_interval = _INTERVAL_MAP.get(interval, interval)
 
-        if not (self.api_key and self.api_secret and self.session_token):
-            # Fall back to a legacy pull function if one is wired up.
+        if self.api_key and self.api_secret and self.session_token:
+            df = self._sdk_pull(symbol, sdk_interval, start, end)
+        else:
             legacy = self._resolve_pull_fn()
-            if legacy is not None:
-                df = legacy(symbol, interval, start, end)
-            else:
+            if legacy is None:
                 raise RuntimeError(
                     "BreezeLoader needs creds: set BREEZE_API_KEY, "
-                    "BREEZE_API_SECRET and BREEZE_SESSION_TOKEN (or pass them to "
-                    "BreezeLoader / provide pull_fn=...)."
+                    "BREEZE_API_SECRET and BREEZE_SESSION_TOKEN (or pass pull_fn=...)."
                 )
-        else:
-            df = self._http_pull(symbol, breeze_interval, start, end)
+            df = legacy(symbol, interval, start, end)
 
         if interval in _RESAMPLE_TO_3MIN:
             df = self._to_3min(df)
         return df
 
-    def _http_pull(self, symbol, breeze_interval, start, end) -> pd.DataFrame:
-        # Imported lazily so the package imports without `requests` installed.
-        import requests
-
-        body_dict = {
-            "interval": breeze_interval,
-            "from_date": self._to_iso(start, end=False),
-            "to_date": self._to_iso(end, end=True),
-            "stock_code": symbol,
-            "exchange_code": self.exchange_code,
-            "product_type": self.product_type,
-        }
-        body = json.dumps(body_dict, separators=(",", ":"))
-        resp = requests.get(  # Breeze reads the auth body from the request body
-            _HIST_ENDPOINT, data=body, headers=self._headers(body), timeout=30
+    def _sdk_pull(self, symbol, sdk_interval, start, end) -> pd.DataFrame:
+        result = self._session().get_historical_data_v2(
+            interval=sdk_interval,
+            from_date=self._to_iso(start, end=False),
+            to_date=self._to_iso(end, end=True),
+            stock_code=symbol,
+            exchange_code=self.exchange_code,
+            product_type=self.product_type,
         )
-        resp.raise_for_status()
-        payload = resp.json()
-        if str(payload.get("Status", 200)) not in ("200", "None"):
-            raise RuntimeError(f"Breeze error: {payload.get('Error')}")
-
-        rows = payload.get("Success") or []
+        if result.get("Error"):
+            raise RuntimeError(f"Breeze error: {result.get('Error')}")
+        rows = result.get("Success") or []
         if not rows:
-            raise RuntimeError(f"Breeze returned no data for {symbol!r}")
+            raise RuntimeError(
+                f"Breeze returned no data for {symbol!r} ({sdk_interval}) — check "
+                "stock_code/exchange_code/product_type and the date window."
+            )
 
         df = pd.DataFrame(rows)
         # Breeze rows: datetime, open, high, low, close, volume (+ extras).
