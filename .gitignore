@@ -15,7 +15,8 @@ config.yaml
 data/*.csv
 data/*.parquet
 data/*.feather
-data/oi/                 # logged + backfilled option-chain OI snapshots
+# logged + backfilled option-chain OI snapshots (runtime-only)
+data/oi/
 
 # Results — keep human-readable reports, drop raw dumps + runtime logs/DB.
 results/*.csv

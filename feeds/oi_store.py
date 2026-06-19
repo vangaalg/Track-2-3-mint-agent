@@ -53,13 +53,24 @@ def list_snapshots(symbol: str, base: str | Path = DATA_DIR) -> list[tuple[pd.Ti
     return sorted(items)
 
 
-def load_nearest(symbol: str, ts, base: str | Path = DATA_DIR) -> pd.DataFrame | None:
-    """Chain snapshot at or just before ``ts`` (None if none earlier)."""
+def load_nearest(symbol: str, ts, base: str | Path = DATA_DIR,
+                 max_age_min: float | None = None) -> pd.DataFrame | None:
+    """Chain snapshot at or just before ``ts`` (None if none earlier).
+
+    ``max_age_min`` optionally rejects a stale match: if the nearest at-or-before
+    snapshot is older than that many minutes it returns None, so a far-off snapshot
+    (e.g. from a different session) is never silently shown as "as-of". Default None
+    keeps the unbounded behaviour.
+    """
     target = _ist_naive(ts)
-    best = None
+    best, best_t = None, None
     for t, f in list_snapshots(symbol, base):
         if t <= target:
-            best = f
+            best, best_t = f, t
         else:
             break
-    return pd.read_parquet(best) if best is not None else None
+    if best is None:
+        return None
+    if max_age_min is not None and (target - best_t).total_seconds() > max_age_min * 60:
+        return None
+    return pd.read_parquet(best)

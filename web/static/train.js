@@ -35,13 +35,24 @@ async function loadCase() {
   const d = CUR;
   $("trigMeta").innerHTML = `${d.date} ${d.ts.slice(11, 16)} · `
     + `<b class="${d.direction === "long" ? "win-txt" : "loss-txt"}">${d.direction.toUpperCase()}</b> @ ${d.entry}`;
-  $("entryShow").textContent = d.entry; $("dirShow").textContent = d.direction;
-  // suggest sensible default levels (trader edits): ±0.4% / ±0.2%
+  $("entryShow").textContent = d.entry; $("dirShow").textContent = d.direction.toUpperCase();
+  // suggest sensible default levels (trader edits): entry = trigger close, ±0.4% / ±0.2%
   const t = d.direction === "long" ? d.entry * 1.004 : d.entry * 0.996;
   const s = d.direction === "long" ? d.entry * 0.998 : d.entry * 1.002;
+  $("inEntry").value = d.entry.toFixed(2);
   $("inTarget").value = t.toFixed(2); $("inStop").value = s.toFixed(2);
+  recalcRR();
   _triggers = [{ ts: d.ts, direction: d.direction, outcome: "open" }];
   renderLW(d); renderOI(d); renderRead(d.read, d.read_err);
+}
+
+function recalcRR() {
+  const e = parseFloat($("inEntry").value), t = parseFloat($("inTarget").value), s = parseFloat($("inStop").value);
+  const risk = Math.abs(e - s), reward = Math.abs(t - e);
+  const dir = CUR ? CUR.direction : null;
+  const ok = dir === "long" ? (t > e && e > s) : dir === "short" ? (t < e && e < s) : risk > 0;
+  $("rrShow").textContent = (risk > 0 && reward > 0) ? (reward / risk).toFixed(2) : "—";
+  $("rrShow").className = ok ? "" : "bad";
 }
 
 async function loadCaseTF() {     // timeframe button — re-serve just the chart bars
@@ -63,8 +74,15 @@ function renderRead(rd, err) {
 
 function renderOI(d) {
   const oi = d.oi, chain = d.chain || [];
-  if (oi) $("oiSummary").innerHTML = `PCR <b>${n(oi.pcr)}</b> · max-pain <b>${oi.max_pain}</b> · ATM ${oi.atm}`;
-  else { $("oiSummary").textContent = "OI — not stored for this moment."; }
+  if (oi) {
+    const age = d.oi_age_min != null
+      ? ` · <span class="muted">as of ${d.oi_as_of ? d.oi_as_of.slice(11, 16) : "?"} (${d.oi_age_min} min before trigger)</span>` : "";
+    $("oiSummary").innerHTML = `PCR <b>${n(oi.pcr)}</b> · max-pain <b>${oi.max_pain}</b> · ATM ${oi.atm}${age}`;
+  } else {
+    $("oiSummary").innerHTML = "<span class='muted'>No OI recorded for this moment — "
+      + "run the 7-day backfill (<code>python -m feeds.oi_backfill</code>) or keep the cockpit "
+      + "logging during the session. (Chart + Claude are still valid.)</span>";
+  }
   if (!chain.length) { $("walls").textContent = ""; $("chainTbl").innerHTML = ""; Plotly.purge("oichart"); return; }
 
   const byCall = [...chain].filter((r) => r.call_oi != null).sort((a, b) => b.call_oi - a.call_oi).slice(0, 2);
@@ -106,11 +124,13 @@ function renderOI(d) {
 async function answer(action) {
   if (curTid === null) return;
   const fd = new FormData(); fd.append("tid", curTid); fd.append("action", action);
+  fd.append("entry", $("inEntry").value); fd.append("reason", $("inReason").value);
   if (action === "take") { fd.append("target", $("inTarget").value); fd.append("stop", $("inStop").value); }
   const r = await fetch("/api/train/answer", { method: "POST", body: fd });
   const d = await r.json();
   if (!r.ok) { $("formMsg").textContent = d.detail || "error"; return; }
   renderReveal(d);
+  if (d.score) renderScore(d.score);
 }
 
 function _oc(o) {
@@ -131,21 +151,37 @@ function renderReveal(d) {
   const [lbl, sub] = CELL_TXT[d.cell] || [d.cell, ""];
   const claude = d.claude ? `${(d.claude.recommendation || "?").toUpperCase()} (conf ${d.claude.confidence}/5)` : "—";
   const youLine = d.action === "take"
-    ? `You <b>TOOK</b> it (target ${d.your_levels.target} / stop ${d.your_levels.stop}) → ${_oc(d.your_outcome)}`
+    ? `You <b>TOOK</b> it (entry ${d.your_levels.entry} · target ${d.your_levels.target} / stop ${d.your_levels.stop} · R:R ${d.rr ?? "—"}) → ${_oc(d.your_outcome)}`
     : `You <b>SKIPPED</b> it → would-be ${_oc(d.your_outcome)}`;
+  const reasonLine = d.reason ? `<p class="muted">Your reason: ${d.reason}</p>` : "";
   $("revealBox").hidden = false;
   $("revealBox").innerHTML =
     `<div class="reveal-cell ${d.cell}"><span class="rc-lbl">${lbl}</span><span class="rc-sub">${sub}</span></div>`
-    + `<p>${youLine}</p>`
-    + `<p>Engine levels → ${_oc(d.engine_outcome)} (target ${d.engine_outcome.target} / stop ${d.engine_outcome.stop})</p>`
+    + `<p>${youLine}</p>` + reasonLine
+    + `<p>Engine levels → ${_oc(d.engine_outcome)} (target ${d.engine_outcome.target} / stop ${d.engine_outcome.stop} · R:R ${d.engine_outcome.rr ?? "—"})</p>`
     + `<p>Claude had said: <b>${claude}</b></p>`
-    + `<p class="muted small">Saved to the learning store (kind=training) — the agent will see this.</p>`
+    + `<p class="muted small">Saved to the learning store (kind=training, 2 lots) — the agent will see this.</p>`
     + `<button id="next2" class="btn primary">Next trigger ▶</button>`;
   $("next2").onclick = nextTrigger;
+}
+
+function renderScore(s) {
+  if (!s || !s.n) { $("scoreboard").textContent = "Session P&L: no trades graded yet."; return; }
+  const cls = s.net_points >= 0 ? "win-txt" : "loss-txt";
+  const c = s.cells || {};
+  $("scoreboard").innerHTML = `Session P&L (${s.lots} lots): `
+    + `<b class="${cls}">${s.net_points >= 0 ? "+" : ""}${s.net_points} pts `
+    + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees})</b> · ${s.takes} taken `
+    + `(${s.wins}W / ${s.losses}L) · ${c.missed || 0} missed · ${c.avoided || 0} avoided`;
+}
+
+async function fetchScore() {
+  try { renderScore(await (await fetch("/api/train/score")).json()); } catch (e) { /* keep */ }
 }
 
 $("nextBtn").onclick = nextTrigger;
 $("takeBtn").onclick = () => answer("take");
 $("skipBtn").onclick = () => answer("skip");
+["inEntry", "inTarget", "inStop"].forEach((id) => $(id).addEventListener("input", recalcRR));
 wireChartUI(loadCaseTF);          // timeframe buttons + ⚙ indicator panel (chart.js)
-loadList();
+loadList(); fetchScore();

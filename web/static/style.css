@@ -93,11 +93,17 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .trigbar { margin:12px; }
 .trighead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
 .trigmeta { font-size:16px; font-weight:600; }
+.scoreboard { font-size:13px; margin:2px 0 6px; padding:6px 10px; background:var(--tile);
+  border:1px solid var(--line); border-radius:8px; }
 .takeform { margin-top:10px; border-top:1px solid var(--line); padding-top:10px; }
-.takeform .levels { display:flex; gap:12px; margin:8px 0; }
+.takeform .levels { display:flex; gap:12px; align-items:center; margin:8px 0; flex-wrap:wrap; }
 .takeform .levels label { font-size:12px; color:var(--muted); }
-.takeform .levels input { width:110px; margin-left:6px; padding:6px; border:1px solid var(--line);
+.takeform .levels input { width:100px; margin-left:6px; padding:6px; border:1px solid var(--line);
   border-radius:6px; background:var(--tile); color:var(--txt); }
+.takeform .levels .rr { font-size:13px; } .takeform .levels .rr b { font-size:15px; }
+.takeform .levels .rr b.bad { color:var(--red); }
+.reasonbox { width:100%; margin:4px 0 8px; padding:7px; border:1px solid var(--line);
+  border-radius:6px; background:var(--tile); color:var(--txt); font:inherit; resize:vertical; }
 .reveal { margin-top:10px; border-top:1px solid var(--line); padding-top:10px; font-size:13px; }
 .reveal p { margin:6px 0; }
 .reveal-cell { display:flex; flex-direction:column; padding:8px 10px; border-radius:8px;

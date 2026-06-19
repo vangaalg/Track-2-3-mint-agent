@@ -14,6 +14,8 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -91,6 +93,8 @@ _state: dict = {
 
 # --- training-mode state (separate from the live cockpit) ------------------- #
 TRAIN_TTL = 900          # re-pull the 7-day history every ~15 min
+TRAIN_LOTS = 2           # training trades are always sized at 2 lots
+OI_MAX_AGE_MIN = 180     # reject an as-of OI snapshot older than this (same-session only)
 _train: dict = {"symbol": None, "base": None, "daily": None, "frame3m": None,
                 "triggers": None, "at": 0.0, "cases": {}}
 
@@ -393,9 +397,17 @@ def _train_case(tid: int) -> dict:
     trig = _train["triggers"][tid]
     snap = build_snapshot_at(_train["symbol"], _train["base"], _train["daily"],
                              trig["ts"], anchor=ANCHOR, macro={})
-    chain = oi_store.load_nearest(_train["symbol"], trig["ts"])
-    oi_summary = (summarise_chain(chain, snap.spot)
-                  if chain is not None and not chain.empty else None)
+    # only a same-session snapshot counts as "as-of" (no stale/cross-day OI)
+    chain = oi_store.load_nearest(_train["symbol"], trig["ts"], max_age_min=OI_MAX_AGE_MIN)
+    oi_summary, oi_as_of, oi_age_min = None, None, None
+    if chain is not None and not chain.empty:
+        oi_summary = summarise_chain(chain, snap.spot)
+        try:
+            snap_ts = pd.Timestamp(chain["ts"].iloc[0])
+            oi_as_of = snap_ts.isoformat()
+            oi_age_min = round((pd.Timestamp(trig["ts"]) - snap_ts).total_seconds() / 60)
+        except Exception:
+            pass
     snap.oi = oi_summary
     prop = propose_trade1(snap, DEFAULT_SIZE)
     read, read_err = None, None
@@ -404,6 +416,7 @@ def _train_case(tid: int) -> dict:
     except Exception as exc:
         read_err = str(exc)
     case = {"snap": snap, "prop": prop, "chain": chain, "oi": oi_summary,
+            "oi_as_of": oi_as_of, "oi_age_min": oi_age_min,
             "read": read, "read_err": read_err}
     _train["cases"][tid] = case
     return case
@@ -438,15 +451,27 @@ def train_case(tid: int, tf: str = "3min", bars: int = 200):
         "direction": trig["direction"], "entry": trig["entry"], "spot": snap.spot,
         "tf": tf, "bars": chart["bars"], "cpr": chart["cpr"],
         "oi": case["oi"], "chain": _chain_rows(case["chain"], snap.spot),
+        "oi_as_of": case.get("oi_as_of"), "oi_age_min": case.get("oi_age_min"),
         "macro_available": False,
         "read": asdict(case["read"]) if case["read"] else None,
         "read_err": case["read_err"],
     }
 
 
+def _rupees(points: float) -> float:
+    """Training P&L is always sized at 2 lots."""
+    return round(points * LOT_SIZE * TRAIN_LOTS, 0)
+
+
+def _rr(direction: str, entry: float, stop: float, target: float) -> float | None:
+    risk, reward = abs(entry - stop), abs(target - entry)
+    return round(reward / risk, 2) if risk else None
+
+
 @app.post("/api/train/answer")
 def train_answer(tid: int = Form(...), action: str = Form(...),
-                 target: float = Form(0.0), stop: float = Form(0.0)):
+                 entry: float = Form(0.0), target: float = Form(0.0),
+                 stop: float = Form(0.0), reason: str = Form("")):
     """Grade the trader's take/skip vs the known outcome, save it, feed learning."""
     if _train["triggers"] is None or tid < 0 or tid >= len(_train["triggers"]):
         raise HTTPException(status_code=404, detail="unknown trigger id")
@@ -454,8 +479,10 @@ def train_answer(tid: int = Form(...), action: str = Form(...),
     if case is None:
         raise HTTPException(status_code=409, detail="open the case first")
     trig = _train["triggers"][tid]
-    direction, entry, frame3m = trig["direction"], trig["entry"], _train["frame3m"]
+    direction, frame3m = trig["direction"], _train["frame3m"]
+    entry = entry or trig["entry"]          # trader may edit the fill; default the trigger
     action = action.lower()
+    rr = None
 
     if action == "take":
         ok = (target > entry > stop) if direction == "long" else (target < entry < stop)
@@ -464,23 +491,26 @@ def train_answer(tid: int = Form(...), action: str = Form(...),
                                 detail="target/stop must straddle entry on the trade's side")
         outcome, exit_px, points = simulate_intraday(frame3m, trig["ts"], direction,
                                                       entry, stop, target)
-        your_levels = {"stop": stop, "target": target}
+        your_levels = {"entry": entry, "stop": stop, "target": target}
+        rr = _rr(direction, entry, stop, target)
     else:  # skip — would-be result with the engine's own levels
         outcome, exit_px, points = simulate_intraday(frame3m, trig["ts"], direction,
-                                                      entry, trig["eng_stop"], trig["eng_target"])
+                                                      trig["entry"], trig["eng_stop"], trig["eng_target"])
         your_levels = None
 
-    your = {"status": outcome, "exit": exit_px, "points": points,
-            "rupees": round(points * LOT_SIZE * DEFAULT_SIZE, 0)}
-    engine = {"status": trig["outcome"], "points": trig["points"], "rupees": trig["rupees"],
-              "stop": trig["eng_stop"], "target": trig["eng_target"]}
+    your = {"status": outcome, "exit": exit_px, "points": points, "rupees": _rupees(points)}
+    engine = {"status": trig["outcome"], "points": trig["points"],
+              "rupees": _rupees(trig["points"]),     # re-size the engine result to 2 lots
+              "stop": trig["eng_stop"], "target": trig["eng_target"],
+              "rr": _rr(direction, trig["entry"], trig["eng_stop"], trig["eng_target"])}
     cell = grade_training(action, outcome)
 
     snap, read = case["snap"], case["read"]
     proposal = case["prop"].as_dict()
+    proposal = {**proposal, "direction": direction, "size_lots": TRAIN_LOTS,
+                "reason": reason.strip() or None}
     if action == "take":
-        proposal = {**proposal, "direction": direction, "entry": entry,
-                    "stop": stop, "target": target}
+        proposal.update(entry=entry, stop=stop, target=target, rr_ratio=rr)
     payload = {
         "kind": "training", "ts": trig["ts"], "symbol": _train["symbol"],
         "decision": f"training_{action}", "spot": snap.spot,
@@ -494,7 +524,28 @@ def train_answer(tid: int = Form(...), action: str = Form(...),
         store.save_decision(payload, path=JOURNAL_DB)
     except Exception:
         pass
-    return {"action": action, "direction": direction, "entry": entry,
-            "your_levels": your_levels, "your_outcome": your,
-            "engine_outcome": engine, "cell": cell,
-            "claude": asdict(read) if read is not None else None}
+    return {"action": action, "direction": direction, "entry": entry, "rr": rr,
+            "reason": reason.strip() or None, "your_levels": your_levels,
+            "your_outcome": your, "engine_outcome": engine, "cell": cell,
+            "claude": asdict(read) if read is not None else None,
+            "score": _train_score()}
+
+
+def _train_score() -> dict:
+    """Cumulative training scoreboard from the store (realized P&L = taken trades)."""
+    from collections import Counter
+    recs = store.load_records(JOURNAL_DB, kind="training")
+    takes = [r for r in recs if r.get("decision") == "training_take"]
+    net_pts = round(sum((r.get("outcome") or {}).get("points", 0) or 0 for r in takes), 2)
+    net_rs = round(sum((r.get("outcome") or {}).get("rupees", 0) or 0 for r in takes), 0)
+    wins = sum(1 for r in takes if (r.get("outcome") or {}).get("status") == "win")
+    losses = sum(1 for r in takes if (r.get("outcome") or {}).get("status") == "loss")
+    cells = Counter(r.get("matrix") for r in recs if r.get("matrix"))
+    return {"n": len(recs), "takes": len(takes), "wins": wins, "losses": losses,
+            "net_points": net_pts, "net_rupees": net_rs, "lots": TRAIN_LOTS,
+            "cells": dict(cells)}
+
+
+@app.get("/api/train/score")
+def train_score():
+    return _train_score()

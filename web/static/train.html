@@ -23,7 +23,8 @@
       <div id="trigMeta" class="trigmeta">—</div>
       <button id="nextBtn" class="btn primary">Next trigger ▶</button>
     </div>
-    <div class="muted small">Decide as you would live: read the chart + OI + Claude, then take or skip. The outcome is hidden until you answer.</div>
+    <div id="scoreboard" class="scoreboard">—</div>
+    <div class="muted small">Decide as you would live: read the chart + OI + Claude, then take or skip. Always 2 lots. The outcome is hidden until you answer.</div>
   </section>
 
   <!-- 1) DATA — chart (as-of the trigger, no future) -->
@@ -67,11 +68,14 @@
       <h2>🤖 Claude's read — before you decide</h2>
       <div id="readBox" class="readbox"><span class="muted">Loading Claude's read…</span></div>
       <div class="takeform" id="takeForm">
-        <div class="row">Entry (trigger close): <b id="entryShow">—</b> · direction <b id="dirShow">—</b></div>
+        <div class="row">Signal: <b id="dirShow">—</b> · trigger close <b id="entryShow">—</b> · 2 lots</div>
         <div class="levels">
+          <label>Entry <input id="inEntry" type="number" step="0.05" /></label>
           <label>Target <input id="inTarget" type="number" step="0.05" /></label>
           <label>Stop <input id="inStop" type="number" step="0.05" /></label>
+          <span class="rr">R:R <b id="rrShow">—</b></span>
         </div>
+        <textarea id="inReason" class="reasonbox" rows="2" placeholder="Why take / skip? (optional — trains the agent on your reasoning)"></textarea>
         <div class="decision">
           <button id="takeBtn" class="btn ok">✅ Take</button>
           <button id="skipBtn" class="btn no">⏭ Skip</button>

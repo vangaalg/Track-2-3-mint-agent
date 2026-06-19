@@ -215,6 +215,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       (macro never stored historically → "not recorded"), add Claude's read (3-way compare).
       Tested in tests/test_training.py (14) + suite green (117). Macro as-of past triggers
       stays out (live-only); Trade 2/3 training still pending.
+  - **Refinements (training UX + an OI bug):** root-caused the "wrong OI at 13:27" — a
+    stale committed fixture `data/oi/NIFTY/20240102T152700.parquet` (the 3L/2.5L mock) was
+    served because `.gitignore`'s `data/oi/` had an inline comment (never matched → the dir
+    was never ignored) AND `oi_store.load_nearest` had no staleness tolerance. Fixed all
+    three: removed the fixture, corrected the gitignore line, added `load_nearest(...,
+    max_age_min)` (training uses `OI_MAX_AGE_MIN=180`, same-session only) and the case now
+    returns `oi_as_of`/`oi_age_min` (UI shows the snapshot time or an honest "not recorded
+    — run the backfill"). Plus: optional **reason** textarea (stored in the record +
+    surfaced to Claude's memory via `distill_context`), **editable entry** + outcome graded
+    on the trader's entry/target/stop, **live R:R** in the form, fixed **2-lot** sizing
+    (`TRAIN_LOTS=2`), and a **running cumulative P&L** scoreboard (`GET /api/train/score`,
+    realized = taken trades). Tested in tests/test_training.py (18) + suite green (121).
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

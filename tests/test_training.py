@@ -178,3 +178,48 @@ def test_train_answer_rejects_bad_levels(tclient):
     r = tclient.post("/api/train/answer",
                      data={"tid": 0, "action": "take", "target": 23900.0, "stop": 23800.0})
     assert r.status_code == 400
+
+
+def test_train_answer_entry_reason_rr_2lots(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")
+    r = tclient.post("/api/train/answer", data={
+        "tid": 0, "action": "take", "entry": 24000.0, "target": 24080.0,
+        "stop": 23960.0, "reason": "clean breakout over CPR"})
+    d = r.json()
+    assert d["rr"] == 2.0                                    # |80| / |40|
+    assert d["your_outcome"]["rupees"] == round(d["your_outcome"]["points"] * 75 * 2, 0)
+    assert d["engine_outcome"]["rupees"] == round(d["engine_outcome"]["points"] * 75 * 2, 0)
+    rows = store.load_records(srv.JOURNAL_DB, kind="training")
+    assert rows[0]["proposal"]["reason"] == "clean breakout over CPR"
+    assert rows[0]["proposal"]["size_lots"] == 2 and rows[0]["proposal"]["rr_ratio"] == 2.0
+    assert d["score"]["takes"] == 1 and d["score"]["lots"] == 2
+
+
+def test_train_score_endpoint(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")
+    tclient.post("/api/train/answer", data={"tid": 0, "action": "take", "entry": 24000.0,
+                                            "target": 24080.0, "stop": 23960.0})
+    d = tclient.get("/api/train/score").json()
+    assert d["lots"] == 2 and d["takes"] == 1 and d["n"] >= 1
+    assert "net_points" in d and "net_rupees" in d
+
+
+def test_train_case_exposes_oi_age_fields(tclient):
+    tclient.get("/api/train/triggers")
+    d = tclient.get("/api/train/case/0").json()
+    assert "oi_as_of" in d and "oi_age_min" in d            # present even when no snapshot
+
+
+def test_load_nearest_max_age(tmp_path):
+    from feeds import oi_store
+    chain = pd.DataFrame({"strike": [24000.0], "call_oi": [1.0], "put_oi": [1.0],
+                          "call_ltp": [1.0], "put_ltp": [1.0]})
+    snap_ts = pd.Timestamp("2024-01-02 13:15", tz="Asia/Kolkata")
+    oi_store.save_chain("NIFTY", snap_ts, 24000.0, chain, base=tmp_path)
+    near = pd.Timestamp("2024-01-02 13:27", tz="Asia/Kolkata")     # 12 min later
+    far = pd.Timestamp("2026-06-18 13:27", tz="Asia/Kolkata")      # 2+ years later
+    assert oi_store.load_nearest("NIFTY", near, base=tmp_path, max_age_min=120) is not None
+    assert oi_store.load_nearest("NIFTY", far, base=tmp_path, max_age_min=120) is None
+    assert oi_store.load_nearest("NIFTY", far, base=tmp_path) is not None   # default = unbounded
