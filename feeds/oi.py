@@ -52,6 +52,40 @@ def summarise_chain(chain: pd.DataFrame, spot: float, atm_window: float = 600.0)
     }
 
 
+def chain_table(chain: pd.DataFrame, spot: float, window: float = 1000.0) -> pd.DataFrame:
+    """Per-strike display table within ``±window`` points of spot.
+
+    Adds the **time value** (extrinsic) on each side so the trader can pick the
+    deep-ITM strike whose LTP is almost all intrinsic (near-zero theta — the
+    high-delta vehicle): ``call_extrinsic = call_ltp - max(spot-strike, 0)`` and
+    ``put_extrinsic = put_ltp - max(strike-spot, 0)`` (≈0 = deep ITM). Also ranks
+    call/put OI within the window so the top-2 walls/shelves can be marked.
+    Columns: ``strike, call_extrinsic, call_ltp, call_oi, put_oi, put_ltp,
+    put_extrinsic, call_oi_rank, put_oi_rank``.
+    """
+    c = chain[(chain["strike"] - spot).abs() <= window].sort_values("strike")
+    c = c.reset_index(drop=True)
+
+    def num(col):
+        return (pd.to_numeric(c[col], errors="coerce")
+                if col in c.columns else pd.Series([float("nan")] * len(c)))
+
+    strike, call_oi, put_oi = num("strike"), num("call_oi"), num("put_oi")
+    call_ltp, put_ltp = num("call_ltp"), num("put_ltp")
+    out = pd.DataFrame({
+        "strike": strike.astype("int64"),
+        "call_extrinsic": call_ltp - (spot - strike).clip(lower=0),
+        "call_ltp": call_ltp,
+        "call_oi": call_oi,
+        "put_oi": put_oi,
+        "put_ltp": put_ltp,
+        "put_extrinsic": put_ltp - (strike - spot).clip(lower=0),
+    })
+    out["call_oi_rank"] = call_oi.rank(ascending=False, method="first")
+    out["put_oi_rank"] = put_oi.rank(ascending=False, method="first")
+    return out
+
+
 def _max_pain(c: pd.DataFrame) -> float:
     """Strike at which the total intrinsic value owed to option buyers is least."""
     strikes = c["strike"].to_numpy()

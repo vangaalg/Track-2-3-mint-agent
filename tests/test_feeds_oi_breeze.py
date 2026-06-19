@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from feeds.breeze_oi import merge_chain, nearest_weekly, make_chain_fetcher
-from feeds.oi import summarise_chain
+from feeds.oi import summarise_chain, chain_table
 
 
 def test_merge_chain_aligns_calls_and_puts():
@@ -32,6 +32,28 @@ def test_merge_chain_keeps_ltp():
     df = merge_chain(calls, puts)
     row = df.loc[df["strike"] == 24000.0].iloc[0]
     assert row["call_ltp"] == 120.5 and row["put_ltp"] == 72.35
+
+
+def test_chain_table_time_value_window_and_ranks():
+    strikes = [float(s) for s in range(22500, 25501, 500)]  # 22500..25500
+    df = pd.DataFrame({
+        "strike": strikes,
+        "call_oi": [10.0 if s != 24000 else 90.0 for s in strikes],  # peak 24000
+        "put_oi": [10.0 if s != 23500 else 80.0 for s in strikes],   # peak 23500
+        # deep-ITM 23000 call priced at intrinsic+10; ATM-ish 24000 call all extrinsic
+        "call_ltp": [(24000 - s) + 10 if s < 24000 else 50.0 for s in strikes],
+        "put_ltp": [(s - 24000) + 8 if s > 24000 else 40.0 for s in strikes],
+    })
+    t = chain_table(df, spot=24000.0, window=1000)
+    # Window ±1000 keeps 23000..25000, drops 22500 and 25500.
+    assert t["strike"].min() == 23000 and t["strike"].max() == 25000
+    # Deep-ITM 23000 call: intrinsic 1000, ltp 1010 -> time value ~10 (only intrinsic+10).
+    assert round(float(t.loc[t["strike"] == 23000, "call_extrinsic"].iloc[0]), 2) == 10.0
+    # OI ranks within the window: top call wall = 24000, top put shelf = 23500.
+    assert float(t.loc[t["strike"] == 24000, "call_oi_rank"].iloc[0]) == 1.0
+    assert float(t.loc[t["strike"] == 23500, "put_oi_rank"].iloc[0]) == 1.0
+    # Strikes are plain ints (no .000000 in the display).
+    assert str(t["strike"].dtype).startswith("int")
 
 
 def test_summarise_chain_wall_within_atm_window():

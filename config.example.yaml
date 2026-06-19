@@ -141,8 +141,9 @@ feeds:
     # Breeze option-chain expiry weekday (Mon=0..Sun=6). NSE Nifty weekly expiry
     # is now TUESDAY (=1); it was Thursday until a few months ago. Verify yours.
     expiry_weekday: 1
-    atm_window: 600            # walls picked within ± this many points of spot
-    viz_strikes: 8             # ± strikes shown in the chain visualization
+    atm_window: 600            # summary walls picked within ± this many points of spot
+    viz_points: 1000           # ± points shown in the chain TABLE (time-value view)
+    chart_strikes: 10          # ± strikes shown in the mirrored OI bar chart
   macro:
     # scorecard sources live in feeds/td_macro.py: crude (WTI/USD), USD/INR,
     # US30/Dow (DJI), Nasdaq (IXIC) via Twelve Data; India VIX via Breeze.

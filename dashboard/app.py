@@ -23,6 +23,7 @@ import streamlit as st
 from loaders import get_loader
 from feeds.snapshot import build_snapshot
 from feeds.breeze_oi import make_chain_fetcher
+from feeds.oi import chain_table
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from analysis.trade1 import propose_trade1
@@ -37,7 +38,8 @@ ANCHOR = "9h15min"
 EXPIRY_WEEKDAY = 1     # Tuesday (Mon=0..Sun=6) — NSE Nifty weekly expiry
 CHART_SECS = 30        # live chart cadence
 OI_SECS = 300          # option-chain cadence (5 min)
-ATM_STRIKES = 8        # ± strikes shown in the chain visualization
+VIZ_POINTS = 1000      # ± points shown in the chain table (time-value view)
+CHART_STRIKES = 10     # ± strikes shown in the mirrored OI bar chart
 
 
 # --- cached pulls (cadence via time-bucket keys) ---------------------------- #
@@ -119,50 +121,82 @@ def _render_market_data(snap, fetched_at: str) -> None:
 
 
 def _render_chain_viz(chain: pd.DataFrame, snap) -> None:
-    """Per-strike call/put OI (mirrored bars) + an LTP table, ATM-windowed."""
+    """Per-strike OI (mirrored bars) + a table with LTP, OI (lakh) and TIME VALUE.
+
+    Time value (extrinsic) ≈ 0 means the strike is deep-ITM (near-zero theta) — the
+    high-delta vehicle. Top-2 call OI (walls) / put OI (shelves) are marked.
+    """
     if chain is None or chain.empty:
         return
-    oi = snap.oi or {}
-    atm = oi.get("atm") or float(chain.iloc[(chain["strike"] - snap.spot).abs().idxmin()]["strike"])
-    step = 50.0
-    lo, hi = atm - ATM_STRIKES * step, atm + ATM_STRIKES * step
-    win = chain[(chain["strike"] >= lo) & (chain["strike"] <= hi)].copy()
-    if win.empty:
+    spot = snap.spot
+    atm = (snap.oi or {}).get("atm")
+    t = chain_table(chain, spot, window=VIZ_POINTS)
+    if t.empty:
         return
 
-    st.markdown("**🪜 Option chain — OI & LTP by strike**")
-    # Mirrored OI bars: calls negative (left), puts positive (right).
+    st.markdown(f"**🪜 Option chain — OI · LTP · time value  (±{int(VIZ_POINTS)} pts)**")
+    cw = t.dropna(subset=["call_oi"]).nlargest(2, "call_oi")
+    ps = t.dropna(subset=["put_oi"]).nlargest(2, "put_oi")
+    _w = lambda df, col: " · ".join(
+        f"{int(r.strike)} ({r[col] / 1e5:.2f}L)" for _, r in df.iterrows())
+    st.caption(
+        f"🔴 **Call walls** (max CE OI): {_w(cw, 'call_oi')}   |   "
+        f"🟢 **Put shelves** (max PE OI): {_w(ps, 'put_oi')}")
+    st.caption("Time value = LTP − intrinsic; ≈ 0 ⇒ deep-ITM, near-zero theta "
+               "(high-delta vehicle — pick the lowest non-negative value).")
+
+    # Mirrored OI bars (lakh): calls left (negative), puts right.
+    chart_win = t[(t["strike"] - spot).abs() <= CHART_STRIKES * 50]
     bars = pd.concat([
-        pd.DataFrame({"strike": win["strike"], "side": "Call OI", "oi": -win["call_oi"]}),
-        pd.DataFrame({"strike": win["strike"], "side": "Put OI", "oi": win["put_oi"]}),
+        pd.DataFrame({"strike": chart_win["strike"], "side": "Call OI",
+                      "oi": -chart_win["call_oi"] / 1e5}),
+        pd.DataFrame({"strike": chart_win["strike"], "side": "Put OI",
+                      "oi": chart_win["put_oi"] / 1e5}),
     ])
     try:
         import altair as alt
-        chart = (
-            alt.Chart(bars)
-            .mark_bar()
-            .encode(
+        st.altair_chart(
+            alt.Chart(bars).mark_bar().encode(
                 y=alt.Y("strike:O", sort="descending", title="Strike"),
-                x=alt.X("oi:Q", title="← Call OI    |    Put OI →"),
+                x=alt.X("oi:Q", title="← Call OI (lakh)    |    Put OI (lakh) →"),
                 color=alt.Color("side:N", scale=alt.Scale(
                     domain=["Call OI", "Put OI"], range=["#e45756", "#54a24b"])),
                 tooltip=["strike", "side", "oi"],
-            )
-            .properties(height=28 * len(win))
+            ).properties(height=26 * len(chart_win)),
+            use_container_width=True,
         )
-        st.altair_chart(chart, use_container_width=True)
     except Exception:
-        st.bar_chart(win.set_index("strike")[["call_oi", "put_oi"]])
+        st.bar_chart(chart_win.set_index("strike")[["call_oi", "put_oi"]])
 
-    tbl = win[["strike", "call_ltp", "call_oi", "put_oi", "put_ltp"]].copy()
-    tbl.columns = ["Strike", "Call LTP", "Call OI", "Put OI", "Put LTP"]
-    st.dataframe(
-        tbl.style.apply(
-            lambda r: ["background-color:#fff3cd" if r["Strike"] == atm else "" for _ in r],
-            axis=1,
-        ),
-        hide_index=True, use_container_width=True,
-    )
+    # Broker-style table: Call time-val | Call LTP | Call OI(L) | Strike | Put OI(L) | Put LTP | Put time-val
+    disp = pd.DataFrame({
+        "Call time-val": t["call_extrinsic"].round(2),
+        "Call LTP": t["call_ltp"].round(2),
+        "Call OI (L)": (t["call_oi"] / 1e5).round(2),
+        "Strike": t["strike"],
+        "Put OI (L)": (t["put_oi"] / 1e5).round(2),
+        "Put LTP": t["put_ltp"].round(2),
+        "Put time-val": t["put_extrinsic"].round(2),
+    })
+    cw_s, ps_s = set(cw["strike"]), set(ps["strike"])
+    co, po = disp.columns.get_loc("Call OI (L)"), disp.columns.get_loc("Put OI (L)")
+
+    def _hl(row):
+        styles = [""] * len(row)
+        s = row["Strike"]
+        if s in cw_s:
+            styles[co] = "background-color:#f5c6cb"
+        if s in ps_s:
+            styles[po] = "background-color:#c3e6cb"
+        if atm is not None and s == int(atm):
+            styles = [(st_ + ";background-color:#fff3cd") for st_ in styles]
+        return styles
+
+    try:
+        st.dataframe(disp.style.apply(_hl, axis=1).format(precision=2),
+                     hide_index=True, use_container_width=True)
+    except Exception:
+        st.dataframe(disp, hide_index=True, use_container_width=True)
 
 
 def _render_chat_content(content) -> None:
