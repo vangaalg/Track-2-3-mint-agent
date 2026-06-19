@@ -97,13 +97,19 @@ def test_decision_logs(client, tmp_path, monkeypatch):
     assert (tmp_path / "d.jsonl").exists()
 
 
-def test_chart_endpoint_returns_candles_and_overlays(client):
+@pytest.mark.parametrize("tf", ["1min", "3min", "15min", "60min"])
+def test_chart_endpoint_per_timeframe(client, tf):
     client.get("/api/snapshot")
-    d = client.get("/api/chart?tf=3min&bars=50").json()
-    assert d["tf"] == "3min" and d["bars"]
+    d = client.get(f"/api/chart?tf={tf}&bars=50").json()
+    assert d["tf"] == tf and d["bars"]
     row = d["bars"][-1]
     assert {"o", "h", "l", "c", "ema45", "bb_u", "macd", "rsi", "st"} <= set(row)
     assert "pivot" in d["cpr"]
+
+
+def test_chart_endpoint_unknown_tf_404(client):
+    client.get("/api/snapshot")
+    assert client.get("/api/chart?tf=nope").status_code == 404
 
 
 def test_analyse_without_snapshot_409(client):

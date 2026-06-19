@@ -1,5 +1,5 @@
-:root { --bg:#0f1320; --card:#171c2e; --line:#262d44; --txt:#e7eaf6; --muted:#8b93ad;
-  --green:#54a24b; --red:#e45756; --amber:#f0c000; --blue:#4c8dff; }
+:root { --bg:#eef1f6; --card:#ffffff; --line:#e3e6ec; --txt:#1f2430; --muted:#6b7280;
+  --green:#2e9e4b; --red:#e23b3b; --amber:#d99a00; --blue:#2962ff; --tile:#f6f8fb; }
 * { box-sizing:border-box; }
 body { margin:0; font:13px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;
   background:var(--bg); color:var(--txt); }
@@ -16,7 +16,7 @@ h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(
 .grid { display:grid; grid-template-columns:1.1fr 1.5fr 1.1fr; gap:12px; padding:12px; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; }
 .tiles { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-bottom:8px; }
-.tile { background:#0d1120; border:1px solid var(--line); border-radius:8px; padding:6px 8px; }
+.tile { background:var(--tile); border:1px solid var(--line); border-radius:8px; padding:6px 8px; }
 .tile .k { display:block; font-size:11px; color:var(--muted); }
 .tile .v { display:block; font-size:15px; font-weight:600; }
 .row { margin:4px 0; } .row.small { font-size:12px; }
@@ -31,7 +31,7 @@ h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(
 .trig-last.open { background:rgba(76,141,255,.14); }
 td.win,.win-txt { color:var(--green); } td.loss,.loss-txt { color:var(--red); }
 .matrix { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:8px; }
-.cell { background:#0d1120; border:1px solid var(--line); border-radius:8px; padding:8px; text-align:center; }
+.cell { background:var(--tile); border:1px solid var(--line); border-radius:8px; padding:8px; text-align:center; }
 .cell .cn { display:block; font-size:20px; font-weight:700; } .cell .cl { display:block; font-size:12px; }
 .cell .cs { display:block; font-size:10px; color:var(--muted); }
 .cell.deserved { border-color:var(--green); } .cell.correct { border-color:var(--red); }
@@ -50,7 +50,7 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .readbox { font-size:12.5px; } .readbox p { margin:6px 0; }
 .readbox .verdict { font-weight:700; padding:6px 8px; border-radius:6px; margin-bottom:6px; }
 .readbox .enter { background:rgba(84,162,75,.18); } .readbox .stand { background:rgba(228,87,86,.15); }
-.btn { background:#222a44; color:var(--txt); border:1px solid var(--line); border-radius:7px;
+.btn { background:var(--tile); color:var(--txt); border:1px solid var(--line); border-radius:7px;
   padding:7px 12px; cursor:pointer; font-size:13px; }
 .btn:hover { border-color:var(--blue); } .btn.primary { background:var(--blue); border-color:var(--blue); }
 .btn.ok { background:var(--green); } .btn.no { background:var(--red); }
@@ -59,8 +59,16 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .chat { margin:0 12px 16px; }
 .chatlog { max-height:240px; overflow:auto; display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
 .msg { padding:6px 10px; border-radius:8px; max-width:80%; }
-.msg.user { align-self:flex-end; background:#22305a; } .msg.assistant { align-self:flex-start; background:#0d1120; }
+.msg.user { align-self:flex-end; background:#dce7ff; } .msg.assistant { align-self:flex-start; background:var(--tile); }
 .msg img { max-width:280px; border-radius:6px; display:block; margin-top:4px; }
-.chatform { display:flex; gap:8px; } .chatform input[type=text] { flex:1; background:#0d1120;
+.chatform { display:flex; gap:8px; } .chatform input[type=text] { flex:1; background:var(--tile);
   border:1px solid var(--line); border-radius:7px; color:var(--txt); padding:8px; }
+.btn.primary,.btn.ok,.btn.no { color:#fff; }
+.charthead { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.charthead h2 { margin:0; }
+.tfbar button { background:var(--tile); border:1px solid var(--line); border-radius:6px;
+  padding:3px 9px; margin-left:4px; cursor:pointer; font-size:12px; color:var(--txt); }
+.tfbar button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+.lw { width:100%; }
+.price-main { height:380px; } .price-sub { height:104px; margin-top:4px; }
 @media (max-width:1100px){ .grid{ grid-template-columns:1fr; } }

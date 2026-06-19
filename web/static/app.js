@@ -62,7 +62,7 @@ function renderOI(d) {
   ], {
     barmode: "overlay", height: 26 * win.length + 40, showlegend: false,
     margin: { l: 50, r: 20, t: 8, b: 28 }, paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
-    font: { color: "#8b93ad", size: 10 }, yaxis: { autorange: "reversed", type: "category" },
+    font: { color: "#555", size: 10 }, yaxis: { autorange: "reversed", type: "category" },
     xaxis: { title: "← Call OI (L)   |   Put OI (L) →", zeroline: true, zerolinecolor: "#3a4258" },
   }, { displayModeBar: false, responsive: true });
 
@@ -141,71 +141,104 @@ function renderTriggers(d) {
 }
 
 let _triggers = [];
+let chartTF = "3min";
+let LW = null;
+
+// Lightweight Charts renders UTC; shift +5:30 so the axis shows IST wall-clock.
+const _lwTime = (iso) => Math.floor(Date.parse(iso) / 1000) + 19800;
+const _fmtT = (t) => { const d = new Date(t * 1000);
+  return String(d.getUTCHours()).padStart(2, "0") + ":" + String(d.getUTCMinutes()).padStart(2, "0"); };
+
+function _mkChart(elId) {
+  return LightweightCharts.createChart($(elId), {
+    autoSize: true,
+    layout: { background: { color: "#ffffff" }, textColor: "#2b2f3a", fontSize: 11 },
+    grid: { vertLines: { color: "#eef0f4" }, horzLines: { color: "#eef0f4" } },
+    rightPriceScale: { borderColor: "#d4d7de" },
+    timeScale: { borderColor: "#d4d7de", timeVisible: true, secondsVisible: false, tickMarkFormatter: _fmtT },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    localization: { timeFormatter: _fmtT },
+  });
+}
+
+function initCharts() {
+  if (LW || !window.LightweightCharts) return;
+  const main = _mkChart("priceChart");
+  const candle = main.addCandlestickSeries({ upColor: "#26a69a", downColor: "#ef5350",
+    borderVisible: false, wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
+  const ln = (color, w) => main.addLineSeries({ color, lineWidth: w, priceLineVisible: false,
+    lastValueVisible: true, crosshairMarkerVisible: false });
+  const o = { main, candle,
+    bbU: ln("#b0b4c0", 1), bbM: ln("#b0b4c0", 1), bbL: ln("#b0b4c0", 1),
+    ema5: ln("#2962ff", 1), ema45: ln("#f0a000", 2), ema100: ln("#9c27b0", 1), ema200: ln("#787b86", 2),
+    st: ln("#ff6d00", 2) };
+
+  const macdC = _mkChart("macdChart");
+  o.macdC = macdC;
+  o.hist = macdC.addHistogramSeries({ priceLineVisible: false });
+  o.macdL = macdC.addLineSeries({ color: "#2962ff", lineWidth: 1, priceLineVisible: false });
+  o.sigL = macdC.addLineSeries({ color: "#ef5350", lineWidth: 1, priceLineVisible: false });
+
+  const rsiC = _mkChart("rsiChart");
+  o.rsiC = rsiC;
+  o.rsi = rsiC.addLineSeries({ color: "#9c27b0", lineWidth: 1.5, priceLineVisible: false });
+  o.rsi.createPriceLine({ price: 70, color: "#cfcfcf", lineStyle: 2, lineWidth: 1 });
+  o.rsi.createPriceLine({ price: 30, color: "#cfcfcf", lineStyle: 2, lineWidth: 1 });
+
+  let lock = false;
+  const sync = (src, dests) => src.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+    if (lock || !r) return; lock = true;
+    dests.forEach((d) => d.timeScale().setVisibleLogicalRange(r)); lock = false;
+  });
+  sync(main, [macdC, rsiC]); sync(macdC, [main, rsiC]); sync(rsiC, [main, macdC]);
+  o.loadedTf = null; o.cprLines = [];
+  LW = o;
+}
 
 async function fetchChart() {
-  try { renderPriceChart(await (await fetch("/api/chart?tf=3min&bars=150")).json()); }
+  initCharts();
+  if (!LW) return;
+  try { renderLW(await (await fetch(`/api/chart?tf=${chartTF}&bars=200`)).json()); }
   catch (e) { /* keep last */ }
 }
 
-function _line(x, ys, name, color, width = 1.3, axis = "y") {
-  return { x, y: ys, name, type: "scatter", mode: "lines", yaxis: axis,
-           line: { color, width }, hoverinfo: "skip" };
-}
-
-function renderPriceChart(d) {
+function renderLW(d) {
   const b = d.bars || [];
   if (!b.length) return;
-  const x = b.map(r => r.t.slice(11, 16));
-  const get = (k) => b.map(r => r[k]);
-  const traces = [
-    { x, open: get("o"), high: get("h"), low: get("l"), close: get("c"),
-      type: "candlestick", name: "NIFTY", yaxis: "y",
-      increasing: { line: { color: "#54a24b" } }, decreasing: { line: { color: "#e45756" } } },
-    _line(x, get("bb_u"), "BB up", "#6b7280", 1), _line(x, get("bb_m"), "BB mid", "#6b7280", 1),
-    _line(x, get("bb_l"), "BB low", "#6b7280", 1),
-    _line(x, get("ema5"), "EMA5", "#4c8dff"), _line(x, get("ema45"), "EMA45", "#f0c000"),
-    _line(x, get("ema100"), "EMA100", "#c084fc"), _line(x, get("ema200"), "EMA200", "#9aa0b4", 1.6),
-    _line(x, get("st"), "Supertrend", "#ff7f0e", 1.6),
-    // MACD subplot
-    { x, y: get("hist"), name: "hist", type: "bar", yaxis: "y2",
-      marker: { color: get("hist").map(v => v >= 0 ? "#54a24b" : "#e45756") }, hoverinfo: "skip" },
-    _line(x, get("macd"), "MACD", "#4c8dff", 1.3, "y2"), _line(x, get("signal"), "signal", "#e45756", 1.3, "y2"),
-    // RSI subplot
-    _line(x, get("rsi"), "RSI", "#c084fc", 1.4, "y3"),
-  ];
+  const ser = (k) => b.filter((r) => r[k] != null).map((r) => ({ time: _lwTime(r.t), value: r[k] }));
+  const fresh = LW.loadedTf !== chartTF;
 
-  // trigger markers on the price panel
-  const ent = _triggers.map(t => t.entry), tx = _triggers.map(t => t.ts.slice(11, 16));
-  if (_triggers.length) traces.push({
-    x: tx, y: ent, type: "scatter", mode: "markers", name: "trigger", yaxis: "y",
-    marker: {
-      size: 11, line: { width: 1, color: "#fff" },
-      symbol: _triggers.map(t => t.direction === "long" ? "triangle-up" : "triangle-down"),
-      color: _triggers.map(t => ({ win: "#54a24b", loss: "#e45756", open: "#4c8dff" }[t.outcome] || "#4c8dff")),
-    },
-    text: _triggers.map(t => `${t.direction} ${t.outcome} ${t.points >= 0 ? "+" : ""}${t.points}`),
-    hovertemplate: "%{text}<extra></extra>",
-  });
-
-  const cpr = d.cpr || {};
-  const hl = (y, ax, color, dash) => ({ type: "line", xref: "paper", x0: 0, x1: 1,
-    yref: ax, y0: y, y1: y, line: { color, width: 1, dash } });
-  const shapes = [];
-  if (cpr.pivot) shapes.push(hl(cpr.pivot, "y", "#888", "dash"));
-  if (cpr.tc) shapes.push(hl(cpr.tc, "y", "#666", "dot"));
-  if (cpr.bc) shapes.push(hl(cpr.bc, "y", "#666", "dot"));
-  shapes.push(hl(70, "y3", "#555", "dot"), hl(30, "y3", "#555", "dot"));
-
-  Plotly.react("priceChart", traces, {
-    showlegend: false, dragmode: "pan", shapes,
-    margin: { l: 8, r: 52, t: 6, b: 22 },
-    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
-    font: { color: "#8b93ad", size: 10 },
-    xaxis: { type: "category", rangeslider: { visible: false }, showgrid: false, nticks: 12 },
-    yaxis: { domain: [0.42, 1], side: "right", showgrid: false },
-    yaxis2: { domain: [0.20, 0.38], side: "right", title: "MACD", showgrid: false },
-    yaxis3: { domain: [0, 0.18], side: "right", title: "RSI", range: [0, 100], showgrid: false },
-  }, { displayModeBar: false, responsive: true });
+  if (fresh) {
+    LW.candle.setData(b.map((r) => ({ time: _lwTime(r.t), open: r.o, high: r.h, low: r.l, close: r.c })));
+    LW.bbU.setData(ser("bb_u")); LW.bbM.setData(ser("bb_m")); LW.bbL.setData(ser("bb_l"));
+    LW.ema5.setData(ser("ema5")); LW.ema45.setData(ser("ema45"));
+    LW.ema100.setData(ser("ema100")); LW.ema200.setData(ser("ema200")); LW.st.setData(ser("st"));
+    LW.hist.setData(b.filter((r) => r.hist != null).map((r) =>
+      ({ time: _lwTime(r.t), value: r.hist, color: r.hist >= 0 ? "#26a69a" : "#ef5350" })));
+    LW.macdL.setData(ser("macd")); LW.sigL.setData(ser("signal")); LW.rsi.setData(ser("rsi"));
+    LW.cprLines.forEach((l) => LW.candle.removePriceLine(l)); LW.cprLines = [];
+    const c = d.cpr || {};
+    const addCpr = (p, t) => p && LW.cprLines.push(LW.candle.createPriceLine(
+      { price: p, color: "#9aa0b4", lineStyle: 2, lineWidth: 1, title: t }));
+    addCpr(c.pivot, "CPR"); addCpr(c.tc, "TC"); addCpr(c.bc, "BC");
+    LW.main.timeScale().fitContent();
+    LW.loadedTf = chartTF;
+  } else {
+    const last = b[b.length - 1], t = _lwTime(last.t);
+    LW.candle.update({ time: t, open: last.o, high: last.h, low: last.l, close: last.c });
+    const up = (s, k) => last[k] != null && s.update({ time: t, value: last[k] });
+    up(LW.bbU, "bb_u"); up(LW.bbM, "bb_m"); up(LW.bbL, "bb_l");
+    up(LW.ema5, "ema5"); up(LW.ema45, "ema45"); up(LW.ema100, "ema100"); up(LW.ema200, "ema200"); up(LW.st, "st");
+    if (last.hist != null) LW.hist.update({ time: t, value: last.hist, color: last.hist >= 0 ? "#26a69a" : "#ef5350" });
+    up(LW.macdL, "macd"); up(LW.sigL, "signal"); up(LW.rsi, "rsi");
+  }
+  // triggers are 3-min signals — only mark them on the 3m chart
+  LW.candle.setMarkers(chartTF === "3min" ? _triggers.map((tg) => ({
+    time: _lwTime(tg.ts), position: tg.direction === "long" ? "belowBar" : "aboveBar",
+    color: ({ win: "#26a69a", loss: "#ef5350", open: "#2962ff" }[tg.outcome] || "#2962ff"),
+    shape: tg.direction === "long" ? "arrowUp" : "arrowDown",
+    text: `${tg.direction[0].toUpperCase()} ${tg.outcome}`,
+  })) : []);
 }
 
 async function fetchRecord() {
@@ -275,4 +308,11 @@ $("analyseBtn").onclick = analyse;
 $("approveBtn").onclick = () => decide("approve");
 $("rejectBtn").onclick = () => decide("reject");
 $("chatForm").onsubmit = sendChat;
+document.querySelectorAll("#tfbar button").forEach((btn) => btn.onclick = () => {
+  document.querySelectorAll("#tfbar button").forEach((b) => b.classList.remove("on"));
+  btn.classList.add("on");
+  chartTF = btn.dataset.tf;
+  if (LW) LW.loadedTf = null;       // force a full reload for the new TF
+  fetchChart();
+});
 poll(); setInterval(poll, POLL_MS);

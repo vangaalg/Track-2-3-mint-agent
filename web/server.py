@@ -176,13 +176,15 @@ def _jf(x):
 
 
 @app.get("/api/chart")
-def chart(tf: str = "3min", bars: int = 150):
-    """Candlestick + indicator overlays for the price panel (from snapshot feats)."""
+def chart(tf: str = "3min", bars: int = 200):
+    """Candlestick + indicator overlays for the price panel (computed per TF)."""
     if _state["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
-    feats = _state["snap"].feats.get(tf)
-    if feats is None or feats.empty:
-        raise HTTPException(status_code=404, detail=f"no feats for tf {tf!r}")
+    frame = _state["snap"].frames.get(tf)
+    if frame is None or frame.empty:
+        raise HTTPException(status_code=404, detail=f"no frame for tf {tf!r}")
+    from indicators.engine import compute_indicators
+    feats = compute_indicators(frame)
     f = feats.tail(bars)
     out = []
     for t, r in f.iterrows():
