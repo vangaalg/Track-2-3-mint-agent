@@ -22,18 +22,37 @@ _SCHEMA = {
     "type": "object",
     "properties": {
         "agrees_with_engine": {"type": "boolean"},
-        "thesis": {"type": "string", "description": "Your read of the tape, plain words."},
+        "chart_analysis": {
+            "type": "string",
+            "description": "What the chart stack says (45-EMA regime, Supertrend, "
+            "CPR, EMA5 trigger, momentum) and the direction it implies.",
+        },
+        "oi_analysis": {
+            "type": "string",
+            "description": "What the option chain says — PCR, call wall / put shelf, "
+            "max-pain, where writers are pinning. Say 'OI unavailable — chart-only "
+            "read' if there is no chain data.",
+        },
+        "where_moving": {
+            "type": "string",
+            "description": "Synthesis: the most likely path for price from here.",
+        },
+        "right_trade": {
+            "type": "string",
+            "description": "The one right trade reading chart + OI together (vehicle/"
+            "direction/level), or 'No trade' if there is no edge.",
+        },
         "challenge": {
             "type": "string",
-            "description": "The specific trap the trader is most at risk of here.",
+            "description": "The specific journal trap the trader is most at risk of here.",
         },
         "recommendation": {"type": "string", "enum": ["enter", "stand_down"]},
         "confidence": {"type": "integer", "description": "1 (low) to 5 (high)."},
         "key_risk": {"type": "string", "description": "The one thing that breaks this trade."},
     },
     "required": [
-        "agrees_with_engine", "thesis", "challenge",
-        "recommendation", "confidence", "key_risk",
+        "agrees_with_engine", "chart_analysis", "oi_analysis", "where_moving",
+        "right_trade", "challenge", "recommendation", "confidence", "key_risk",
     ],
     "additionalProperties": False,
 }
@@ -42,7 +61,10 @@ _SCHEMA = {
 @dataclass
 class ClaudeRead:
     agrees_with_engine: bool
-    thesis: str
+    chart_analysis: str
+    oi_analysis: str
+    where_moving: str
+    right_trade: str
     challenge: str
     recommendation: str          # "enter" | "stand_down"
     confidence: int

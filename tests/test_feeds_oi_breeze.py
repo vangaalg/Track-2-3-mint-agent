@@ -58,3 +58,15 @@ def test_chain_fetcher_surfaces_breeze_error():
     fetch = make_chain_fetcher(client_factory=FakeClient)
     with pytest.raises(RuntimeError, match="Invalid expiry"):
         fetch("NIFTY")
+
+
+def test_fetch_oi_captures_error_for_diagnostics():
+    # The real Breeze error must land in the errors list, not vanish silently.
+    from feeds.oi import fetch_oi
+
+    def boom(_):
+        raise RuntimeError("Invalid expiry date")
+
+    errors = []
+    assert fetch_oi("NIFTY", 24000.0, fetch_fn=boom, errors=errors) is None
+    assert errors == ["oi: Invalid expiry date"]

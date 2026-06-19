@@ -47,3 +47,26 @@ def test_spar_turn_uses_history_and_context():
     assert "SPOT: 24042.0" in captured["system"]
     # The conversation history is passed through unchanged.
     assert captured["history"] == history
+
+
+def test_spar_turn_passes_image_blocks_through():
+    """A multimodal user turn (text + image block) reaches the completer intact."""
+    captured = {}
+
+    def fake(system, history):
+        captured["history"] = history
+        return "I read the chain: PCR 0.78, call wall 24,000 — pinned. STAND DOWN."
+
+    history = [{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Here's the option chain — what do you see?"},
+            {"type": "image", "source": {"type": "base64",
+             "media_type": "image/png", "data": "QUJD"}},
+        ],
+    }]
+    reply = spar_turn(history, _snapshot(), _proposal(), completer=fake)
+    assert "PCR" in reply
+    # The image block is forwarded unchanged (vision passthrough).
+    blocks = captured["history"][0]["content"]
+    assert any(b["type"] == "image" for b in blocks)

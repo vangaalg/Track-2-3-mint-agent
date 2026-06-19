@@ -34,12 +34,13 @@ def summarise_quote(latest: dict) -> dict:
 def fetch_macro(
     symbols: dict[str, str] | None = None,
     quote_fn: Callable[[str], dict] | None = None,
+    errors: list | None = None,
 ) -> dict | None:
     """Fetch the scorecard. Returns None (degrade) if no fetcher is supplied.
 
     ``quote_fn(symbol) -> {"price": float, "prev_close": float}`` is injected (a
-    Twelve Data / NSE adapter). Per-symbol failures degrade to None for that name;
-    the rest still populate.
+    Twelve Data / NSE adapter). Per-symbol failures degrade to None for that name
+    (the exception text is appended to ``errors`` when given); the rest still populate.
     """
     if quote_fn is None:
         return None
@@ -48,6 +49,8 @@ def fetch_macro(
     for name, sym in symbols.items():
         try:
             out[name] = summarise_quote(quote_fn(sym))
-        except Exception:
+        except Exception as exc:
             out[name] = None
+            if errors is not None:
+                errors.append(f"macro {name}: {exc}")
     return out

@@ -58,17 +58,24 @@ def _max_pain(c: pd.DataFrame) -> float:
 
 
 def fetch_oi(
-    instrument: str, spot: float, fetch_fn: Callable[[str], pd.DataFrame] | None = None
+    instrument: str,
+    spot: float,
+    fetch_fn: Callable[[str], pd.DataFrame] | None = None,
+    errors: list | None = None,
 ) -> dict | None:
     """Fetch + summarise the option chain. Returns None (degrade) if no fetcher.
 
     ``fetch_fn(instrument) -> chain DataFrame`` is injected (Breeze option chain
-    or NSE endpoint). Any failure degrades to None so the snapshot still builds.
+    or NSE endpoint). Any failure degrades to None so the snapshot still builds; the
+    real exception text is appended to ``errors`` (when given) so it stays diagnosable
+    instead of vanishing silently.
     """
     if fetch_fn is None:
         return None
     try:
         chain = fetch_fn(instrument)
         return summarise_chain(chain, spot)
-    except Exception:
+    except Exception as exc:
+        if errors is not None:
+            errors.append(f"oi: {exc}")
         return None

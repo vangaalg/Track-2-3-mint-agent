@@ -12,7 +12,8 @@ EXECUTION_LIVE=1 in the environment.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import base64
+from datetime import date, datetime, timedelta
 
 import streamlit as st
 
@@ -29,42 +30,87 @@ from agent.read import claude_read
 from agent.chat import spar_turn
 
 ANCHOR = "9h15min"
-EXPIRY_WEEKDAY = 3  # Thursday (Mon=0..Sun=6) — verify your Nifty weekly weekday
+EXPIRY_WEEKDAY = 1  # Tuesday (Mon=0..Sun=6) — NSE Nifty weekly expiry (was Thursday)
 
 
 @st.cache_data(show_spinner=True)
-def _pull(symbol: str):
-    """Pull Breeze 1-minute base + daily (cached per session)."""
+def _pull(symbol: str, nonce: int):
+    """Pull Breeze 1-minute base + daily LIVE (force a fresh fetch each Refresh).
+
+    ``nonce`` busts Streamlit's cache so pressing Refresh re-pulls; ``use_cache=False``
+    bypasses the loader's parquet cache so the bars are live (and, after the close,
+    the day's CLOSING bars).
+    """
     loader = get_loader("breeze")
     today = date.today()
-    base_min = loader.load(symbol, "minute", start=today - timedelta(days=10))
-    daily = loader.load(symbol, "day", start=today - timedelta(days=800))
+    base_min = loader.load(symbol, "minute", start=today - timedelta(days=10),
+                           use_cache=False)
+    daily = loader.load(symbol, "day", start=today - timedelta(days=800),
+                        use_cache=False)
     return base_min, daily
+
+
+def _n(x, d: int = 2) -> str:
+    return "—" if x is None else f"{x:,.{d}f}"
 
 
 def _fmt_pct(v) -> str:
     return "—" if v is None else f"{v:+.2f}%"
 
 
-def _render_oi_macro(ctx: dict) -> None:
-    oi = ctx.get("oi")
-    if oi:
-        cw = oi.get("call_wall") or {}
-        ps = oi.get("put_shelf") or {}
+def _render_market_data(snap, fetched_at: str) -> None:
+    """Always-visible live chart + OI numbers (last fetched; closing bars off-hours)."""
+    read = snap.chart_read
+    nums = read.get("numbers", {})
+    lv = read.get("levels", {})
+    st.caption(f"Data as of bar **{snap.ts}**  ·  fetched {fetched_at}")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**📈 Chart**")
+        st.write(f"Spot **{_n(snap.spot)}**  ·  MTF read **{read.get('mtf_call')}**")
         st.write(
-            f"**OI** — PCR {oi.get('pcr'):.2f} · call wall {cw.get('strike')} · "
-            f"put shelf {ps.get('strike')} · max-pain {oi.get('max_pain')}"
+            f"EMA 5/45/100/200: {_n(nums.get('ema_5'))} / {_n(nums.get('ema_45'))} / "
+            f"{_n(nums.get('ema_100'))} / {_n(nums.get('ema_200'))}"
         )
-    macro = ctx.get("macro")
-    if macro:
         st.write(
-            "**Macro** — "
-            + " · ".join(
-                f"{k} {_fmt_pct((v or {}).get('change_pct'))}" for k, v in macro.items()
+            f"Supertrend {_n(nums.get('supertrend'))}  ·  RSI {_n(nums.get('rsi_14'))}  "
+            f"·  MACD hist {_n(nums.get('macd_hist'))}"
+        )
+        st.write(
+            f"CPR pivot {_n(lv.get('cpr_pivot'))}  (TC {_n(lv.get('cpr_tc'))} / "
+            f"BC {_n(lv.get('cpr_bc'))})"
+        )
+    with c2:
+        st.markdown("**🧮 OI**")
+        oi = snap.oi
+        if oi:
+            cw, ps = oi.get("call_wall") or {}, oi.get("put_shelf") or {}
+            st.write(f"PCR **{_n(oi.get('pcr'))}**  ·  max-pain **{oi.get('max_pain')}**")
+            st.write(f"Call wall {cw.get('strike')}  ·  put shelf {ps.get('strike')}")
+        else:
+            st.write("OI — **unavailable** (see diagnostics)")
+        macro = snap.macro
+        if macro:
+            st.write(
+                "Macro: "
+                + " · ".join(f"{k} {_fmt_pct((v or {}).get('change_pct'))}"
+                             for k, v in macro.items())
             )
-        )
-    if not oi and not macro and ctx.get("notes"):
-        st.warning("  ·  ".join(ctx["notes"]))
+    if snap.notes:
+        with st.expander("Feed diagnostics (why OI / macro is missing)"):
+            for note in snap.notes:
+                st.write(f"- {note}")
+
+
+def _render_chat_content(content) -> None:
+    if isinstance(content, str):
+        st.write(content)
+        return
+    for block in content:
+        if block.get("type") == "text":
+            st.write(block["text"])
+        elif block.get("type") == "image":
+            st.image(base64.b64decode(block["source"]["data"]), width=320)
 
 
 def main() -> None:
@@ -78,7 +124,8 @@ def main() -> None:
         st.caption("Live also needs EXECUTION_LIVE=1 in the environment.")
         spar = st.toggle("Claude sparring (ANTHROPIC_API_KEY)", value=True)
         if st.button("Refresh snapshot & propose", type="primary"):
-            base_min, daily = _pull(symbol)
+            st.session_state["nonce"] = st.session_state.get("nonce", 0) + 1
+            base_min, daily = _pull(symbol, st.session_state["nonce"])
             snap = build_snapshot(
                 symbol, base_min, daily, anchor=ANCHOR,
                 oi_fetch_fn=make_chain_fetcher(weekday=EXPIRY_WEEKDAY),
@@ -88,8 +135,9 @@ def main() -> None:
             prop = propose_trade1(snap, size_lots)
             memory = distill_memory(load_decisions(DEFAULT_LOG))
             st.session_state.update(
-                proposal=prop, snapshot=snap, memory=memory,
-                chat=[], claude_read=None, claude_error=None,
+                proposal=prop, snapshot=snap, memory=memory, chat=[],
+                claude_read=None, claude_error=None,
+                fetched_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             )
             if spar:
                 try:
@@ -97,21 +145,25 @@ def main() -> None:
                 except Exception as exc:  # missing key / network / SDK
                     st.session_state["claude_error"] = str(exc)
 
+    snap = st.session_state.get("snapshot")
     prop = st.session_state.get("proposal")
-    if prop is None:
+    if snap is None:
         st.info("Set size and press **Refresh snapshot & propose**.")
         return
 
+    # --- Always-visible live market data -------------------------------------
+    _render_market_data(snap, st.session_state.get("fetched_at", "?"))
+    st.divider()
+
+    # --- The proposal --------------------------------------------------------
     left, right = st.columns([2, 1])
     with left:
-        st.subheader(f"{prop.instrument} — spot {prop.spot}  ·  read: {prop.direction}")
-        _render_oi_macro(prop.context)
+        st.subheader(f"{prop.instrument} — read: {prop.direction}")
         st.write("**Why:**")
         for r in prop.reasons:
             st.write(f"- {r}")
         st.write("**Six-line check:**")
         st.table({k: [v] for k, v in prop.checklist.items()})
-
     with right:
         if prop.recommendation is Recommendation.ENTER:
             st.success("RECOMMENDATION: ENTER")
@@ -125,7 +177,7 @@ def main() -> None:
             st.error("RECOMMENDATION: STAND DOWN  (no-trade is a win)")
             st.info("No levels — flat/conflicted read, so there is no trade to size.")
 
-    # --- Claude's read --------------------------------------------------------
+    # --- Claude's read: chart + OI + where + trade ---------------------------
     st.divider()
     st.subheader("🤖 Claude's read & challenge")
     read = st.session_state.get("claude_read")
@@ -140,28 +192,44 @@ def main() -> None:
         (st.success if read.enter else st.error)(
             f"Claude: {verdict}  ·  {agree} the engine  ·  confidence {read.confidence}/5"
         )
-        st.write(f"**Thesis:** {read.thesis}")
-        st.write(f"**Challenge:** {read.challenge}")
-        st.write(f"**Key risk:** {read.key_risk}")
+        st.write(f"**📈 Chart analysis:** {read.chart_analysis}")
+        st.write(f"**🧮 OI analysis:** {read.oi_analysis}")
+        st.write(f"**🧭 Where it's moving:** {read.where_moving}")
+        st.write(f"**🎯 Right trade (chart + OI):** {read.right_trade}")
+        st.write(f"**⚔️ Challenge:** {read.challenge}")
+        st.write(f"**⚠️ Key risk:** {read.key_risk}")
 
-        # --- Spar back ---------------------------------------------------------
-        st.write("**Spar with Claude** — argue your read; it holds you to your invalidation.")
+        # --- Spar back (paste a screenshot of the chain/chart to have Claude read it)
+        st.write("**Spar with Claude** — argue your read, or paste a chart/option-chain screenshot.")
         chat = st.session_state.setdefault("chat", [])
         for m in chat:
-            st.chat_message(m["role"]).write(m["content"])
-        if msg := st.chat_input("Defend your thesis, or ask why…"):
-            chat.append({"role": "user", "content": msg})
+            with st.chat_message(m["role"]):
+                _render_chat_content(m["content"])
+        sub = st.chat_input(
+            "Defend your thesis, ask why, or attach a screenshot…",
+            accept_file=True, file_type=["png", "jpg", "jpeg"],
+        )
+        if sub:
+            text = getattr(sub, "text", "") or ""
+            files = getattr(sub, "files", []) or []
+            blocks = []
+            if text:
+                blocks.append({"type": "text", "text": text})
+            for f in files:
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": f.type or "image/png",
+                               "data": base64.standard_b64encode(f.getvalue()).decode()},
+                })
+            chat.append({"role": "user", "content": blocks if files else text})
             try:
-                reply = spar_turn(
-                    chat, st.session_state["snapshot"], prop,
-                    st.session_state.get("memory", ""),
-                )
+                reply = spar_turn(chat, snap, prop, st.session_state.get("memory", ""))
             except Exception as exc:
                 reply = f"(chat unavailable: {exc})"
             chat.append({"role": "assistant", "content": reply})
             st.rerun()
 
-    # --- Decision -------------------------------------------------------------
+    # --- Decision ------------------------------------------------------------
     st.divider()
     if prop.recommendation is Recommendation.ENTER:
         a, b = st.columns(2)

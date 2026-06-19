@@ -135,9 +135,9 @@ agent:
 # VIX. The dashboard wires these from env creds (BREEZE_*, TWELVEDATA_API_KEY).
 feeds:
   oi:
-    # Breeze option-chain expiry weekday (Mon=0..Sun=6). The NSE Nifty weekly
-    # weekday has shifted before — VERIFY yours. Dashboard default = 3 (Thursday).
-    expiry_weekday: 3
+    # Breeze option-chain expiry weekday (Mon=0..Sun=6). NSE Nifty weekly expiry
+    # is now TUESDAY (=1); it was Thursday until a few months ago. Verify yours.
+    expiry_weekday: 1
   macro:
     # scorecard sources live in feeds/td_macro.py: crude (WTI/USD), USD/INR,
     # US30/Dow (DJI), Nasdaq (IXIC) via Twelve Data; India VIX via Breeze.

@@ -69,6 +69,16 @@ def _chart_read(feats: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig) -> di
             "cpr_tc": _f(trig.get("cpr_tc")),
             "cpr_bc": _f(trig.get("cpr_bc")),
         },
+        # Raw chart numbers for the always-visible market-data panel.
+        "numbers": {
+            "ema_5": _f(trig.get("ema_5")),
+            "ema_45": _f(trig.get("ema_45")),
+            "ema_100": _f(trig.get("ema_100")),
+            "ema_200": _f(trig.get("ema_200")),
+            "supertrend": _f(trig.get("supertrend")),
+            "rsi_14": _f(trig.get("rsi_14")),
+            "macd_hist": _f(trig.get("macd_hist")),
+        },
     }
 
 
@@ -110,12 +120,12 @@ def build_snapshot(
     read = _chart_read(feats, cfg)
 
     notes: list[str] = []
-    oi = fetch_oi(instrument, spot, oi_fetch_fn)
-    if oi is None:
-        notes.append("oi: unavailable (no fetcher / pull failed) — degraded")
-    macro = fetch_macro(symbols=macro_symbols, quote_fn=macro_quote_fn)
-    if macro is None:
-        notes.append("macro: unavailable (no fetcher) — degraded")
+    oi = fetch_oi(instrument, spot, oi_fetch_fn, errors=notes)
+    if oi is None and oi_fetch_fn is None:
+        notes.append("oi: no fetcher configured")
+    macro = fetch_macro(symbols=macro_symbols, quote_fn=macro_quote_fn, errors=notes)
+    if macro is None and macro_quote_fn is None:
+        notes.append("macro: no fetcher configured")
 
     return Snapshot(
         instrument=instrument, ts=ts, spot=spot, frames=frames, feats=feats,

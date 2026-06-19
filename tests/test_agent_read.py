@@ -63,7 +63,9 @@ def test_claude_read_uses_injected_completer():
         captured["system"] = system
         captured["user"] = user
         return ClaudeRead(
-            agrees_with_engine=True, thesis="up-regime intact",
+            agrees_with_engine=True, chart_analysis="up-regime intact",
+            oi_analysis="PCR 0.9, call wall 24000", where_moving="grind to 24000",
+            right_trade="deep-ITM CE, stop 23880",
             challenge="watch the 24,000 wall — don't size up", recommendation="enter",
             confidence=4, key_risk="close below 23,880",
         )
