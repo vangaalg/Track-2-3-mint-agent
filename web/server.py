@@ -28,7 +28,8 @@ from feeds.oi import chain_table, summarise_chain
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store
-from analysis.trade1 import propose_trade1, LOT_SIZE
+from analysis.trade1 import propose_trade1, apply_strike, apply_oi_boost, LOT_SIZE
+from analysis.strike import select_strike
 from analysis.triggers import replay_today, list_triggers, simulate_intraday
 from analysis.proposal import Recommendation
 from agent.memory import load_decisions, distill_memory, distill_context
@@ -131,7 +132,13 @@ def _refresh(symbol: str, size: int) -> None:
         if snap.oi is None and _state.get("chain_err"):
             snap.notes.append(f"oi: {_state['chain_err']}")
         _state["snap"] = snap
-        _state["prop"] = propose_trade1(snap, size)
+        prop = propose_trade1(snap, size)
+        # LIVE strike agent: pick the ITM vehicle off the live chain (least theta).
+        if chain is not None and not chain.empty and prop.direction in ("long", "short"):
+            pick = select_strike(chain_table(chain, snap.spot, window=VIZ_POINTS),
+                                 snap.spot, prop.direction)
+            apply_strike(prop, pick)
+        _state["prop"] = prop
         _state["snap_at"] = now
         # log the chain snapshot (the OI flywheel) once per fresh OI bucket
         if LOG_OI and chain is not None and not chain.empty \
@@ -177,6 +184,10 @@ def _run_read() -> dict:
     memory = _learning_memory()
     _state["memory"] = memory
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
+    # LIVE OI confluence: +1 conviction (re-nudges size) when Claude's chain lean
+    # agrees with the trade direction.
+    if prop is not None:
+        apply_oi_boost(prop, getattr(read, "oi_bias", None))
     _state["read"] = read
     _state["analysed_bar"] = snap.ts
     return asdict(read)

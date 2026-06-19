@@ -273,6 +273,24 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       test_analysis_trade1.py (band scaling), test_feeds_snapshot/test_web_server/test_training
       (surfacing) + suite green (131). NOTE: the 65–130 linear map + equal TF weighting are a
       first cut (easy to retune); confidence reads 0 on flat bars (breakdown still shown).
+- [x] **Live strike-selection agent + OI-confluence boost (the 3rd/2nd pillars).** Confirmed
+      with the trader: three independent pillars (3-min trigger · OI · Claude's holistic read)
+      combine for hit-rate. (1) **Strike agent** (`analysis/strike.select_strike`, LIVE only):
+      among ITM strikes within 1000 pts, take the **nearest-to-money one whose time-value
+      (extrinsic = LTP − intrinsic) ≤ ~25 pts** (theta proxy; tighter tol → deeper), fallback =
+      lowest-extrinsic. Runs in `web.server._refresh` over `feeds.oi.chain_table` (the per-strike
+      chain lives only in `_state["chain"]`, not on `Snapshot`); `analysis.trade1.apply_strike`
+      rewrites the vehicle (`propose_trade1` stays chain-free). (2) **OI boost** (LIVE only):
+      Claude now emits `oi_bias` (bullish/bearish/neutral; `agent/read.py` schema + `ClaudeRead`);
+      `apply_oi_boost` adds **+1 conviction when oi_bias agrees with the trigger**, re-nudging size
+      across 65–130 (capped 5), recomputing rupee-risk — applied in `_run_read` after Claude
+      (ENTER/Analyse). New `TradeProposal` fields (selected_strike/vehicle_ltp/vehicle_extrinsic/
+      oi_bias/oi_confidence_boost/final_confidence). Prompt now feeds the full stack (RSI/MACD/
+      EMAs) + asks for `oi_bias`. Cockpit `renderProposal` shows the picked strike + time-value +
+      OI-boost line. Training untouched (no live chain; fixed 2-lot). Decided w/ user: ≤25-pt
+      time-value + auto +1. Tested in tests/test_strike.py (5), extended test_analysis_trade1 /
+      test_agent_read / test_web_server + suite green (142). NOTE: no Greeks pulled (extrinsic IS
+      the trader's theta criterion); ~25-pt cutoff + +1 increment are first cuts, easy to retune.
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

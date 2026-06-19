@@ -72,9 +72,27 @@ def test_claude_read_uses_injected_completer():
 
     read = claude_read(_snapshot(), _proposal(), memory_text="mem!", completer=fake)
     assert read.enter and read.confidence == 4
+    assert read.oi_bias == "neutral"             # default when the read omits it
     assert "mem!" in captured["system"]          # learning memory injected
     assert "spot 23900" not in captured["user"]  # sanity: format check below
     assert "SPOT: 23900.0" in captured["user"]
+
+
+def test_claude_read_parses_oi_bias():
+    def fake(system, user):
+        return ClaudeRead(
+            agrees_with_engine=True, chart_analysis="c", oi_analysis="o",
+            where_moving="w", right_trade="r", challenge="ch", recommendation="enter",
+            confidence=4, key_risk="k", oi_bias="bullish",
+        )
+    read = claude_read(_snapshot(), _proposal(), completer=fake)
+    assert read.oi_bias == "bullish"
+
+
+def test_build_user_carries_momentum_and_oi_bias_ask():
+    user = build_user(_snapshot(), _proposal())
+    assert "RSI(14)" in user and "MACD hist" in user      # full stack fed to Claude
+    assert "oi_bias" in user                              # the +1 seam is requested
 
 
 def test_distill_memory_summary():

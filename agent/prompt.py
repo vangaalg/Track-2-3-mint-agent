@@ -34,6 +34,7 @@ def build_user(snapshot, proposal) -> str:
     """Render the snapshot + deterministic proposal into the user message."""
     read = getattr(snapshot, "chart_read", {}) or {}
     lv = read.get("levels", {})
+    num = read.get("numbers", {})
     oi = getattr(snapshot, "oi", None)
     macro = getattr(snapshot, "macro", None)
 
@@ -50,6 +51,10 @@ def build_user(snapshot, proposal) -> str:
         f"{_fmt(read.get('mtf_confidence_breakdown'))})",
         f"  3m Supertrend dir: {read.get('supertrend_3m')}   "
         f"3m EMA5 trigger: {read.get('ema5_trigger_3m')}",
+        f"  Momentum — RSI(14) {_fmt(num.get('rsi_14'))}, MACD hist "
+        f"{_fmt(num.get('macd_hist'))}; EMAs 5/45/100/200 "
+        f"{_fmt(num.get('ema_5'))}/{_fmt(num.get('ema_45'))}/"
+        f"{_fmt(num.get('ema_100'))}/{_fmt(num.get('ema_200'))}",
         f"  Levels — 45-EMA {_fmt(lv.get('ema_45'))}, Supertrend "
         f"{_fmt(lv.get('supertrend'))}, CPR pivot {_fmt(lv.get('cpr_pivot'))} "
         f"(TC {_fmt(lv.get('cpr_tc'))} / BC {_fmt(lv.get('cpr_bc'))})",
@@ -80,8 +85,10 @@ def build_user(snapshot, proposal) -> str:
         + ", ".join(f"{k}={v}" for k, v in (proposal.checklist or {}).items()),
         "  Engine reasons: " + " | ".join(proposal.reasons or []),
         "",
-        "Spar with this. Give your thesis, challenge the trader's most likely trap "
-        "for THIS setup, say whether you agree with the engine, and recommend "
-        "ENTER or STAND_DOWN.",
+        "Spar with this. Weigh the WHOLE stack (RSI/MACD/CPR/Supertrend/EMAs + OI), "
+        "give your thesis, challenge the trader's most likely trap for THIS setup, "
+        "say whether you agree with the engine, and recommend ENTER or STAND_DOWN. "
+        "Set oi_bias to the chain's directional lean (bullish/bearish/neutral) — the "
+        "trade earns +1 conviction when it agrees with the trigger.",
     ]
     return "\n".join(parts)

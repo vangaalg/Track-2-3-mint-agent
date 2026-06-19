@@ -44,6 +44,16 @@ class TradeProposal:
     # MTF 45-EMA conviction (0..5): higher TFs with price on the signal's side.
     mtf_confidence: int = 0
 
+    # LIVE-only strike agent (the actual ITM vehicle picked off the live chain).
+    selected_strike: int | None = None
+    vehicle_ltp: float | None = None
+    vehicle_extrinsic: float | None = None      # time value = theta proxy
+
+    # LIVE-only OI confluence: Claude's chain lean + the auto +1 it earns.
+    oi_bias: str | None = None                  # "bullish" | "bearish" | "neutral"
+    oi_confidence_boost: int = 0                # +1 when OI agrees with direction
+    final_confidence: int | None = None         # mtf_confidence + oi boost (capped 5)
+
     # The discipline gate
     recommendation: Recommendation = Recommendation.STAND_DOWN
     checklist: dict[str, str] = field(default_factory=dict)   # the six lines

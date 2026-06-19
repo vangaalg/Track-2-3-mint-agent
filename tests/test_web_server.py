@@ -74,6 +74,14 @@ def test_snapshot_returns_chart_oi_chain_proposal(client):
     assert isinstance(conf, int) and 0 <= conf <= 5
     assert isinstance(d["chart"]["mtf_confidence_breakdown"], dict)
     assert "mtf_confidence" in d["proposal"]
+    # Live strike-agent + OI-boost fields are always present on the proposal.
+    p = d["proposal"]
+    for k in ("selected_strike", "vehicle_extrinsic", "oi_bias",
+              "oi_confidence_boost", "final_confidence"):
+        assert k in p
+    # A directional read picks an ITM vehicle off the live chain.
+    if p["direction"] in ("long", "short"):
+        assert p["selected_strike"] is not None and p["vehicle_extrinsic"] is not None
 
 
 def test_analyse_returns_four_part_read(client):
@@ -82,6 +90,10 @@ def test_analyse_returns_four_part_read(client):
     assert rd["chart_analysis"] == "ca" and rd["oi_analysis"] == "oa"
     assert rd["where_moving"] == "wm" and rd["right_trade"] == "rt"
     assert rd["recommendation"] == "stand_down"
+    assert rd["oi_bias"] == "neutral"             # read carries the chain lean
+    # the OI boost is applied to the live proposal after Claude runs
+    p = client.get("/api/snapshot").json()["proposal"]
+    assert p["oi_bias"] == "neutral" and p["final_confidence"] is not None
 
 
 def test_chat_round_trips(client):

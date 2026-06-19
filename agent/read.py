@@ -33,6 +33,13 @@ _SCHEMA = {
             "max-pain, where writers are pinning. Say 'OI unavailable — chart-only "
             "read' if there is no chain data.",
         },
+        "oi_bias": {
+            "type": "string",
+            "enum": ["bullish", "bearish", "neutral"],
+            "description": "The option chain's DIRECTIONAL lean (PCR, max-pain, walls). "
+            "'neutral' when there is no chain or no clear lean. The trade earns +1 "
+            "conviction when this agrees with the trigger direction.",
+        },
         "where_moving": {
             "type": "string",
             "description": "Synthesis: the most likely path for price from here.",
@@ -51,7 +58,7 @@ _SCHEMA = {
         "key_risk": {"type": "string", "description": "The one thing that breaks this trade."},
     },
     "required": [
-        "agrees_with_engine", "chart_analysis", "oi_analysis", "where_moving",
+        "agrees_with_engine", "chart_analysis", "oi_analysis", "oi_bias", "where_moving",
         "right_trade", "challenge", "recommendation", "confidence", "key_risk",
     ],
     "additionalProperties": False,
@@ -69,6 +76,7 @@ class ClaudeRead:
     recommendation: str          # "enter" | "stand_down"
     confidence: int
     key_risk: str
+    oi_bias: str = "neutral"     # "bullish" | "bearish" | "neutral" (OI confluence)
 
     @property
     def enter(self) -> bool:

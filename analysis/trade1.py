@@ -37,6 +37,43 @@ def size_for_confidence(conf: int, lo: int = SIZE_BAND[0], hi: int = SIZE_BAND[1
     return int(round(lo + (hi - lo) * conf / levels))
 
 
+def apply_strike(prop: "TradeProposal", pick: dict | None) -> "TradeProposal":
+    """Attach the LIVE strike-agent pick to a proposal and rewrite its vehicle string.
+
+    ``pick`` is the dict from ``analysis.strike.select_strike`` (or None — no-op).
+    """
+    if not pick:
+        return prop
+    prop.selected_strike = pick["strike"]
+    prop.vehicle_ltp = pick["ltp"]
+    prop.vehicle_extrinsic = pick["extrinsic"]
+    prop.vehicle = (f"{prop.instrument} {pick['strike']} {pick['right']} "
+                    f"@{pick['ltp']:.0f} (ITM, time-value {pick['extrinsic']:.0f})")
+    return prop
+
+
+def _oi_agrees(oi_bias: str | None, direction: str) -> bool:
+    return ((oi_bias == "bullish" and direction == "long")
+            or (oi_bias == "bearish" and direction == "short"))
+
+
+def apply_oi_boost(prop: "TradeProposal", oi_bias: str | None) -> "TradeProposal":
+    """LIVE OI confluence: +1 conviction when Claude's chain lean agrees with the
+    trade, re-nudging the size (capped at the band top). STAND_DOWN records the bias
+    only. Idempotent — recomputes from ``mtf_confidence`` each call.
+    """
+    boost = 1 if _oi_agrees(oi_bias, prop.direction) else 0
+    prop.oi_bias = oi_bias
+    prop.oi_confidence_boost = boost
+    final = min(5, int(prop.mtf_confidence or 0) + boost)
+    prop.final_confidence = final
+    if (prop.recommendation is Recommendation.ENTER
+            and prop.entry is not None and prop.stop is not None):
+        prop.size_lots = size_for_confidence(final)
+        prop.rupee_risk = round(abs(prop.entry - prop.stop) * LOT_SIZE * prop.size_lots, 2)
+    return prop
+
+
 def _nearest_below(spot: float, levels: list[float]) -> float | None:
     below = [x for x in levels if x is not None and x < spot]
     return max(below) if below else None

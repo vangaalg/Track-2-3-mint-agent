@@ -86,9 +86,13 @@ function renderProposal(p) {
   const box = $("propBox"), dec = $("decision");
   if (p.recommendation === "enter") {
     box.className = "propbox enter";
+    const conv = p.final_confidence != null ? p.final_confidence : p.mtf_confidence;
     box.innerHTML = `ENTER · ${p.direction}<br>Entry ${n(p.entry)} · Stop ${n(p.stop)} · Target ${n(p.target)}`
-      + `<br>R:R ${p.rr_ratio} · ${p.size_lots} lots <span class="muted">(MTF 45EMA ${p.mtf_confidence}/5)</span>`
-      + `<br><span class="muted">${p.vehicle || ""}</span>`;
+      + `<br>R:R ${p.rr_ratio} · ${p.size_lots} lots <span class="muted">(conviction ${conv}/5)</span>`
+      + `<br><span class="muted">${p.vehicle || ""}</span>`
+      + (p.selected_strike ? `<br><span class="small">Strike ${p.selected_strike} @${n(p.vehicle_ltp)} · time-value ${n(p.vehicle_extrinsic)}</span>` : "")
+      + (p.oi_confidence_boost > 0 ? `<br><span class="small">🟢 OI confirms ${p.oi_bias} → +1 conviction (${p.final_confidence}/5)</span>`
+         : (p.oi_bias ? `<br><span class="small muted">OI ${p.oi_bias} — no boost</span>` : ""));
     dec.hidden = false;
   } else {
     box.className = "propbox stand";
