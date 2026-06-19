@@ -125,3 +125,47 @@ def test_confirm_2_close_zero_volume_fallback():
     gated = confirm_2_close(persistent, df)
     assert gated.iloc[0] == 0
     assert (gated.iloc[1:] == -1).all()  # volume gate skipped, persistence holds
+
+
+# --- journal 3-min strategy: confirm hook, NaN-safe trio, trigger-only MTF ----- #
+def test_resolve_direction_confirm_closes_gates():
+    feats = compute_indicators(_frame(np.linspace(100, 300, 260)))
+    raw = DirectionalConfig(voters=["three_min"], min_agree=1)
+    gated = DirectionalConfig(voters=["three_min"], min_agree=1, confirm_closes=2)
+    calls_raw = resolve_direction(feats, raw)
+    calls_gated = resolve_direction(feats, gated)
+    # The gate can only REMOVE calls (turn some to flat), never invent new ones.
+    nonflat_raw = (calls_raw != "flat").sum()
+    nonflat_gated = (calls_gated != "flat").sum()
+    assert nonflat_gated <= nonflat_raw
+    # Every surviving gated call must match the raw call at that bar (no flips).
+    survived = calls_gated != "flat"
+    assert (calls_gated[survived] == calls_raw[survived]).all()
+
+
+def test_vote_three_min_nan_safe():
+    from indicators.directional import vote_three_min
+    feats = compute_indicators(_frame(100 + np.cumsum(
+        np.random.default_rng(3).standard_normal(40)))).copy()
+    feats["sig_bb_vrl"] = feats["sig_bb_vrl"].astype(float)
+    feats.loc[feats.index[0], "sig_bb_vrl"] = np.nan   # a warm-up NaN must not raise
+    v = vote_three_min(feats)
+    assert set(v.unique()) <= {-1, 0, 1} and len(v) == len(feats)
+
+
+def test_trigger_only_ignores_htf_gate():
+    from indicators.directional import (
+        resolve_direction_mtf, journal_mtf_config, MTFDirectionalConfig)
+    up = compute_indicators(_frame(np.linspace(100, 300, 300)))
+    down = compute_indicators(_frame(np.linspace(300, 100, 300)))
+    feats = {"3min": up, "15min": down, "60min": down, "1day": down, "1week": down}
+    cfg = journal_mtf_config()
+    cfg.validate()
+    calls = resolve_direction_mtf(feats, cfg)
+    # trigger_only == the pure 3-min read, regardless of an opposing HTF stack
+    solo = resolve_direction(up, cfg.base)
+    assert (calls == solo).all()
+    # the same setup under htf_bias_trigger WOULD be suppressed by the conflict
+    gated_cfg = MTFDirectionalConfig(base=cfg.base, mtf_method="htf_bias_trigger")
+    gated = resolve_direction_mtf(feats, gated_cfg)
+    assert (gated == "flat").all()

@@ -59,14 +59,19 @@ timeframes:
 directional:
   method: confluence            # confluence | hierarchical
   # Voters (keys of indicators.directional.VOTERS): ema, ema_stack, supertrend,
-  # cpr, macd, rsi, bollinger, three_min. NOTE: cpr is a daily/weekly bias voter
-  # (on the 3m trigger it degenerates to a per-bar pivot).
-  voters: [ema_stack, supertrend, macd, rsi, bollinger, cpr]
+  # cpr, macd, rsi, bollinger, regime_45, ema5_trigger, three_min. NOTE: cpr is a
+  # daily/weekly bias voter (on the 3m trigger it degenerates to a per-bar pivot).
+  # Default below = the trader's journal 3-min signal: the trio (EMA-5 trigger +
+  # Bollinger VRL + 45-EMA pullback) confirmed by 2 closes + expanding volume.
+  voters: [three_min]
   voter_kwargs:
-    rsi: {mode: momentum}       # momentum | reversion
-    bollinger: {mode: reversion}  # reversion | breakout
+    rsi: {mode: momentum}       # momentum | reversion (only if rsi is a voter)
+    bollinger: {mode: reversion}  # reversion | breakout (only if bollinger is a voter)
   # --- confluence params ---
-  min_agree: 3
+  min_agree: 1
+  # --- confirmation gate (journal 2-close + expanding volume; 0 disables) ---
+  confirm_closes: 2
+  confirm_vol_window: 20
   # --- hierarchical params (used when method: hierarchical) ---
   primary: ema_stack            # must be one of `voters`
   confirm_min: 0                # >0 => hierarchical-with-confluence-confirmation
@@ -74,11 +79,14 @@ directional:
 
 # How the timeframes combine into one 3m call (see DIRECTIONAL_SPEC.md "MTF").
 mtf:
-  mtf_method: htf_bias_trigger  # htf_bias_trigger | cross_tf_confluence | per_tf_then_vote
+  # trigger_only = the 3-min signal ALONE (HTF is trend context, not a gate) — this is
+  # the trader's journal rule and what the LIVE cockpit + training game use.
+  # htf_bias_trigger | cross_tf_confluence | per_tf_then_vote also gate by the HTF bias.
+  mtf_method: trigger_only
   trigger_tf: 3min
-  bias_tfs: [15min, 60min, 1day, 1week]
-  bias_quorum: 2                # net HTF agreement needed to set a bias
-  veto: true                    # a conflicting HTF cancels the bias -> stand down
+  bias_tfs: [15min, 60min, 1day, 1week]   # computed for trend display; not a gate under trigger_only
+  bias_quorum: 2                # net HTF agreement needed to set a bias (gated methods only)
+  veto: true                    # a conflicting HTF cancels the bias (gated methods only)
 
 # Instruments to score. `source` selects the loader; `symbol` is the
 # provider-specific ticker. `session_anchor` aligns intraday resample bins to

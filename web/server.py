@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from loaders import get_loader
+from indicators.directional import journal_mtf_config
 from feeds.snapshot import build_snapshot, build_snapshot_at
 from feeds.breeze_oi import make_chain_fetcher
 from feeds.oi import chain_table, summarise_chain
@@ -45,6 +46,9 @@ PULL_TTL = 60          # chart/snapshot re-pull cadence (s)
 OI_TTL = 300           # option chain + macro cadence (s)
 LOG_OI = True          # persist each fresh chain to feeds.oi_store (the flywheel)
 DEFAULT_SIZE = 75
+# THE active resolver: the trader's journal 3-min strategy (trio + 2-close confirm,
+# trigger-only — HTF is trend context, not a gate). Live cockpit + training both use it.
+RESOLVER_CFG = journal_mtf_config()
 JOURNAL_DB = store.DB_PATH   # full-context SQLite store (overridden in tests)
 _STATIC = Path(__file__).parent / "static"
 
@@ -120,7 +124,7 @@ def _refresh(symbol: str, size: int) -> None:
         base_min, daily = PULL_FN(symbol)
         chain = _state["chain"]
         snap = build_snapshot(
-            symbol, base_min, daily, anchor=ANCHOR,
+            symbol, base_min, daily, anchor=ANCHOR, mtf_cfg=RESOLVER_CFG,
             oi_fetch_fn=(lambda i: chain) if chain is not None else None,
             macro=_state.get("macro"),
         )
@@ -278,7 +282,7 @@ def triggers(size: int = DEFAULT_SIZE):
     if _state["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
     snap = _state["snap"]
-    return replay_today(snap.feats, snap.frames, size_lots=size)
+    return replay_today(snap.feats, snap.frames, cfg=RESOLVER_CFG, size_lots=size)
 
 
 @app.post("/api/analyse")
@@ -369,10 +373,10 @@ def _train_refresh(symbol: str, days: int) -> None:
     if (_train["triggers"] is None or _train["symbol"] != symbol
             or now - _train["at"] > TRAIN_TTL):
         base, daily = TRAIN_PULL_FN(symbol, days)
-        snap = build_snapshot(symbol, base, daily, anchor=ANCHOR, macro={})
+        snap = build_snapshot(symbol, base, daily, anchor=ANCHOR, mtf_cfg=RESOLVER_CFG, macro={})
         _train.update(symbol=symbol, base=base, daily=daily,
                       frame3m=snap.frames["3min"],
-                      triggers=list_triggers(snap.feats, snap.frames),
+                      triggers=list_triggers(snap.feats, snap.frames, cfg=RESOLVER_CFG),
                       at=now, cases={})
 
 
@@ -403,7 +407,7 @@ def _train_case(tid: int) -> dict:
         return case
     trig = _train["triggers"][tid]
     snap = build_snapshot_at(_train["symbol"], _train["base"], _train["daily"],
-                             trig["ts"], anchor=ANCHOR, macro={})
+                             trig["ts"], anchor=ANCHOR, mtf_cfg=RESOLVER_CFG, macro={})
     # only a same-session snapshot counts as "as-of" (no stale/cross-day OI)
     chain = oi_store.load_nearest(_train["symbol"], trig["ts"], max_age_min=OI_MAX_AGE_MIN)
     oi_summary, oi_as_of, oi_age_min = None, None, None

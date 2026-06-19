@@ -169,10 +169,11 @@ def vote_three_min(df: pd.DataFrame) -> pd.Series:
     ties -> flat. (The ``sig_ema_meanrev`` experiment is deliberately excluded;
     the trader trends, he does not fade.)
     """
+    # bb_vrl / sma_pullback are NaN during warm-up (~50 / ~200 bars) -> treat as 0
     combo = (
-        df["sig_ema5_trigger"].astype(int)
-        + df["sig_bb_vrl"].astype(int)
-        + df["sig_sma_pullback"].astype(int)
+        df["sig_ema5_trigger"].fillna(0).astype(int)
+        + df["sig_bb_vrl"].fillna(0).astype(int)
+        + df["sig_sma_pullback"].fillna(0).astype(int)
     )
     return np.sign(combo).astype("int8").rename("vote_3min")
 
@@ -267,6 +268,11 @@ class DirectionalConfig:
     confirm_min: int = 0
     veto: bool = True
 
+    # confirmation gate (both methods): keep a call only after `confirm_closes`
+    # persistent closes + expanding volume (the journal's 2-close rule). 0 = off.
+    confirm_closes: int = 0
+    confirm_vol_window: int = 20
+
     def validate(self) -> None:
         if self.method not in ("confluence", "hierarchical"):
             raise ValueError(f"unknown method: {self.method!r}")
@@ -349,6 +355,12 @@ def resolve_direction(
         calls = _resolve_confluence(votes, cfg)
     else:
         calls = _resolve_hierarchical(votes, cfg)
+
+    if cfg.confirm_closes > 0:  # journal's 2-close + volume confirmation gate
+        gated = confirm_2_close(
+            calls_to_sign(calls), df,
+            n_closes=cfg.confirm_closes, vol_window=cfg.confirm_vol_window)
+        calls = _sign_to_calls(gated)
     calls = calls.rename("direction")
 
     return (calls, votes) if return_votes else calls
@@ -363,7 +375,7 @@ def resolve_direction(
 # The combination of TFs is itself a config switch — same "let the backtest
 # decide" philosophy as the single-TF resolver. See DIRECTIONAL_SPEC.md.
 
-_MTF_METHODS = ("htf_bias_trigger", "cross_tf_confluence", "per_tf_then_vote")
+_MTF_METHODS = ("trigger_only", "htf_bias_trigger", "cross_tf_confluence", "per_tf_then_vote")
 
 
 def calls_to_sign(calls: pd.Series) -> pd.Series:
@@ -523,8 +535,38 @@ def resolve_direction_mtf(
     if cfg.trigger_tf not in feats_by_tf:
         raise ValueError(f"trigger_tf {cfg.trigger_tf!r} missing from feats_by_tf")
 
+    if cfg.mtf_method == "trigger_only":
+        return _resolve_trigger_only(feats_by_tf, cfg)
     if cfg.mtf_method == "htf_bias_trigger":
         return _resolve_htf_bias_trigger(feats_by_tf, cfg)
     if cfg.mtf_method == "cross_tf_confluence":
         return _resolve_cross_tf_confluence(feats_by_tf, cfg)
     return _resolve_per_tf_then_vote(feats_by_tf, cfg)
+
+
+def _resolve_trigger_only(
+    feats_by_tf: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig
+) -> pd.Series:
+    """The 3-min trigger ALONE — no higher-TF gate (HTF is trend context only)."""
+    return resolve_direction(feats_by_tf[cfg.trigger_tf], cfg.base)
+
+
+# --------------------------------------------------------------------------- #
+# Preset: the trader's journal 3-min strategy
+# --------------------------------------------------------------------------- #
+def journal_trigger_config() -> DirectionalConfig:
+    """The journal's 3-min signal: the trio (EMA-5 trigger + Bollinger VRL + 45-EMA
+    pullback) confirmed by 2 closes + expanding volume. The signal is the 3-min read
+    alone — higher timeframes are trend context, not a gate (per the trader)."""
+    return DirectionalConfig(
+        method="confluence", voters=["three_min"], min_agree=1,
+        confirm_closes=2, confirm_vol_window=20)
+
+
+def journal_mtf_config() -> MTFDirectionalConfig:
+    """Journal strategy wired into the MTF stack as TRIGGER-ONLY (no HTF gate). The
+    bias TFs are retained for trend display; they do not suppress the signal."""
+    return MTFDirectionalConfig(
+        base=journal_trigger_config(), trigger_tf="3min",
+        bias_tfs=["15min", "60min", "1day", "1week"],
+        mtf_method="trigger_only", bias_quorum=2, veto=True)

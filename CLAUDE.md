@@ -239,6 +239,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     3-min trigger to the user (generic 6-voter confluence gated by HTF bias — NOT the journal
     trio/confirmation; that alignment is a deferred STRATEGY decision). Tested in
     tests/test_training.py (21) + suite green (124).
+- [x] **Switched the live + training resolver to the journal 3-min strategy.** Confirmed
+      with the trader: the SIGNAL is the **3-min trio alone** (`three_min` = ema5_trigger +
+      bb_vrl + 45-EMA pullback) **confirmed by 2 closes + expanding volume**; the higher
+      timeframes are **trend context only — NOT a gate/veto** ("signal depends on 3-min, not
+      HTF"), and **no 45-EMA veto** on the entry. Implementation in `indicators/directional.py`:
+      `DirectionalConfig.confirm_closes`/`confirm_vol_window` (applies `confirm_2_close` inside
+      `resolve_direction`), a new **`trigger_only`** mtf_method (`_resolve_trigger_only` = the
+      pure 3-min read, no bias matrix), NaN-safe `vote_three_min`, and factories
+      `journal_trigger_config()` / `journal_mtf_config()`. Wired as `web.server.RESOLVER_CFG`
+      into `build_snapshot`/`build_snapshot_at`/`list_triggers`/`replay_today` (live cockpit +
+      training); Stage-1 sweep stays config-driven (resolver remains a config switch).
+      config.example.yaml default updated (voters [three_min], min_agree 1, confirm 2/20,
+      mtf_method trigger_only). Tested in tests/test_directional.py (confirm gate, NaN-safe
+      trio, trigger_only ignores a conflicting HTF) + suite green (127). NOTE: warm-up
+      artifacts at window start + the "three_min = net-sign of the trio (any 1 can fire)"
+      aggregation remain open tuning questions.
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

@@ -134,7 +134,7 @@ def tclient(monkeypatch, tmp_path):
     trig = {"tid": 0, "ts": "2024-01-02T09:30:00+05:30", "date": "2024-01-02",
             "direction": "long", "entry": 24000.0, "eng_stop": 23960.0,
             "eng_target": 24080.0, "eng_rr": 2.0, "outcome": "open", "points": 0.0, "rupees": 0.0}
-    monkeypatch.setattr(srv, "list_triggers", lambda feats, frames: [trig])
+    monkeypatch.setattr(srv, "list_triggers", lambda feats, frames, cfg=None: [trig])
     srv._train.update(symbol=None, base=None, daily=None, frame3m=None,
                       triggers=None, at=0.0, cases={})
     return TestClient(srv.app)
