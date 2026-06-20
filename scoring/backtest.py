@@ -86,16 +86,46 @@ def make_claude_filter(symbol: str, base_1m, daily, memory: str = "",
     from agent.read import claude_read
     cfg = cfg or journal_mtf_config()
 
-    def fn(trigger: dict) -> str:
+    def fn(trigger: dict) -> dict:
         try:
             snap = build_snapshot_at(symbol, base_1m, daily, trigger["ts"], mtf_cfg=cfg)
             prop = propose_trade1(snap)
             read = claude_read(snap, prop, memory, completer=completer)
-            return "enter" if read.recommendation == "enter" else "stand_down"
+            return {"verdict": "enter" if read.recommendation == "enter" else "stand_down",
+                    "target": read.proposed_target, "stop": read.proposed_stop}
         except Exception:
-            return "stand_down"
+            return {"verdict": "stand_down"}
 
     return fn
+
+
+def clamp_levels(direction: str, entry: float, target, stop,
+                 min_rr: float = 1.5, max_risk_frac: float = 0.02):
+    """Guardrail Claude's proposed target/stop. Returns ``(target, stop, rr)`` or
+    ``(None, None, None)`` if unusable (wrong side / zero risk).
+
+    Both must sit on the correct side of entry; an absurdly wide stop is capped to
+    ``max_risk_frac`` of price; and if Claude's reward:risk is below ``min_rr`` the
+    target is pushed out to meet it (we never tighten Claude's stop past its idea).
+    """
+    if target is None or stop is None:
+        return None, None, None
+    long = direction == "long"
+    if long and not (target > entry and stop < entry):
+        return None, None, None
+    if (not long) and not (target < entry and stop > entry):
+        return None, None, None
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return None, None, None
+    if risk > max_risk_frac * entry:                 # sanity-cap an insane stop
+        risk = max_risk_frac * entry
+        stop = entry - risk if long else entry + risk
+    reward = abs(target - entry)
+    if reward / risk < min_rr:                        # honour the R:R floor via the target
+        reward = min_rr * risk
+        target = entry + reward if long else entry - reward
+    return round(target, 2), round(stop, 2), round(reward / risk, 2)
 
 
 def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
@@ -110,14 +140,32 @@ def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
 
     Returns ``{"triggers": [...], "report": {...}, "filtered": {...}|None}``.
     """
+    from analysis.triggers import _resolve_intraday
     cfg = cfg or journal_mtf_config()
     triggers = list_triggers(snap.feats, snap.frames, cfg=cfg, size_lots=lots,
                              lot_size=LOT_SIZE, realistic=True, target_driven=target_driven)
     filtered = None
     if claude_filter is not None:
+        frame3m = snap.frames["3min"]
+        taken = []
         for t in triggers:
-            t["claude"] = claude_filter(t)
-        taken = [t for t in triggers if t.get("claude") == "enter"]
+            cf = claude_filter(t)
+            if isinstance(cf, str):                  # back-compat: verdict-only filters
+                cf = {"verdict": cf}
+            t["claude"] = cf["verdict"]
+            tgt, stp, rr = clamp_levels(t["direction"], t["entry"], cf.get("target"), cf.get("stop"))
+            if tgt is not None:
+                t["claude_target"], t["claude_stop"], t["claude_rr"] = tgt, stp, rr
+            if cf["verdict"] != "enter":
+                continue
+            if tgt is not None:                      # trade CLAUDE's own levels
+                outcome, exit_px, points, _ = _resolve_intraday(
+                    frame3m, t["ts"], t["direction"], t["entry"], stp, tgt)
+                taken.append({**t, "eng_stop": stp, "eng_target": tgt, "eng_rr": rr,
+                              "outcome": outcome, "points": points,
+                              "rupees": round(points * LOT_SIZE * lots, 0)})
+            else:                                    # no usable levels -> engine's
+                taken.append(t)
         filtered = aggregate(taken, LOT_SIZE, lots)
     return {"triggers": triggers, "report": aggregate(triggers, LOT_SIZE, lots),
             "filtered": filtered}

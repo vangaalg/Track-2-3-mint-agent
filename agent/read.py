@@ -56,6 +56,17 @@ _SCHEMA = {
         "recommendation": {"type": "string", "enum": ["enter", "stand_down"]},
         "confidence": {"type": "integer", "description": "1 (low) to 5 (high)."},
         "key_risk": {"type": "string", "description": "The one thing that breaks this trade."},
+        "proposed_target": {
+            "type": ["number", "null"],
+            "description": "When recommending 'enter': YOUR target price for this trade "
+            "(the level you'd take profit at), read off chart structure — CPR/walls/"
+            "swing levels. null when standing down.",
+        },
+        "proposed_stop": {
+            "type": ["number", "null"],
+            "description": "When recommending 'enter': YOUR stop price (where the idea is "
+            "wrong). Keep reward:risk at least 1.5. null when standing down.",
+        },
     },
     "required": [
         "agrees_with_engine", "chart_analysis", "oi_analysis", "oi_bias", "where_moving",
@@ -77,6 +88,8 @@ class ClaudeRead:
     confidence: int
     key_risk: str
     oi_bias: str = "neutral"     # "bullish" | "bearish" | "neutral" (OI confluence)
+    proposed_target: float | None = None   # Claude's own target on an ENTER (else None)
+    proposed_stop: float | None = None      # Claude's own stop on an ENTER (else None)
 
     @property
     def enter(self) -> bool:

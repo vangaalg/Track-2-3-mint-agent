@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from scoring.backtest import aggregate, run_backtest, report_text, make_claude_filter
+from scoring.backtest import (aggregate, run_backtest, report_text, make_claude_filter,
+                              clamp_levels)
 from feeds.snapshot import build_snapshot
 from indicators.directional import journal_mtf_config
 from agent.read import ClaudeRead
@@ -97,11 +98,39 @@ def test_make_claude_filter_uses_completer():
     base, daily = _synth_1m(3), _synth_daily()
     fn = make_claude_filter("NIFTY", base, daily,
                             completer=lambda system, user: _stub_read("enter"))
-    verdict = fn({"ts": base.index[800].isoformat()})
-    assert verdict == "enter"
+    cf = fn({"ts": base.index[800].isoformat()})
+    assert cf["verdict"] == "enter" and "target" in cf and "stop" in cf
 
 
 def test_run_backtest_without_filter_has_no_filtered():
     snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
     out = run_backtest(snap, lots=1)
     assert out["filtered"] is None
+
+
+def test_clamp_levels_guardrails():
+    # valid long: target above, stop below, rr exactly at the floor
+    assert clamp_levels("long", 24000, 24300, 23800) == (24300.0, 23800.0, 1.5)
+    # rr below floor -> target pushed out to 1.5R (risk 200 -> reward 300 -> 24300)
+    assert clamp_levels("long", 24000, 24050, 23800) == (24300.0, 23800.0, 1.5)
+    # insane stop capped to 2% of price (risk 4000 -> 480 -> stop 23520)
+    t, s, rr = clamp_levels("long", 24000, 25000, 20000)
+    assert s == 23520.0 and rr == round(1000 / 480, 2)
+    # wrong side / missing -> unusable
+    assert clamp_levels("long", 24000, 23900, 23800) == (None, None, None)
+    assert clamp_levels("short", 24000, 24300, 23800) == (None, None, None)
+    assert clamp_levels("long", 24000, None, 23800) == (None, None, None)
+
+
+def test_claude_filter_trades_claude_levels():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+
+    def cf(t):
+        if t["direction"] == "long":
+            return {"verdict": "enter", "target": t["entry"] + 300, "stop": t["entry"] - 200}
+        return {"verdict": "enter", "target": t["entry"] - 300, "stop": t["entry"] + 200}
+
+    out = run_backtest(snap, lots=1, claude_filter=cf)
+    for t in out["triggers"]:
+        if t["claude"] == "enter":
+            assert t["claude_rr"] == 1.5 and "claude_target" in t and "claude_stop" in t

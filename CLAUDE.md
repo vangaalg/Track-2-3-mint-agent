@@ -203,8 +203,17 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       no leakage) → take/skip; `run_backtest(claude_filter=)` tags each trigger `claude` + adds a
       CLAUDE-FILTERED (ENTER-only) report; CLI `--claude` (needs ANTHROPIC_API_KEY, slow). Tested:
       target-driven long/short + fallback (test_triggers), filter split + completer seam (test_backtest).
-      Suite green (175). PENDING (trader asked): let Claude also DECIDE target/SL/RR after the trigger
-      (not just take/skip) — needs ClaudeRead level fields + backtest sims on Claude's levels.
+      Suite green (175).
+- [x] **Claude DECIDES the levels (full control, confirmed w/ trader).** Beyond take/skip, Claude now
+      sets its OWN target + stop after a trigger: `ClaudeRead.proposed_target`/`proposed_stop` (schema
+      + prompt ask for them on ENTER, null on stand-down). `scoring.backtest.clamp_levels` guardrails
+      them (correct side of entry, stop capped to 2% of price, R:R floored to 1.5 by pushing the target
+      out — never tightens Claude's stop); `make_claude_filter` returns `{verdict,target,stop}` and
+      `run_backtest` SIMULATES each taken trade on CLAUDE's clamped levels (via `_resolve_intraday`) for
+      the CLAUDE-FILTERED report, tagging each trigger `claude_target/claude_stop/claude_rr`. Verdict-only
+      filters still supported (back-compat). Tested: clamp guardrails + Claude-levels sim (test_backtest).
+      Suite green (177). PENDING: surface Claude's levels in the LIVE proposal + training reveal (backtest
+      validates them first); min-stop-distance floor still open.
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

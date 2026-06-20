@@ -89,6 +89,10 @@ def build_user(snapshot, proposal) -> str:
         "give your thesis, challenge the trader's most likely trap for THIS setup, "
         "say whether you agree with the engine, and recommend ENTER or STAND_DOWN. "
         "Set oi_bias to the chain's directional lean (bullish/bearish/neutral) — the "
-        "trade earns +1 conviction when it agrees with the trigger.",
+        "trade earns +1 conviction when it agrees with the trigger. "
+        "If you recommend ENTER, set proposed_target and proposed_stop to YOUR own "
+        "levels for this trade — read the target off chart structure (CPR/walls/swing) "
+        "and place the stop where the idea is wrong, keeping reward:risk at least 1.5. "
+        "Leave both null when standing down.",
     ]
     return "\n".join(parts)
