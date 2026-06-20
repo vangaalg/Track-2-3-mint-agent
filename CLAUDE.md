@@ -306,6 +306,15 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       **119 → 2 triggers**. Tested in tests/test_directional.py (arm/hold/exit, EMA-5-alone never
       fires, event must agree, one-trigger-per-reversal) + suite green (146). `three_min` kept for
       experimentation; squeeze params + EMA-5-exit are the next tuning knobs.
+- [x] **Backtest engine (`scoring/backtest.py`).** Wraps the existing `analysis.triggers.list_triggers`
+      (enumerate every breakout-pullback trigger across a multi-session frame + session-low-stop outcome)
+      into a one-call backtest: pull ~N days of 1-min NIFTY (+ long daily) → `feeds.snapshot.build_snapshot`
+      → `list_triggers` with the LIVE `journal_mtf_config` → `aggregate` (overall + per-direction + per-day:
+      n, W/L/O, hit-rate, net points/₹, avg win/loss, expectancy, profit factor). CLI
+      `python -m scoring.backtest --symbol NIFTY --days 30 [--loader breeze] [--lots 1]` pulls (on the
+      user's machine — sandbox is network-locked) and writes a ranked CSV + markdown to results/. Pure
+      `aggregate`/`run_backtest`/`report_text` tested offline in tests/test_backtest.py (synthetic frames);
+      suite green (166). Live 1-month NIFTY run happens locally with creds.
 - [x] **Trigger-validation harness (`scoring/trigger_check.py`).** Calibration loop: trader pastes
       a TradingView 3-min export → the tool runs the exact `journal_trigger_config` + prints each
       trigger time + WHY (`--candidates`/`--events`/`--at`, tunable squeeze/confirm). Reuses
