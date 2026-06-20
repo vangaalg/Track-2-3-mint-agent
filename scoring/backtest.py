@@ -81,14 +81,37 @@ def run_backtest(snap, lots: int = 1, cfg=None) -> dict:
 # --------------------------------------------------------------------------- #
 # CLI — pull + report
 # --------------------------------------------------------------------------- #
-def _pull(symbol: str, days: int, loader_name: str):
-    """Pull ~`days` of 1-minute base + a long daily history (runs on the user's box)."""
+def _pull(symbol: str, days: int, loader_name: str, chunk_days: int = 3):
+    """Pull ~`days` of 1-minute base + a long daily history (runs on the user's box).
+
+    Breeze's get_historical_data_v2 caps rows per call (~1000 ≈ ~3 trading days of
+    1-minute bars), so a single 30-day request silently truncates to the most recent
+    window. We PAGINATE: walk the range in `chunk_days`-wide windows, pull each, and
+    concatenate (dedup + sort). Empty windows (weekends/holidays) are skipped.
+    """
+    import time
     from loaders import get_loader
     loader = get_loader(loader_name)
-    base = loader.load(symbol, "minute", start=date.today() - timedelta(days=days + 4),
-                       use_cache=False)
-    daily = loader.load(symbol, "day", start=date.today() - timedelta(days=800),
-                        use_cache=False)
+    today = date.today()
+    cur = today - timedelta(days=days + 4)
+    parts: list[pd.DataFrame] = []
+    while cur <= today:
+        chunk_end = min(cur + timedelta(days=chunk_days - 1), today)
+        try:
+            part = loader.load(symbol, "minute", start=cur, end=chunk_end, use_cache=False)
+            if part is not None and not part.empty:
+                parts.append(part)
+                print(f"  {cur} … {chunk_end}: {len(part)} bars", file=sys.stderr)
+        except Exception as exc:                       # empty window or transient error
+            print(f"  {cur} … {chunk_end}: skipped ({exc})", file=sys.stderr)
+        cur = chunk_end + timedelta(days=1)
+        time.sleep(0.3)                                # gentle on Breeze rate limits
+    if not parts:
+        raise RuntimeError(f"no 1-minute data pulled for {symbol!r} over {days}d — "
+                           "check creds/session token and the symbol.")
+    base = pd.concat(parts)
+    base = base[~base.index.duplicated(keep="first")].sort_index()
+    daily = loader.load(symbol, "day", start=today - timedelta(days=800), use_cache=False)
     return base, daily
 
 
@@ -120,7 +143,8 @@ def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str) 
     csv_path = f"{outdir}/backtest_{symbol}_{stamp}.csv"
     md_path = f"{outdir}/backtest_{symbol}_{stamp}.md"
     pd.DataFrame(triggers).to_csv(csv_path, index=False)
-    Path(md_path).write_text("```\n" + report_text(symbol, report) + "\n```\n")
+    Path(md_path).write_text("```\n" + report_text(symbol, report) + "\n```\n",
+                             encoding="utf-8")
     return csv_path, md_path
 
 
@@ -130,12 +154,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--days", type=int, default=30, help="lookback window (~1 month default)")
     ap.add_argument("--loader", default="breeze", help="loaders.get_loader name (breeze/twelvedata)")
     ap.add_argument("--lots", type=int, default=1, help="position size for the ₹ column")
+    ap.add_argument("--chunk-days", type=int, default=3,
+                    help="pagination window for the 1-min pull (Breeze caps rows/call)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
     args = ap.parse_args(argv)
 
     print(f"Pulling ~{args.days}d of {args.symbol} 1-min via '{args.loader}' "
-          f"(needs creds + network)…", file=sys.stderr)
-    base, daily = _pull(args.symbol, args.days, args.loader)
+          f"(paginated, {args.chunk_days}d/chunk; needs creds + network)…", file=sys.stderr)
+    base, daily = _pull(args.symbol, args.days, args.loader, args.chunk_days)
     snap = build_snapshot(args.symbol, base, daily, mtf_cfg=journal_mtf_config())
     out = run_backtest(snap, lots=args.lots)
     print(report_text(args.symbol, out["report"]))
