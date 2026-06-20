@@ -248,14 +248,34 @@ def _serialize_chart(frame, bars: int) -> dict:
     return {"bars": out, "cpr": cpr}
 
 
+def _daily_cpr(snap) -> dict | None:
+    """Today's CPR from the DAILY frame — the same level CPR broadcasts onto every TF.
+
+    Sourcing it from the daily series (which always carries a prior session) avoids the
+    NaN a shallow single-session intraday frame would give, so the chart's CPR lines
+    always render.
+    """
+    from indicators.engine import compute_indicators
+    daily = getattr(snap, "frames", {}).get("1day")
+    if daily is None or daily.empty:
+        return None
+    last = compute_indicators(daily).iloc[-1]
+    cpr = {"pivot": _jf(last.get("cpr_pivot")), "tc": _jf(last.get("cpr_tc")),
+           "bc": _jf(last.get("cpr_bc"))}
+    return cpr if cpr["pivot"] is not None else None
+
+
 def _chart_bundle(snap, tfs=("3min", "15min", "60min", "1day"), bars: int = 60) -> dict:
     """Compact multi-TF chart datapoints saved with each decision (Training-Mode fuel)."""
-    out = {}
+    out, daily_cpr = {}, _daily_cpr(snap)
     for tf in tfs:
         frame = snap.frames.get(tf)
         if frame is not None and not frame.empty:
             try:
-                out[tf] = _serialize_chart(frame, bars)
+                bundle = _serialize_chart(frame, bars)
+                if daily_cpr is not None:
+                    bundle["cpr"] = daily_cpr
+                out[tf] = bundle
             except Exception:
                 pass
     return out
@@ -266,11 +286,12 @@ def chart(tf: str = "3min", bars: int = 200):
     """Candlestick + indicator overlays for the price panel (computed per TF)."""
     if _state["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
-    frame = _state["snap"].frames.get(tf)
+    snap = _state["snap"]
+    frame = snap.frames.get(tf)
     if frame is None or frame.empty:
         raise HTTPException(status_code=404, detail=f"no frame for tf {tf!r}")
     data = _serialize_chart(frame, bars)
-    return {"tf": tf, "bars": data["bars"], "cpr": data["cpr"]}
+    return {"tf": tf, "bars": data["bars"], "cpr": _daily_cpr(snap) or data["cpr"]}
 
 
 @app.get("/api/record")

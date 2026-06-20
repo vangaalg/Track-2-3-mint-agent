@@ -122,7 +122,19 @@ def test_chart_endpoint_per_timeframe(client, tf):
     assert d["tf"] == tf and d["bars"]
     row = d["bars"][-1]
     assert {"o", "h", "l", "c", "ema45", "bb_u", "macd", "rsi", "st"} <= set(row)
-    assert "pivot" in d["cpr"]
+    # CPR is sourced from the daily frame, so pivot/tc/bc are always NUMERIC (not None).
+    for k in ("pivot", "tc", "bc"):
+        assert isinstance(d["cpr"][k], (int, float))
+
+
+def test_chart_cpr_present_with_single_session_intraday(client, monkeypatch):
+    # A live 1-min frame holding ONLY today's session has no prior session, so the
+    # intraday CPR would be NaN; the daily-sourced CPR must still populate the lines.
+    monkeypatch.setattr(srv, "PULL_FN", lambda sym: (_synth_1m(days=1), _synth_daily()))
+    srv._state.update(snap=None, snap_at=0.0)
+    client.get("/api/snapshot")
+    cpr = client.get("/api/chart?tf=3min&bars=50").json()["cpr"]
+    assert isinstance(cpr["pivot"], (int, float)) and isinstance(cpr["bc"], (int, float))
 
 
 def test_chart_endpoint_unknown_tf_404(client):

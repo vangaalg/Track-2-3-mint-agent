@@ -312,6 +312,19 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       `scoring.validate_export.load_export`; `platform` mode runs the trigger on the export's OWN
       indicator values (isolates the logic), `--recompute` does the whole pipeline. data/validate/
       gitignored. Tested in tests/test_trigger_check.py.
+- [x] **Cockpit chart: fixed CPR display + added click-to-draw trend lines.** (1) CPR wasn't showing —
+      root cause: `_serialize_chart` recomputed CPR per intraday frame and took the last bar, so a live
+      single-session 3-min frame gave NaN (no prior session) → frontend skipped the lines (and the
+      `#9aa0b4` dashed colour was faint). Fix: new `web.server._daily_cpr(snap)` sources CPR from the
+      DAILY frame (always has a prior session → never NaN), wired into `/api/chart` + `_chart_bundle`;
+      `chart.js` now has CPR pivot/TC/BC in the ⚙ panel (show/hide + colour, clearer `#5b6b8c` default)
+      via `redrawCpr()` (price-lines redrawn on gear change). (2) Trend lines — `chart.js` drawing
+      toolbar (Horizontal / Trend / Clear): `main.subscribeClick` + `candle.coordinateToPrice` →
+      horizontal = `createPriceLine`, angled = a 2-point line series; persisted per-TF to localStorage
+      (`chartDrawings`), re-applied on refresh + TF switch (`redrawDrawings`), Clear wipes the TF. Shared
+      `chart.js` so cockpit + `/train` both get it; toolbar markup in index.html/train.html + style.css.
+      Tested: tests/test_web_server.py asserts numeric CPR incl. a single-session intraday case; suite
+      green (157). Frontend drawing is manual-verify (no JS test harness). Confirmed w/ user: draw-on-chart.
 - [x] **Pinned the 3-min entry against TWO charts → breakout + first-5-EMA-pullback; stop = day low.**
       `bb_reversal` was a backwards fade; a "low touches 5-EMA" cut and then a "VRL retest" cut each
       matched Nifty but the trader's Bank Nifty chart disproved them. Settled mechanic (Nifty +

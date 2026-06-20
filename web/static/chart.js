@@ -22,7 +22,9 @@ function mtfTicks(bd, call) {
 const IND_KEY = "chartIndicators";
 const LINE_KEYS = ["bbU", "bbM", "bbL", "ema5", "ema45", "ema100", "ema200", "st", "macdL", "sigL", "rsi"];
 const PANEL_KEYS = ["candleUp", "candleDn", "ema5", "ema45", "ema100", "ema200",
-  "bbU", "bbM", "bbL", "st", "macdL", "sigL", "rsi"];
+  "bbU", "bbM", "bbL", "st", "cprPivot", "cprTC", "cprBC", "macdL", "sigL", "rsi"];
+const CPR_KEYS = { cprPivot: "pivot", cprTC: "tc", cprBC: "bc" };
+const CPR_TITLE = { cprPivot: "CPR", cprTC: "TC", cprBC: "BC" };
 const IND_DEFAULTS = {
   candleUp: { label: "Candle up", color: "#26a69a", width: 1 },
   candleDn: { label: "Candle down", color: "#ef5350", width: 1 },
@@ -34,6 +36,9 @@ const IND_DEFAULTS = {
   ema100: { label: "EMA 100", color: "#9c27b0", width: 1 },
   ema200: { label: "EMA 200", color: "#787b86", width: 2 },
   st: { label: "Supertrend", color: "#ff6d00", width: 2 },
+  cprPivot: { label: "CPR pivot", color: "#5b6b8c", width: 1 },
+  cprTC: { label: "CPR TC", color: "#5b6b8c", width: 1 },
+  cprBC: { label: "CPR BC", color: "#5b6b8c", width: 1 },
   macdL: { label: "MACD", color: "#2962ff", width: 1 },
   sigL: { label: "Signal", color: "#ef5350", width: 1 },
   rsi: { label: "RSI", color: "#9c27b0", width: 2 },
@@ -59,6 +64,61 @@ function applyIndicatorConfig() {
     const cfg = IND[k];
     if (LW[k] && cfg) LW[k].applyOptions({ color: cfg.color, lineWidth: cfg.width, visible: cfg.visible !== false });
   }
+  redrawCpr();   // CPR lines are price-lines, not series -> redraw to honour the gear
+}
+
+// CPR pivot/TC/BC are series price-lines (not line series), so colour/show-hide changes
+// need an explicit remove+recreate from the last received cpr block.
+function redrawCpr() {
+  if (!LW || !LW.candle) return;
+  LW.cprLines.forEach((l) => LW.candle.removePriceLine(l)); LW.cprLines = [];
+  const c = LW.lastCpr || {};
+  for (const key in CPR_KEYS) {
+    const p = c[CPR_KEYS[key]], cfg = IND[key];
+    if (p == null || (cfg && cfg.visible === false)) continue;
+    LW.cprLines.push(LW.candle.createPriceLine({
+      price: p, color: (cfg && cfg.color) || "#5b6b8c", lineStyle: 2,
+      lineWidth: (cfg && cfg.width) || 1, title: CPR_TITLE[key] }));
+  }
+}
+
+// --- user-drawn trend lines (horizontal + angled), persisted per timeframe -------- //
+const DRAW_KEY = "chartDrawings";
+let _drawMode = null, _pendA = null;
+function loadDrawings() { try { return JSON.parse(localStorage.getItem(DRAW_KEY) || "{}"); } catch (e) { return {}; } }
+function saveDrawings(all) { try { localStorage.setItem(DRAW_KEY, JSON.stringify(all)); } catch (e) { /* quota */ } }
+
+function redrawDrawings() {
+  if (!LW || !LW.candle) return;
+  LW.drawLines.forEach((l) => LW.candle.removePriceLine(l)); LW.drawLines = [];
+  LW.drawSeries.forEach((s) => LW.main.removeSeries(s)); LW.drawSeries = [];
+  for (const it of (loadDrawings()[chartTF] || [])) {
+    if (it.type === "h") {
+      LW.drawLines.push(LW.candle.createPriceLine(
+        { price: it.price, color: "#1f2430", lineStyle: 0, lineWidth: 1, title: "" }));
+    } else if (it.type === "t" && it.a && it.b) {
+      const s = LW.main.addLineSeries({ color: "#1f2430", lineWidth: 2, priceLineVisible: false,
+        lastValueVisible: false, crosshairMarkerVisible: false });
+      s.setData([{ time: it.a.time, value: it.a.price }, { time: it.b.time, value: it.b.price }]
+        .sort((x, y) => x.time - y.time));
+      LW.drawSeries.push(s);
+    }
+  }
+}
+
+function _onChartClick(param) {
+  if (!_drawMode || !LW || !param || !param.point || param.time == null) return;
+  const price = LW.candle.coordinateToPrice(param.point.y);
+  if (price == null) return;
+  const all = loadDrawings(), arr = all[chartTF] || (all[chartTF] = []);
+  if (_drawMode === "h") {
+    arr.push({ type: "h", price });
+  } else {                                   // "t" — collect two points
+    if (!_pendA) { _pendA = { time: param.time, price }; return; }
+    if (param.time === _pendA.time) return;   // same bar -> wait for a distinct 2nd point
+    arr.push({ type: "t", a: _pendA, b: { time: param.time, price } }); _pendA = null;
+  }
+  saveDrawings(all); redrawDrawings();
 }
 
 function buildIndPanel() {
@@ -125,8 +185,9 @@ function initCharts() {
     dests.forEach((d) => d.timeScale().setVisibleLogicalRange(r)); lock = false;
   });
   sync(main, [macdC, rsiC]); sync(macdC, [main, rsiC]); sync(rsiC, [main, macdC]);
-  o.loadedTf = null; o.cprLines = [];
+  o.loadedTf = null; o.cprLines = []; o.lastCpr = null; o.drawLines = []; o.drawSeries = [];
   LW = o;
+  main.subscribeClick(_onChartClick);   // click-to-draw trend lines
   applyIndicatorConfig();    // honour saved colors / show-hide on first paint
 }
 
@@ -135,6 +196,7 @@ function renderLW(d) {
   if (!b.length) return;
   const ser = (k) => b.filter((r) => r[k] != null).map((r) => ({ time: _lwTime(r.t), value: r[k] }));
   const fresh = LW.loadedTf !== chartTF;
+  if (d.cpr) LW.lastCpr = d.cpr;
 
   if (fresh) {
     LW.candle.setData(b.map((r) => ({ time: _lwTime(r.t), open: r.o, high: r.h, low: r.l, close: r.c })));
@@ -144,11 +206,8 @@ function renderLW(d) {
     LW.hist.setData(b.filter((r) => r.hist != null).map((r) =>
       ({ time: _lwTime(r.t), value: r.hist, color: r.hist >= 0 ? "#26a69a" : "#ef5350" })));
     LW.macdL.setData(ser("macd")); LW.sigL.setData(ser("signal")); LW.rsi.setData(ser("rsi"));
-    LW.cprLines.forEach((l) => LW.candle.removePriceLine(l)); LW.cprLines = [];
-    const c = d.cpr || {};
-    const addCpr = (p, t) => p && LW.cprLines.push(LW.candle.createPriceLine(
-      { price: p, color: "#9aa0b4", lineStyle: 2, lineWidth: 1, title: t }));
-    addCpr(c.pivot, "CPR"); addCpr(c.tc, "TC"); addCpr(c.bc, "BC");
+    redrawCpr();           // CPR price-lines (gear-controlled colour / show-hide)
+    redrawDrawings();      // re-apply this TF's saved trend lines
     LW.main.timeScale().fitContent();
     LW.loadedTf = chartTF;
   } else {
@@ -185,6 +244,23 @@ function wireChartUI(onTF) {
     e.preventDefault();
     try { localStorage.removeItem(IND_KEY); } catch (err) { /* ignore */ }
     IND = loadIndCfg(); buildIndPanel(); applyIndicatorConfig();
+  };
+  // drawing toolbar: Horizontal / Trend toggle a click-mode; Clear wipes this TF.
+  const modes = { drawH: "h", drawT: "t" };
+  const clearActive = () => document.querySelectorAll("#drawbar button").forEach((b) => b.classList.remove("on"));
+  for (const id in modes) {
+    const btn = _el(id);
+    if (!btn) continue;
+    btn.onclick = () => {
+      const off = _drawMode === modes[id];
+      _drawMode = off ? null : modes[id]; _pendA = null; clearActive();
+      if (!off) btn.classList.add("on");
+    };
+  }
+  const clr = _el("drawClear");
+  if (clr) clr.onclick = () => {
+    const all = loadDrawings(); delete all[chartTF]; saveDrawings(all);
+    _drawMode = null; _pendA = null; clearActive(); redrawDrawings();
   };
   buildIndPanel();
 }
