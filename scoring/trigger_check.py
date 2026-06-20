@@ -41,10 +41,12 @@ import pandas as pd
 
 from scoring.validate_export import load_export
 from indicators.engine import compute_indicators
-from indicators.directional import resolve_direction, journal_trigger_config
+from indicators.directional import (
+    resolve_direction, journal_trigger_config, squeeze_trigger_config,
+)
 
-# columns the bb_reversal trigger + diagnostic read
-_NEEDED = ("bb_upper", "bb_mid", "bb_lower", "ema_5")
+# columns the breakout-pullback / squeeze triggers + diagnostic read
+_NEEDED = ("bb_upper", "bb_mid", "bb_lower", "ema_5", "ema_45")
 
 
 # --------------------------------------------------------------------------- #
@@ -129,24 +131,69 @@ def _hhmm(ts) -> str:
 # --------------------------------------------------------------------------- #
 # Reporting
 # --------------------------------------------------------------------------- #
-def _warmup_note(feats: pd.DataFrame, squeeze_window: int) -> str:
+def _warmup_note(feats: pd.DataFrame, strategy: str, squeeze_window: int) -> str:
     n = len(feats)
-    first_ok = feats["squeeze_thresh"].first_valid_index()
-    when = _hhmm(first_ok) if first_ok is not None else "never (need more bars)"
-    return (f"Warm-up: the squeeze needs {squeeze_window} prior bars; only bars from "
-            f"~{when} are testable here ({n} bars total). Paste from the 09:15 open "
-            f"(or include >= {squeeze_window} bars before the time you're checking).")
+    if strategy == "squeeze":
+        first_ok = feats["squeeze_thresh"].first_valid_index()
+        when = _hhmm(first_ok) if first_ok is not None else "never (need more bars)"
+        return (f"Warm-up: the squeeze needs {squeeze_window} prior bars; only bars from "
+                f"~{when} are testable here ({n} bars total). Paste from the 09:15 open "
+                f"(or include >= {squeeze_window} bars before the time you're checking).")
+    # breakout: only needs Bollinger + the EMAs (supplied in platform mode -> no warm-up)
+    ok = feats[["bb_upper", "ema_45", "ema_5"]].dropna()
+    when = _hhmm(ok.index[0]) if len(ok) else "never (need more bars)"
+    return (f"Breakout strategy: bars testable from ~{when} ({n} bars total; "
+            f"in platform mode the bands/EMAs are supplied, so no warm-up).")
 
 
-def report_triggers(feats: pd.DataFrame, calls: pd.Series, squeeze_window: int) -> None:
+def report_triggers(feats: pd.DataFrame, calls: pd.Series, strategy: str,
+                    squeeze_window: int) -> None:
     trigs = find_triggers(calls)
+    hint = "--candidates" if strategy == "breakout" else "--events"
     print(f"\n{len(trigs)} trigger(s):")
     for t in trigs:
         print(f"  {_hhmm(t['ts'])}  {t['direction'].upper()}  "
               f"(close {feats['close'].iloc[t['i']]:.2f})")
     if not trigs:
-        print("  (none — see --events to see which Bollinger reversals were filtered)")
-    print("\n" + _warmup_note(feats, squeeze_window))
+        print(f"  (none — see {hint} to see which setups were armed/filtered)")
+    print("\n" + _warmup_note(feats, strategy, squeeze_window))
+
+
+def report_candidates(feats: pd.DataFrame, calls: pd.Series) -> None:
+    """Replay the breakout->pullback state machine and show each setup's fate."""
+    close = feats["close"].to_numpy(float)
+    low = feats["low"].to_numpy(float); high = feats["high"].to_numpy(float)
+    bb_u = feats["bb_upper"].to_numpy(float); bb_l = feats["bb_lower"].to_numpy(float)
+    e5 = feats["ema_5"].to_numpy(float); e45 = feats["ema_45"].to_numpy(float)
+    idx = feats.index
+    print("\nBreakout -> pullback setups:")
+    state, arm_ts, n = 0, None, 0
+    for i in range(len(feats)):
+        if np.isnan(bb_u[i]) or np.isnan(e45[i]) or np.isnan(e5[i]):
+            continue
+        if state == 0:
+            if close[i] > bb_u[i] and close[i] > e45[i]:
+                state, arm_ts = 1, idx[i]
+            elif close[i] < bb_l[i] and close[i] < e45[i]:
+                state, arm_ts = -1, idx[i]
+        elif state == 1:
+            if close[i] < e45[i]:
+                print(f"  {_hhmm(arm_ts)} breakout UP -> CANCELLED at {_hhmm(idx[i])} (closed below 45-EMA)")
+                state = 0
+            elif low[i] <= e5[i]:
+                print(f"  {_hhmm(arm_ts)} breakout UP -> FIRED LONG at {_hhmm(idx[i])} (low {low[i]:.2f} touched 5-EMA {e5[i]:.2f})")
+                state, n = 0, n + 1
+        elif state == -1:
+            if close[i] > e45[i]:
+                print(f"  {_hhmm(arm_ts)} breakout DN -> CANCELLED at {_hhmm(idx[i])} (closed above 45-EMA)")
+                state = 0
+            elif high[i] >= e5[i]:
+                print(f"  {_hhmm(arm_ts)} breakout DN -> FIRED SHORT at {_hhmm(idx[i])} (high {high[i]:.2f} touched 5-EMA {e5[i]:.2f})")
+                state, n = 0, n + 1
+    if state != 0:
+        print(f"  {_hhmm(arm_ts)} breakout {'UP' if state==1 else 'DN'} -> still ARMED at end of data")
+    if n == 0:
+        print("  (no fired setups)")
 
 
 def report_events(feats: pd.DataFrame, calls: pd.Series) -> None:
@@ -204,24 +251,33 @@ def main(argv: list[str] | None = None) -> int:
                     help="platform: use the export's own indicators (default); "
                          "recompute: compute indicators from OHLC")
     ap.add_argument("--recompute", action="store_true", help="alias for --mode recompute")
+    ap.add_argument("--strategy", choices=["breakout", "squeeze"], default="breakout",
+                    help="breakout: breakout+pullback continuation (default, the real "
+                         "3-min entry); squeeze: the separate Bollinger squeeze fade")
     ap.add_argument("--tz", default="Asia/Kolkata")
     ap.add_argument("--squeeze-window", type=int, default=50)
     ap.add_argument("--squeeze-pct", type=float, default=0.25)
-    ap.add_argument("--confirm-closes", type=int, default=2)
-    ap.add_argument("--events", action="store_true", help="list every reversal event + its fate")
+    ap.add_argument("--confirm-closes", type=int, default=None,
+                    help="override the strategy's confirm gate (default: per strategy)")
+    ap.add_argument("--candidates", action="store_true",
+                    help="list every breakout->pullback setup + its fate (breakout)")
+    ap.add_argument("--events", action="store_true", help="list every squeeze reversal event + fate")
     ap.add_argument("--at", help="dump the per-bar breakdown around HH:MM")
     args = ap.parse_args(argv)
 
     mode = "recompute" if args.recompute else args.mode
     feats = build_feats(args.export, mode, args.tz, args.squeeze_window, args.squeeze_pct)
 
-    cfg = journal_trigger_config()
-    cfg.confirm_closes = args.confirm_closes
+    cfg = squeeze_trigger_config() if args.strategy == "squeeze" else journal_trigger_config()
+    if args.confirm_closes is not None:
+        cfg.confirm_closes = args.confirm_closes
     calls = resolve_direction(feats, cfg)
 
-    print(f"Loaded {len(feats)} bars from {args.export}  [mode={mode}, "
-          f"squeeze={args.squeeze_window}/{args.squeeze_pct}, confirm={args.confirm_closes}]")
-    report_triggers(feats, calls, args.squeeze_window)
+    print(f"Loaded {len(feats)} bars from {args.export}  [strategy={args.strategy}, "
+          f"mode={mode}, confirm={cfg.confirm_closes}]")
+    report_triggers(feats, calls, args.strategy, args.squeeze_window)
+    if args.candidates:
+        report_candidates(feats, calls)
     if args.events:
         report_events(feats, calls)
     if args.at:

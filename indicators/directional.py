@@ -179,17 +179,18 @@ def vote_three_min(df: pd.DataFrame) -> pd.Series:
 
 
 def vote_bb_reversal(df: pd.DataFrame) -> pd.Series:
-    """The journal's REAL 3-min entry: a Bollinger breach -> revert, EMA-5 confirmed.
+    """SEPARATE squeeze-fade strategy: a Bollinger breach -> revert, EMA-5 confirmed.
+
+    NOTE: this is NOT the trader's main 3-min entry (that is ``vote_breakout_pullback``
+    below — a breakout CONTINUATION). This one fades a poke outside the band after a
+    volatility *squeeze* (coil) re-expands; kept as a distinct signal to study, off by
+    default.
 
     A squeeze-gated Bollinger reversal (``sig_bb_vrl``) whose close lands on the
     matching side of the EMA-5 (``sig_ema5_trigger`` agrees) ARMS a direction; it is
     HELD while the EMA-5 close stays on that side, and cleared when the EMA-5 flips.
-    Re-entry needs a FRESH Bollinger event — being above/below the EMA-5 alone never
-    arms a trade (that net-sign OR-aggregation in ``vote_three_min`` was the over-fire).
-
     The latch turns the one-bar event into a held direction so the resolver's
-    ``confirm_2_close`` (2 closes on the held side + expanding volume) and the
-    trigger flip-detection fire exactly ONE trigger per confirmed reversal.
+    ``confirm_2_close`` and the flip-detection fire exactly one trigger per reversal.
     """
     ema5 = df["sig_ema5_trigger"].fillna(0).to_numpy()
     bbv = df["sig_bb_vrl"].fillna(0).to_numpy()
@@ -202,6 +203,63 @@ def vote_bb_reversal(df: pd.DataFrame) -> pd.Series:
             cur = 0
         out[i] = cur
     return pd.Series(out, index=df.index, dtype="int8").rename("vote_bb_reversal")
+
+
+def vote_breakout_pullback(df: pd.DataFrame) -> pd.Series:
+    """The trader's REAL 3-min entry: a Bollinger BREAKOUT + pullback CONTINUATION.
+
+    Confirmed from the journal (his 13:48->13:51 example): an UPPER-band breakout
+    (``close > bb_upper``) **while above the 45-EMA** is up-momentum and ARMS a long;
+    price then retraces and the entry fires when the bar's **low touches the 5-EMA**
+    (the pullback dip) — direction = SAME as the breakout. Mirror for short (lower-band
+    breakout below the 45-EMA, fire when the **high touches the 5-EMA**). A close back
+    through the 45-EMA cancels the armed setup. Latches FLAT after firing, so a fresh
+    breakout is needed to re-arm -> exactly one trigger per setup.
+
+    Deliberately HIGH-RECALL (touch the 5-EMA, not strict close-beyond) — the genuine/
+    false boundary is fuzzy and is meant to be learned by the Claude trigger agent, not
+    hardcoded. Needs ``close``, ``low``, ``high``, ``bb_upper``, ``bb_lower``, ``ema_5``,
+    ``ema_45`` (all from ``engine.compute_indicators``).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    bb_u = df["bb_upper"].to_numpy(dtype=float)
+    bb_l = df["bb_lower"].to_numpy(dtype=float)
+    ema5 = df["ema_5"].to_numpy(dtype=float)
+    ema45 = df["ema_45"].to_numpy(dtype=float)
+
+    out = np.zeros(len(df), dtype="int8")
+    FLAT, LONG_ARM, SHORT_ARM = 0, 1, -1
+    state = FLAT
+    for i in range(len(df)):
+        # NaN warm-up (bands/EMAs not ready) -> stay flat
+        if np.isnan(bb_u[i]) or np.isnan(ema45[i]) or np.isnan(ema5[i]):
+            state = FLAT
+            continue
+        if state == FLAT:
+            if close[i] > bb_u[i] and close[i] > ema45[i]:
+                state = LONG_ARM
+            elif close[i] < bb_l[i] and close[i] < ema45[i]:
+                state = SHORT_ARM
+        elif state == LONG_ARM:
+            if close[i] < ema45[i]:               # trend broke -> cancel
+                state = FLAT
+            elif low[i] <= ema5[i]:               # pullback touched the 5-EMA -> enter long
+                out[i] = 1
+                state = FLAT
+            elif close[i] > bb_u[i]:              # a fresh breakout keeps it armed
+                state = LONG_ARM
+        elif state == SHORT_ARM:
+            if close[i] > ema45[i]:
+                state = FLAT
+            elif high[i] >= ema5[i]:              # pull-up touched the 5-EMA -> enter short
+                out[i] = -1
+                state = FLAT
+            elif close[i] < bb_l[i]:
+                state = SHORT_ARM
+    return pd.Series(out, index=df.index, dtype="int8").rename("vote_breakout_pullback")
+
 
 
 
@@ -254,6 +312,7 @@ VOTERS = {
     "bollinger": vote_bollinger,
     "three_min": vote_three_min,
     "bb_reversal": vote_bb_reversal,
+    "breakout_pullback": vote_breakout_pullback,
 }
 
 
@@ -583,11 +642,20 @@ def _resolve_trigger_only(
 # Preset: the trader's journal 3-min strategy
 # --------------------------------------------------------------------------- #
 def journal_trigger_config() -> DirectionalConfig:
-    """The journal's 3-min signal: an event-gated **Bollinger breach -> revert**
-    confirmed by the EMA-5 close (``bb_reversal``), then 2 closes + expanding volume.
-    EMA-5 state alone never fires (that was the over-fire); the 45-EMA pullback does
-    not fire on its own. The signal is the 3-min read alone — higher timeframes are
-    trend context, not a gate (per the trader)."""
+    """The trader's 3-min signal: a Bollinger **breakout + pullback CONTINUATION**
+    (``breakout_pullback``) — an upper-band breakout above the 45-EMA arms a long,
+    entered on the pullback to the 5-EMA (mirror for short). The breakout+pullback
+    structure IS the confirmation (``confirm_closes=0``). The signal is the 3-min read
+    alone — higher timeframes are trend context, not a gate (per the trader)."""
+    return DirectionalConfig(
+        method="confluence", voters=["breakout_pullback"], min_agree=1,
+        confirm_closes=0)
+
+
+def squeeze_trigger_config() -> DirectionalConfig:
+    """SEPARATE squeeze-fade strategy (``bb_reversal``): a Bollinger breach -> revert
+    after a volatility squeeze, EMA-5 confirmed, 2 closes + expanding volume. Not the
+    trader's main entry — kept to study/compare (use via the harness ``--strategy``)."""
     return DirectionalConfig(
         method="confluence", voters=["bb_reversal"], min_agree=1,
         confirm_closes=2, confirm_vol_window=20)

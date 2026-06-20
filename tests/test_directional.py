@@ -204,10 +204,10 @@ def test_bb_reversal_event_must_agree_with_ema5():
     assert vote_bb_reversal(_trig_frame(ema5, bbv)).abs().sum() == 0
 
 
-def test_journal_config_fires_one_trigger_per_reversal():
-    from indicators.directional import resolve_direction, journal_trigger_config
-    # A held long reversal with EXPANDING volume -> confirm_2_close passes from the
-    # 2nd held bar; the call is a single long run (one trigger), not bar-by-bar chop.
+def test_squeeze_config_fires_one_trigger_per_reversal():
+    from indicators.directional import resolve_direction, squeeze_trigger_config
+    # The SEPARATE squeeze fade: a held long reversal with EXPANDING volume ->
+    # confirm_2_close passes from the 2nd held bar; one trigger, not bar-by-bar chop.
     n = 8
     idx = pd.date_range("2024-01-01 09:15", periods=n, freq="3min", tz="Asia/Kolkata")
     df = pd.DataFrame({
@@ -215,12 +215,64 @@ def test_journal_config_fires_one_trigger_per_reversal():
         "sig_bb_vrl":       [0, 0, 1, 0, 0, 0, 0, 0],
         "volume": np.arange(1, n + 1, dtype=float) * 1000,   # strictly expanding
     }, index=idx)
-    calls = resolve_direction(df, journal_trigger_config()).tolist()
+    calls = resolve_direction(df, squeeze_trigger_config()).tolist()
     longs = [i for i, c in enumerate(calls) if c == "long"]
     assert longs and all(c in ("long", "flat") for c in calls)   # never flips to short
-    # exactly one flip into long (one trigger), starting at the confirmation bar (>=3)
     flips = sum(1 for i in range(1, n) if calls[i] == "long" and calls[i-1] != "long")
     assert flips == 1 and longs[0] >= 3
+
+
+# --- breakout + pullback continuation (the trader's real 3-min entry) ---------- #
+def _bp_frame(rows):
+    """rows: (close, low, high, bb_upper, bb_lower, ema_5, ema_45) per bar."""
+    idx = pd.date_range("2024-01-01 09:15", periods=len(rows), freq="3min", tz="Asia/Kolkata")
+    cols = ["close", "low", "high", "bb_upper", "bb_lower", "ema_5", "ema_45"]
+    return pd.DataFrame(rows, columns=cols, index=idx)
+
+
+def test_breakout_pullback_long_arms_and_fires():
+    from indicators.directional import vote_breakout_pullback
+    # bar0: close>upper & >45EMA -> arm long; bar1: low touches 5-EMA -> fire long.
+    df = _bp_frame([
+        (101.0, 100.6, 101.2, 100.5, 98.0, 100.0, 99.0),   # arm (low above 5-EMA)
+        (100.3, 99.8, 100.5, 100.5, 98.0, 100.0, 99.0),    # pullback -> FIRE long
+        (100.4, 100.2, 100.6, 100.5, 98.0, 100.0, 99.0),   # no fresh breakout -> flat
+    ])
+    v = vote_breakout_pullback(df).tolist()
+    assert v == [0, 1, 0]
+
+
+def test_breakout_pullback_short_mirror():
+    from indicators.directional import vote_breakout_pullback
+    df = _bp_frame([
+        (99.0, 98.8, 99.4, 102.0, 99.5, 100.0, 101.0),     # close<lower & <45EMA -> arm short
+        (99.2, 99.0, 100.3, 102.0, 99.5, 100.0, 101.0),    # high touches 5-EMA -> FIRE short
+        (99.1, 98.9, 99.3, 102.0, 99.5, 100.0, 101.0),     # no re-arm -> flat
+    ])
+    v = vote_breakout_pullback(df).tolist()
+    assert v == [0, -1, 0]
+
+
+def test_breakout_pullback_cancels_on_45ema_break():
+    from indicators.directional import vote_breakout_pullback
+    df = _bp_frame([
+        (101.0, 100.6, 101.2, 100.5, 98.0, 100.0, 99.0),   # arm long
+        (98.5, 98.0, 99.0, 100.5, 98.0, 100.0, 99.0),      # close < 45EMA -> CANCEL (no fire)
+        (99.5, 99.0, 100.0, 100.5, 98.0, 100.0, 99.0),     # low<=5EMA but disarmed -> no fire
+    ])
+    assert vote_breakout_pullback(df).abs().sum() == 0
+
+
+def test_breakout_pullback_downward_breach_never_long():
+    from indicators.directional import vote_breakout_pullback
+    # a downward breach arms a short; it must never produce a +1 (long).
+    df = _bp_frame([
+        (99.0, 98.8, 99.4, 102.0, 99.5, 100.0, 101.0),
+        (99.2, 99.0, 100.3, 102.0, 99.5, 100.0, 101.0),
+        (99.1, 98.9, 99.3, 102.0, 99.5, 100.0, 101.0),
+    ])
+    assert (vote_breakout_pullback(df) >= 0).sum() >= 0     # sanity
+    assert (vote_breakout_pullback(df) == 1).sum() == 0     # no long from a down breach
 
 
 # --- MTF 45-EMA confidence: multi-timeframe agreement grades conviction --------- #

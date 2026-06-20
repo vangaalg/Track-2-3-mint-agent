@@ -306,6 +306,33 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       **119 → 2 triggers**. Tested in tests/test_directional.py (arm/hold/exit, EMA-5-alone never
       fires, event must agree, one-trigger-per-reversal) + suite green (146). `three_min` kept for
       experimentation; squeeze params + EMA-5-exit are the next tuning knobs.
+- [x] **Trigger-validation harness (`scoring/trigger_check.py`).** Calibration loop: trader pastes
+      a TradingView 3-min export → the tool runs the exact `journal_trigger_config` + prints each
+      trigger time + WHY (`--candidates`/`--events`/`--at`, tunable squeeze/confirm). Reuses
+      `scoring.validate_export.load_export`; `platform` mode runs the trigger on the export's OWN
+      indicator values (isolates the logic), `--recompute` does the whole pipeline. data/validate/
+      gitignored. Tested in tests/test_trigger_check.py.
+- [x] **Corrected the 3-min strategy → breakout + pullback CONTINUATION (the REAL entry).** The
+      harness on the trader's 19-Jun export proved `bb_reversal` was **backwards** (a fade): his
+      actual entry is **breakout + pullback continuation** (his 13:48 upper-band breakout above the
+      45-EMA → 13:51 pullback to the 5-EMA = LONG, which rallied). New **`vote_breakout_pullback`**
+      (`indicators/directional.py`): an upper-band breakout while above the 45-EMA arms a long,
+      fires when the pullback's **low touches the 5-EMA** (mirror short: lower-band breakout below
+      45-EMA, high touches 5-EMA); close back through the 45-EMA cancels; latches flat after firing
+      (one trigger per setup). `journal_trigger_config` → `voters=["breakout_pullback"]`,
+      `confirm_closes=0`; the **squeeze fade is split out** to `squeeze_trigger_config()` /
+      `vote_bb_reversal` (`--strategy squeeze`). `journal_mtf_config`/`trigger_only` + web wiring
+      unchanged → live + training flip automatically. Harness validated: fires **LONG 13:51** (no
+      long at 13:06). Deliberately HIGH-RECALL (touch vs close, breakout close vs high are fuzzy) —
+      to be **learned by the Phase-2 Claude trigger agent**, not hardcoded. Docs updated
+      (config.example, DIRECTIONAL_SPEC, JOURNAL_EXTRACTION). Tested in tests/test_directional.py +
+      test_trigger_check.py + suite green (155).
+  - **PENDING — Phase 2: Claude trigger agent (confirmed split: code emits candidates, Claude
+    manages).** (1) LEARN which candidate triggers are genuine: trader labels genuine/false/missed
+    → `journal/store.py` + `agent/memory.distill_*` → `agent/read.py` take/skip (reuse training-mode
+    infra). (2) DYNAMIC levels: once entered, Claude proposes + **trails** target/stop/**TSL** as
+    price moves (propose-only). Open: cadence (per-bar vs on-move), TSL basis (5-EMA/Supertrend/
+    swing), cockpit surfacing. Scope after the trigger is validated against more of his charts.
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,

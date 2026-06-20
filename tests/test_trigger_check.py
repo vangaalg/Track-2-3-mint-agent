@@ -8,33 +8,51 @@ import pandas as pd
 from scoring.trigger_check import (
     build_feats, find_triggers, _bb_vrl_from_bands,
 )
-from indicators.directional import resolve_direction, journal_trigger_config
+from indicators.directional import (
+    resolve_direction, journal_trigger_config, squeeze_trigger_config,
+)
 
 
 # --- a tiny export in the platform's verbose format -------------------------- #
 _HDR = ('"Date","Open","High","Low","Close",'
         '"Bollinger Bands Top  (20,2,ma,y)","Bollinger Bands Median  (20,2,ma,y)",'
-        '"Bollinger Bands Bottom  (20,2,ma,y)","MA  (5,ema,0,n)"')
+        '"Bollinger Bands Bottom  (20,2,ma,y)","MA  (5,ema,0,n)","MA  (45,ema,0)"')
 
 
 def _write_export(tmp_path, rows):
     lines = [_HDR]
-    for (hh, mm), (o, h, l, c, bu, bm, bl, e5) in rows:
+    for (hh, mm), (o, h, l, c, bu, bm, bl, e5, e45) in rows:
         ts = f"Fri Jun 19 2026 {hh:02d}:{mm:02d}:00 GMT+0530 (India Standard Time)"
-        lines.append(f'"{ts}","{o}","{h}","{l}","{c}","{bu}","{bm}","{bl}","{e5}"')
+        lines.append(f'"{ts}","{o}","{h}","{l}","{c}","{bu}","{bm}","{bl}","{e5}","{e45}"')
     p = tmp_path / "export.txt"
     p.write_text("\n".join(lines))
     return str(p)
 
 
 def test_platform_mode_parses_and_builds_signals(tmp_path):
-    rows = [((11, 24 + i * 3), (100, 101, 99, 100, 100.5, 100, 99.5, 100)) for i in range(5)]
+    rows = [((11, 24 + i * 3), (100, 101, 99, 100, 100.5, 100, 99.5, 100, 99))
+            for i in range(5)]
     path = _write_export(tmp_path, rows)
     feats = build_feats(path, "platform", "Asia/Kolkata", squeeze_window=3, squeeze_pct=0.25)
-    for col in ("bb_upper", "bb_lower", "bb_width", "sig_ema5_trigger", "sig_bb_vrl"):
+    for col in ("bb_upper", "bb_lower", "bb_width", "ema_45", "sig_ema5_trigger", "sig_bb_vrl"):
         assert col in feats.columns
     assert str(feats.index.tz) == "Asia/Kolkata"
     assert len(feats) == 5
+
+
+def test_platform_breakout_pullback_fires_long(tmp_path):
+    # bar0 breaks above the band & is above the 45-EMA (arm long); bar1 pulls back so
+    # the low touches the 5-EMA (fire long). journal_trigger_config = breakout_pullback.
+    rows = [
+        ((11, 24), (100, 101.2, 100.6, 101.0, 100.5, 100, 98.0, 100.0, 99.0)),  # arm long
+        ((11, 27), (100.3, 100.5, 99.8, 100.3, 100.5, 100, 98.0, 100.0, 99.0)),  # low<=5EMA -> fire
+        ((11, 30), (100.4, 100.6, 100.2, 100.4, 100.5, 100, 98.0, 100.0, 99.0)),  # no re-arm
+    ]
+    path = _write_export(tmp_path, rows)
+    feats = build_feats(path, "platform", "Asia/Kolkata", squeeze_window=3, squeeze_pct=0.25)
+    calls = resolve_direction(feats, journal_trigger_config())
+    trigs = find_triggers(calls)
+    assert len(trigs) == 1 and trigs[0]["direction"] == "long" and trigs[0]["i"] == 1
 
 
 # --- trigger logic on a constructed feature frame ---------------------------- #
@@ -59,7 +77,7 @@ def test_clean_squeeze_reversal_fires_one_long(tmp_path):
     upper = [100.5, 100.5, 100.5, 100.5, 100.5, 101.5, 101.5, 101.5]  # expands on recovery
     ema5 =  [100.0] * 8
     f = _bb_vrl_from_bands(_feats(close, lower, upper, ema5), squeeze_window=3, squeeze_pct=0.5)
-    calls = resolve_direction(f, journal_trigger_config())
+    calls = resolve_direction(f, squeeze_trigger_config())
     trigs = find_triggers(calls)
     assert len(trigs) == 1
     assert trigs[0]["direction"] == "long" and trigs[0]["i"] >= 5
@@ -72,7 +90,7 @@ def test_no_breach_no_triggers():
     upper = [102.0] * 8
     ema5 = [100.0] * 8
     f = _bb_vrl_from_bands(_feats(close, lower, upper, ema5), squeeze_window=3, squeeze_pct=0.5)
-    calls = resolve_direction(f, journal_trigger_config())
+    calls = resolve_direction(f, squeeze_trigger_config())
     assert find_triggers(calls) == []
     assert (f["sig_bb_vrl"] == 0).all()
 

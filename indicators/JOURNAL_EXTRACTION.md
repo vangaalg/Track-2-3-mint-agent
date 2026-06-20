@@ -35,16 +35,23 @@ logged days validate them") — and are registered at the bottom.
 > experimentation but **excluded** — the trader is a documented trend-follower, not a
 > mean-reverter.
 >
-> **Trigger correction (confirmed with the trader).** `vote_three_min` aggregated the
-> trio as `np.sign(sum)` — net-sign OR, so **EMA-5 state alone** (`sign(close−EMA-5)`,
-> which flips on every 3-min cross) fired a trade and the signal massively over-triggered.
-> The journal's real 3-min entry is a single **event**: a Bollinger **breach → revert that
-> closes back across the EMA-5**, *confirmed by 2 closes + expanding volume*. Implemented as
-> the **`vote_bb_reversal`** voter (event arms a direction, held while the EMA-5 holds that
-> side, cleared on an EMA-5 flip) and made the journal default. The **45-EMA pullback does
-> NOT fire on its own** (it remains a `sig_sma_pullback` component for other configs). EMA-5
-> is now a confirmation/hold filter, never a standalone trigger. `vote_three_min` stays for
-> experimentation. (Over-fire check: a 600-bar chop went 119 → 2 triggers.)
+> **Trigger correction #1 (over-fire).** `vote_three_min` aggregated the trio as
+> `np.sign(sum)` — net-sign OR, so EMA-5 state alone fired and the signal over-triggered.
+> First fix was `vote_bb_reversal` (a squeeze-gated breach→revert, EMA-5 confirmed).
+>
+> **Trigger correction #2 — the REAL strategy (confirmed against the trader's chart via
+> `scoring/trigger_check.py`).** The harness on his 19-Jun export proved the direction was
+> *backwards*: his 3-min entry is a **breakout + pullback CONTINUATION**, not a fade. An
+> **upper-band breakout while above the 45-EMA** is up-momentum and arms a LONG; the entry
+> fires on the **retrace to the 5-EMA** (low touches it), in the SAME direction as the
+> breakout (his 13:48 breakout → 13:51 pullback long, which then rallied). Mirror for short.
+> Implemented as **`vote_breakout_pullback`** and made the journal default
+> (`journal_trigger_config`, `confirm_closes=0`). The **squeeze fade `vote_bb_reversal` is
+> kept as a SEPARATE strategy** (`squeeze_trigger_config`, `--strategy squeeze` in the
+> harness) — it requires a coil and *fades* the poke, the opposite play. `vote_three_min`
+> stays for experimentation. The genuine/false tweaks (pullback = touch vs close, breakout on
+> close vs high) are deliberately left high-recall, to be learned by the Phase-2 Claude
+> trigger agent rather than hardcoded.
 
 ---
 
