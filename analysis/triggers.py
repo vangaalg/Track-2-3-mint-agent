@@ -78,12 +78,40 @@ def simulate_intraday(frame3m: pd.DataFrame, ts, direction: str, entry: float,
                           sess["close"].iloc[-1])
 
 
+def _resolve_intraday(frame3m, ts, direction, entry, stop, target):
+    """Like ``simulate_intraday`` but also returns the EXIT timestamp and labels a
+    mark-to-close exit ``"eod"`` (Trade 1 is flat by the bell — a trigger that hits
+    neither stop nor target is exited at the close, not left ``open``). Returns
+    ``(outcome, exit_px, points, exit_ts)`` with outcome ∈ win/loss/eod.
+    """
+    t = pd.Timestamp(ts)
+    sess = frame3m[(frame3m.index > t) & (frame3m.index.normalize() == t.normalize())]
+    if sess.empty:
+        return "eod", round(float(entry), 2), 0.0, t
+    long = direction == "long"
+    highs, lows, idx = sess["high"].to_numpy(), sess["low"].to_numpy(), sess.index
+    for k in range(len(highs)):
+        h, lo = float(highs[k]), float(lows[k])
+        if long and lo <= stop:
+            return "loss", round(stop, 2), round(stop - entry, 2), idx[k]
+        if long and h >= target:
+            return "win", round(target, 2), round(target - entry, 2), idx[k]
+        if (not long) and h >= stop:
+            return "loss", round(stop, 2), round(entry - stop, 2), idx[k]
+        if (not long) and lo <= target:
+            return "win", round(target, 2), round(entry - target, 2), idx[k]
+    close_last = float(sess["close"].iloc[-1])
+    pts = (close_last - entry) if long else (entry - close_last)
+    return "eod", round(close_last, 2), round(pts, 2), idx[-1]
+
+
 def list_triggers(
     feats_by_tf: dict[str, pd.DataFrame],
     frames_by_tf: dict[str, pd.DataFrame],
     cfg: MTFDirectionalConfig | None = None,
     size_lots: int = DEFAULT_SIZE_LOTS,
     lot_size: int = LOT_SIZE,
+    realistic: bool = False,
 ) -> list[dict]:
     """Enumerate EVERY Trade-1 trigger across the full history (all sessions).
 
@@ -91,6 +119,13 @@ def list_triggers(
     each trigger's outcome is bounded to its own session via ``simulate_intraday``.
     Returns trigger dicts (engine levels + the true outcome) ordered oldest→newest;
     the index in the list is the ``tid`` the training UI replays.
+
+    ``realistic=True`` (the backtest path) models how you'd actually trade it:
+      * **one position at a time** — a fresh trigger is SKIPPED while a prior trade
+        is still open, so a single trend that keeps pulling back counts ONCE, not
+        N times (kills the cluster-inflation in the raw enumeration);
+      * a mark-to-close exit is labelled ``"eod"`` and each trigger carries its
+        ``exit_ts``/``exit`` (live + training keep the default, with ``"open"``).
     """
     cfg = cfg or MTFDirectionalConfig()
     if "3min" not in feats_by_tf or "3min" not in frames_by_tf:
@@ -99,35 +134,49 @@ def list_triggers(
     if calls.empty:
         return []
     conf, _ = mtf_ema45_confidence(feats_by_tf, calls)
-    bars = frames_by_tf["3min"].reindex(calls.index)
+    frame3m = frames_by_tf["3min"]
+    bars = frame3m.reindex(calls.index)
     feats = feats_by_tf["3min"].reindex(calls.index)
     c = calls.to_numpy()
     close = bars["close"].to_numpy()
     ts = calls.index
 
     out: list[dict] = []
+    busy_until = None        # realistic mode: in a trade until its exit timestamp
     for i in range(len(c)):
         prev = c[i - 1] if i > 0 else "flat"
         if c[i] not in ("long", "short") or c[i] == prev:
             continue
+        if realistic and busy_until is not None and ts[i] <= busy_until:
+            continue                                  # still in a position — one at a time
         direction, entry = c[i], float(close[i])
         row = feats.iloc[i]
         levels = {k: _f(row.get(k)) for k in
                   ("ema_45", "supertrend", "cpr_pivot", "cpr_tc", "cpr_bc")}
-        levels.update(_session_extremes(frames_by_tf["3min"], ts[i]))
+        levels.update(_session_extremes(frame3m, ts[i]))
         stop, target, rr = trade1_levels(direction, entry, levels)
         if stop is None or target is None:
             continue
-        outcome, exit_px, points = simulate_intraday(
-            frames_by_tf["3min"], ts[i], direction, entry, stop, target)
-        out.append({
+        if realistic:
+            outcome, exit_px, points, exit_ts = _resolve_intraday(
+                frame3m, ts[i], direction, entry, stop, target)
+            busy_until = exit_ts
+        else:
+            outcome, exit_px, points = simulate_intraday(
+                frame3m, ts[i], direction, entry, stop, target)
+            exit_ts = None
+        rec = {
             "tid": len(out), "ts": ts[i].isoformat(), "date": str(ts[i].date()),
             "direction": direction, "entry": round(entry, 2),
             "eng_stop": round(stop, 2), "eng_target": round(target, 2), "eng_rr": rr,
             "mtf_confidence": int(conf.iloc[i]),
             "outcome": outcome, "points": round(points, 2),
             "rupees": round(points * lot_size * size_lots, 0),
-        })
+        }
+        if realistic:
+            rec["exit_ts"] = exit_ts.isoformat()
+            rec["exit"] = exit_px
+        out.append(rec)
     return out
 
 

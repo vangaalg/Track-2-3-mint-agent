@@ -33,20 +33,24 @@ from feeds.snapshot import build_snapshot
 def _stats(rows: list[dict], lot_size: int, lots: int) -> dict:
     wins = [r for r in rows if r["outcome"] == "win"]
     losses = [r for r in rows if r["outcome"] == "loss"]
-    opens = [r for r in rows if r["outcome"] == "open"]
+    eods = [r for r in rows if r["outcome"] not in ("win", "loss")]   # exited at the close
     decided = len(wins) + len(losses)
-    net_pts = round(sum(r["points"] for r in rows), 2)
+    net_pts = round(sum(r["points"] for r in rows), 2)                # all exits realised
     gross_win = sum(r["points"] for r in wins)
-    gross_loss = sum(r["points"] for r in losses)   # negative
+    gross_loss = sum(r["points"] for r in losses)                     # negative
+    gains = sum(r["points"] for r in rows if r["points"] > 0)         # incl. eod, by sign
+    pains = sum(r["points"] for r in rows if r["points"] < 0)
+    n = len(rows)
     return {
-        "n": len(rows), "wins": len(wins), "losses": len(losses), "open": len(opens),
-        "hit_rate": round(len(wins) / decided, 3) if decided else None,
+        "n": n, "wins": len(wins), "losses": len(losses), "eod": len(eods),
+        "hit_rate": round(len(wins) / decided, 3) if decided else None,   # target vs stop
         "net_points": net_pts,
         "net_rupees": round(net_pts * lot_size * lots, 0),
+        "eod_points": round(sum(r["points"] for r in eods), 2),
         "avg_win": round(gross_win / len(wins), 2) if wins else None,
         "avg_loss": round(gross_loss / len(losses), 2) if losses else None,
-        "expectancy": round(net_pts / decided, 2) if decided else None,
-        "profit_factor": round(gross_win / abs(gross_loss), 2) if gross_loss else None,
+        "expectancy": round(net_pts / n, 2) if n else None,               # per trade, all exits
+        "profit_factor": round(gains / abs(pains), 2) if pains else None,
     }
 
 
@@ -74,7 +78,8 @@ def run_backtest(snap, lots: int = 1, cfg=None) -> dict:
     triggers the cockpit + training would. Returns ``{"triggers": [...], "report": {...}}``.
     """
     cfg = cfg or journal_mtf_config()
-    triggers = list_triggers(snap.feats, snap.frames, cfg=cfg, size_lots=lots, lot_size=LOT_SIZE)
+    triggers = list_triggers(snap.feats, snap.frames, cfg=cfg, size_lots=lots,
+                             lot_size=LOT_SIZE, realistic=True)
     return {"triggers": triggers, "report": aggregate(triggers, LOT_SIZE, lots)}
 
 
@@ -117,15 +122,17 @@ def _pull(symbol: str, days: int, loader_name: str, chunk_days: int = 3):
 
 def _fmt(s: dict) -> str:
     hit = "—" if s["hit_rate"] is None else f"{s['hit_rate'] * 100:.0f}%"
-    return (f"n={s['n']}  W/L/O={s['wins']}/{s['losses']}/{s['open']}  hit={hit}  "
+    return (f"n={s['n']}  W/L/EOD={s['wins']}/{s['losses']}/{s['eod']}  hit={hit}  "
             f"net={s['net_points']:+.1f} pts (₹{s['net_rupees']:+,.0f})  "
             f"exp={s['expectancy']} pf={s['profit_factor']}")
 
 
 def report_text(symbol: str, report: dict) -> str:
     o = report["overall"]
-    lines = [f"Backtest — {symbol}  (breakout-pullback, session-low stop, "
-             f"{report['lots']} lot × {report['lot_size']})", ""]
+    lines = [f"Backtest — {symbol}  (breakout-pullback, session-low stop, R:R≥1.5, "
+             f"one position at a time, flat by close; {report['lots']} lot × {report['lot_size']})",
+             "hit = target-vs-stop only · EOD = exited at the bell (P&L still counted) · "
+             "exp = net/trade · pf incl. EOD by sign", ""]
     lines.append(f"OVERALL  {_fmt(o)}")
     lines.append(f"  long   {_fmt(report['by_direction']['long'])}")
     lines.append(f"  short  {_fmt(report['by_direction']['short'])}")

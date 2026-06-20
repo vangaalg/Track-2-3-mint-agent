@@ -61,10 +61,11 @@ def test_list_triggers_multi_day(monkeypatch):
     out = tg.list_triggers({"3min": feats3m}, {"3min": frame3m})
     assert len(out) == 2
     long_t, short_t = out
-    assert long_t["direction"] == "long" and long_t["outcome"] == "win" and long_t["points"] == 1.0
-    assert long_t["eng_stop"] == 99.0 and long_t["eng_target"] == 101.0
+    # R:R floor: the 1-pt structural target (rr 1.0) is pushed out to 1.5R = 101.5.
+    assert long_t["direction"] == "long" and long_t["outcome"] == "win" and long_t["points"] == 1.5
+    assert long_t["eng_stop"] == 99.0 and long_t["eng_target"] == 101.5 and long_t["eng_rr"] == 1.5
     assert long_t["mtf_confidence"] == 0     # no HTF feats supplied → 0
-    assert short_t["direction"] == "short" and short_t["outcome"] == "win" and short_t["points"] == 1.0
+    assert short_t["direction"] == "short" and short_t["outcome"] == "win" and short_t["points"] == 1.5
     assert short_t["tid"] == 1 and short_t["date"] == "2024-01-02"
 
 

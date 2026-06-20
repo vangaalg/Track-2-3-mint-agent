@@ -21,7 +21,7 @@ from analysis import discipline
 # Nifty contract + first-cut level params (PROVISIONAL — Stage-2 calibrates).
 LOT_SIZE = 75
 DEFAULT_SIZE_LOTS = 75
-R_MULTIPLE = 1.5           # fallback reward:risk when no structural target exists
+R_MULTIPLE = 1.5           # MINIMUM reward:risk — structural targets are floored to this
 ITM_OFFSET = 300           # points in-the-money for the deep-ITM strike
 STRIKE_STEP = 50
 SIZE_BAND = (65, 130)      # journal's normal lot band; MTF confidence picks within it
@@ -118,8 +118,13 @@ def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = 
         target = _nearest_below(entry, supports)
 
     risk = abs(entry - stop) if stop is not None else None
-    if target is None and risk:
-        target = entry + R_MULTIPLE * risk * (1 if long else -1)
+    # Enforce a MINIMUM reward:risk. A structural target closer than R_MULTIPLE×risk
+    # (or none at all) is pushed out to the floor, so a "win" is always a real move
+    # — kills the near-zero-point targets that made rr collapse toward 0.
+    if risk:
+        min_reward = R_MULTIPLE * risk
+        if target is None or abs(target - entry) < min_reward:
+            target = entry + min_reward * (1 if long else -1)
     reward = abs(target - entry) if target is not None else None
     rr = round(reward / risk, 2) if (risk and reward) else None
     return stop, target, rr

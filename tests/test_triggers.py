@@ -75,3 +75,47 @@ def test_replay_today_stop_out(monkeypatch):
 def test_replay_no_session_data():
     out = replay_today({}, {})
     assert out["summary"]["n"] == 0 and out["triggers"] == []
+
+
+def test_rr_floor_pushes_close_long_target_out():
+    # Structural resist only 2 pts above entry, stop 20 below -> floored to 1.5R.
+    stop, target, rr = trade1_levels("long", 100.0,
+                                     {"session_low": 80.0, "cpr_tc": 102.0})
+    assert stop == 80.0 and rr == 1.5
+    assert target == 100.0 + 1.5 * 20.0          # 130, not the 2-pt structural target
+
+
+def test_rr_floor_short_side():
+    stop, target, rr = trade1_levels("short", 100.0,
+                                     {"session_high": 120.0, "cpr_bc": 98.0})
+    assert stop == 120.0 and rr == 1.5
+    assert target == 100.0 - 1.5 * 20.0          # 70
+
+
+def test_realistic_dedupes_and_marks_eod(monkeypatch):
+    import analysis.triggers as trig
+    idx = pd.date_range("2024-01-01 09:18", periods=6, freq="3min", tz="Asia/Kolkata")
+    frame = pd.DataFrame({
+        "open": 100.0,
+        "high": [101.0, 101.0, 103.0, 101.0, 103.0, 101.0],
+        "low":  [95.0, 98.0, 97.0, 98.0, 97.0, 98.0],
+        "close": 100.0, "volume": 100.0}, index=idx)
+    calls = pd.Series(["flat", "long", "flat", "long", "flat", "flat"], index=idx)
+    monkeypatch.setattr(trig, "resolve_direction_mtf", lambda f, c: calls)
+    monkeypatch.setattr(trig, "mtf_ema45_confidence",
+                        lambda f, c: (pd.Series([0] * 6, index=idx), None))
+    feats = {"3min": pd.DataFrame({"x": 0.0}, index=idx)}
+    frames = {"3min": frame}
+
+    # raw enumeration: both long flips counted, mark-to-close labelled "open"
+    raw = trig.list_triggers(feats, frames, cfg=_StubMTF())
+    assert len(raw) == 2 and all(t["outcome"] == "open" for t in raw)
+    assert "exit_ts" not in raw[0]
+
+    # realistic: the 2nd trigger fires while the 1st is still open -> deduped to one,
+    # and the unhit trade is an explicit EOD exit (not "open")
+    real = trig.list_triggers(feats, frames, cfg=_StubMTF(), realistic=True)
+    assert len(real) == 1
+    assert real[0]["outcome"] == "eod"
+    assert real[0]["exit_ts"].startswith("2024-01-01T09:33")
+    assert "exit" in real[0]

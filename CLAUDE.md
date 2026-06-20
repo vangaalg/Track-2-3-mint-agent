@@ -178,6 +178,21 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       per-strike pull + CLI (`python -m feeds.oi_backfill --days 7`). Chart is NOT
       stored (re-pullable from Breeze history). Tested in tests/test_oi_store.py;
       live backfill verified by user. data/oi/ gitignored.
+- [x] **Backtest realism pass (3 fixes from the first live NIFTY run, confirmed with trader).**
+      The raw 148-trigger run was contaminated by level/clustering artifacts; fixed: (1) **R:R floor
+      1.5** — `analysis.trade1.trade1_levels` now pushes any structural target closer than 1.5×risk
+      out to 1.5R (kills the near-zero-point "wins"; `R_MULTIPLE` is a MINIMUM, not a fallback). Shared
+      → live + training + backtest. (2) **One position at a time** + (3) **explicit EOD exit** via a new
+      opt-in `list_triggers(..., realistic=True)`: skips a fresh trigger while a prior trade is still
+      open (a trend that keeps pulling back counts ONCE, not N×) and labels a mark-to-close exit `"eod"`
+      (+ `exit_ts`/`exit` on each trigger) instead of `"open"`. New `analysis.triggers._resolve_intraday`
+      (returns exit timestamp + eod). Live settle path keeps `"open"` (= "not resolved yet"); only the
+      backtest opts in. `scoring.backtest`: `run_backtest` uses `realistic=True`; `_stats`/`aggregate`
+      now bucket win/loss/**eod** (hit-rate = target-vs-stop only; pf incl. eod by sign; expectancy =
+      net/trade), report header documents it. Tested: R:R-floor (long/short) + realistic dedup+eod in
+      test_triggers; eod aggregate in test_backtest; training multi-day expectations updated for the
+      floor. Suite green (169). Still pending: a MIN-STOP-DISTANCE floor (tiny session-low stops still
+      yield tiny 1.5R targets) is the next tuning knob.
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

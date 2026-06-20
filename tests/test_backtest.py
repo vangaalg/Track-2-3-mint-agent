@@ -15,15 +15,17 @@ def test_aggregate_overall_and_breakdowns():
         {"direction": "long", "date": "2024-01-01", "outcome": "win", "points": 20.0},
         {"direction": "long", "date": "2024-01-01", "outcome": "loss", "points": -10.0},
         {"direction": "short", "date": "2024-01-02", "outcome": "win", "points": 15.0},
-        {"direction": "short", "date": "2024-01-02", "outcome": "open", "points": 3.0},
+        {"direction": "short", "date": "2024-01-02", "outcome": "eod", "points": 3.0},
     ]
     rep = aggregate(rows, lot_size=75, lots=1)
     o = rep["overall"]
-    assert o["n"] == 4 and o["wins"] == 2 and o["losses"] == 1 and o["open"] == 1
-    assert o["hit_rate"] == round(2 / 3, 3)
+    assert o["n"] == 4 and o["wins"] == 2 and o["losses"] == 1 and o["eod"] == 1
+    assert o["hit_rate"] == round(2 / 3, 3)            # target-vs-stop only
     assert o["net_points"] == 28.0 and o["net_rupees"] == 28.0 * 75
+    assert o["eod_points"] == 3.0
     assert o["avg_win"] == 17.5 and o["avg_loss"] == -10.0
-    assert o["profit_factor"] == 3.5            # 35 won / 10 lost
+    assert o["expectancy"] == round(28.0 / 4, 2)        # net per trade, all exits
+    assert o["profit_factor"] == round(38.0 / 10.0, 2)  # gains incl eod (20+15+3) / losses (10)
     assert rep["by_direction"]["long"]["net_points"] == 10.0
     assert rep["by_direction"]["short"]["hit_rate"] == 1.0
     assert [d["date"] for d in rep["by_day"]] == ["2024-01-01", "2024-01-02"]
@@ -62,8 +64,9 @@ def test_run_backtest_shape_and_consistency():
     # report is internally consistent with the trigger list it summarised
     assert rep["overall"]["n"] == len(trigs)
     assert (rep["overall"]["wins"] + rep["overall"]["losses"]
-            + rep["overall"]["open"]) == len(trigs)
-    # every trigger carries the fields the backtest aggregates on
+            + rep["overall"]["eod"]) == len(trigs)
+    # realistic backtest: every trigger is a realised exit (win/loss/eod) + exit fields
     for t in trigs:
-        assert t["outcome"] in ("win", "loss", "open") and "points" in t and "date" in t
+        assert t["outcome"] in ("win", "loss", "eod") and "points" in t and "date" in t
+        assert "exit_ts" in t and "exit" in t
     assert "OVERALL" in report_text("NIFTY", rep)        # renders without error
