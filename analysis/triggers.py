@@ -18,6 +18,7 @@ import pandas as pd
 from indicators.directional import (
     MTFDirectionalConfig, resolve_direction_mtf, mtf_ema45_confidence,
 )
+from indicators.engine import atr as _atr
 from analysis.trade1 import trade1_levels, LOT_SIZE, DEFAULT_SIZE_LOTS
 
 
@@ -114,6 +115,8 @@ def list_triggers(
     realistic: bool = False,
     target_driven: bool = False,
     min_stop: float = 0.0,
+    atr_mult: float = 0.0,
+    atr_period: int = 14,
 ) -> list[dict]:
     """Enumerate EVERY Trade-1 trigger across the full history (all sessions).
 
@@ -142,6 +145,10 @@ def list_triggers(
     c = calls.to_numpy()
     close = bars["close"].to_numpy()
     ts = calls.index
+    # Optional ATR-based stop floor (causal Wilder ATR on the 3-min frame): the stop
+    # must be at least atr_mult × ATR away, so the floor scales with volatility.
+    atr_ser = (_atr(frame3m, atr_period).reindex(calls.index).to_numpy()
+               if atr_mult and atr_mult > 0 else None)
 
     out: list[dict] = []
     busy_until = None        # realistic mode: in a trade until its exit timestamp
@@ -156,8 +163,11 @@ def list_triggers(
         levels = {k: _f(row.get(k)) for k in
                   ("ema_45", "supertrend", "cpr_pivot", "cpr_tc", "cpr_bc")}
         levels.update(_session_extremes(frame3m, ts[i]))
+        eff_min_stop = min_stop
+        if atr_ser is not None and pd.notna(atr_ser[i]):
+            eff_min_stop = max(eff_min_stop, atr_mult * float(atr_ser[i]))
         stop, target, rr = trade1_levels(direction, entry, levels,
-                                          target_driven=target_driven, min_stop=min_stop)
+                                          target_driven=target_driven, min_stop=eff_min_stop)
         if stop is None or target is None:
             continue
         if realistic:

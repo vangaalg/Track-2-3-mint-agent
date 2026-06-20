@@ -153,3 +153,13 @@ def test_min_stop_floors_backtest_stops():
     out = run_backtest(snap, lots=1, min_stop=20)
     for t in out["triggers"]:
         assert abs(t["entry"] - t["eng_stop"]) >= 20 - 1e-6     # no tiny stops
+
+
+def test_atr_floor_widens_tightest_stop():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    base = run_backtest(snap, lots=1, atr_mult=0)["triggers"]
+    atrd = run_backtest(snap, lots=1, atr_mult=3)["triggers"]
+    # ATR floor lifts the tightest stop (dedup changes the set, so compare the minima)
+    base_min = min(abs(t["entry"] - t["eng_stop"]) for t in base)
+    atr_min = min(abs(t["entry"] - t["eng_stop"]) for t in atrd)
+    assert atr_min > base_min

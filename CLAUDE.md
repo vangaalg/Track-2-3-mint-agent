@@ -213,7 +213,19 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       the CLAUDE-FILTERED report, tagging each trigger `claude_target/claude_stop/claude_rr`. Verdict-only
       filters still supported (back-compat). Tested: clamp guardrails + Claude-levels sim (test_backtest).
       Suite green (177). PENDING: surface Claude's levels in the LIVE proposal + training reveal (backtest
-      validates them first); min-stop-distance floor still open.
+      validates them first).
+- [x] **Min-stop floor (ATR-based, confirmed w/ trader) + Claude-filter diagnostics.** First live `--claude`
+      run stood down on ALL 68 triggers and target-driven levels reintroduced tiny stops (14 <5pt from
+      entry → engine net WORSE, −166 vs −99). Fixes: (1) `trade1_levels(min_stop=)` widens a too-tight stop
+      and (target-driven) pushes the target out to keep R:R; `list_triggers(atr_mult=, atr_period=)` makes
+      the floor **ATR-based** (causal Wilder ATR on 3-min; stop ≥ atr_mult×ATR, scales with vol). CLI
+      `--atr-mult` (default 1.0), `--min-stop` (fixed, default 0), `--atr-period`. (2) `make_claude_filter`
+      now tracks enter/stand_down/**error** counts on `fn.state` + captures the FIRST error traceback +
+      verbose per-verdict print; CLI prints a "X enter / Y stand_down / Z ERRORED" summary so we can tell
+      genuine stand-downs from masked failures. LIKELY CAUSE of all-stand_down: the historical as-of world
+      has NO OI/macro (Claude's edge), so it's conservative — Claude's value is live-only OR needs a
+      chart-only backtest prompt (TBD from the diagnostics re-run). Tested: min-stop (target+stop driven),
+      ATR floor widens stops, Claude error tracking. Suite green (182).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

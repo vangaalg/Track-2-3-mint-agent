@@ -147,7 +147,8 @@ def clamp_levels(direction: str, entry: float, target, stop,
 
 
 def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
-                 claude_filter=None, min_stop: float = 0.0) -> dict:
+                 claude_filter=None, min_stop: float = 0.0,
+                 atr_mult: float = 0.0, atr_period: int = 14) -> dict:
     """Backtest the trigger over a pre-built snapshot's feats/frames.
 
     Reuses the LIVE resolver (``journal_mtf_config``) so the backtest fires exactly the
@@ -162,7 +163,7 @@ def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
     cfg = cfg or journal_mtf_config()
     triggers = list_triggers(snap.feats, snap.frames, cfg=cfg, size_lots=lots,
                              lot_size=LOT_SIZE, realistic=True, target_driven=target_driven,
-                             min_stop=min_stop)
+                             min_stop=min_stop, atr_mult=atr_mult, atr_period=atr_period)
     filtered = None
     if claude_filter is not None:
         frame3m = snap.frames["3min"]
@@ -283,7 +284,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--levels", choices=["target", "stop"], default="target",
                     help="target = SL derived from R:R off the objective; stop = session-low stop")
     ap.add_argument("--min-stop", type=float, default=0.0,
-                    help="floor the stop distance in points (kills tiny-stop instant exits; 0=off)")
+                    help="fixed floor on the stop distance in points (0=off)")
+    ap.add_argument("--atr-mult", type=float, default=1.0,
+                    help="ATR-based stop floor: stop >= atr_mult × ATR (0=off; default 1.0)")
+    ap.add_argument("--atr-period", type=int, default=14, help="ATR period (3-min bars)")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
@@ -299,7 +303,8 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         cfilter = make_claude_filter(args.symbol, base, daily, verbose=True)
     out = run_backtest(snap, lots=args.lots, target_driven=(args.levels == "target"),
-                       claude_filter=cfilter, min_stop=args.min_stop)
+                       claude_filter=cfilter, min_stop=args.min_stop,
+                       atr_mult=args.atr_mult, atr_period=args.atr_period)
     if cfilter is not None:                              # diagnostics: errors vs genuine
         st = cfilter.state
         print(f"\nClaude verdicts: {st['enter']} enter / {st['stand_down']} stand_down / "
