@@ -71,16 +71,56 @@ def aggregate(triggers: list[dict], lot_size: int = LOT_SIZE, lots: int = 1) -> 
             "lot_size": lot_size, "lots": lots}
 
 
-def run_backtest(snap, lots: int = 1, cfg=None) -> dict:
+def make_claude_filter(symbol: str, base_1m, daily, memory: str = "",
+                       completer=None, cfg=None):
+    """Build a per-trigger Claude take/skip filter for the backtest.
+
+    Returns ``fn(trigger) -> "enter"|"stand_down"``: rebuilds the AS-OF world at the
+    trigger's timestamp (``build_snapshot_at`` — no future leakage), runs the engine
+    proposal + ``claude_read`` against it, and returns Claude's verdict. ``completer``
+    is the injectable Anthropic seam (stub it in tests); live needs ANTHROPIC_API_KEY.
+    Errors fall back to "stand_down" (skip) so one bad bar can't kill the run.
+    """
+    from feeds.snapshot import build_snapshot_at
+    from analysis.trade1 import propose_trade1
+    from agent.read import claude_read
+    cfg = cfg or journal_mtf_config()
+
+    def fn(trigger: dict) -> str:
+        try:
+            snap = build_snapshot_at(symbol, base_1m, daily, trigger["ts"], mtf_cfg=cfg)
+            prop = propose_trade1(snap)
+            read = claude_read(snap, prop, memory, completer=completer)
+            return "enter" if read.recommendation == "enter" else "stand_down"
+        except Exception:
+            return "stand_down"
+
+    return fn
+
+
+def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
+                 claude_filter=None) -> dict:
     """Backtest the trigger over a pre-built snapshot's feats/frames.
 
     Reuses the LIVE resolver (``journal_mtf_config``) so the backtest fires exactly the
-    triggers the cockpit + training would. Returns ``{"triggers": [...], "report": {...}}``.
+    triggers the cockpit + training would. ``target_driven`` uses the target-first
+    level model (SL derived from R:R). If ``claude_filter`` is given, each trigger is
+    tagged with Claude's take/skip verdict and a CLAUDE-FILTERED (ENTER-only) report
+    is added alongside the unfiltered one.
+
+    Returns ``{"triggers": [...], "report": {...}, "filtered": {...}|None}``.
     """
     cfg = cfg or journal_mtf_config()
     triggers = list_triggers(snap.feats, snap.frames, cfg=cfg, size_lots=lots,
-                             lot_size=LOT_SIZE, realistic=True)
-    return {"triggers": triggers, "report": aggregate(triggers, LOT_SIZE, lots)}
+                             lot_size=LOT_SIZE, realistic=True, target_driven=target_driven)
+    filtered = None
+    if claude_filter is not None:
+        for t in triggers:
+            t["claude"] = claude_filter(t)
+        taken = [t for t in triggers if t.get("claude") == "enter"]
+        filtered = aggregate(taken, LOT_SIZE, lots)
+    return {"triggers": triggers, "report": aggregate(triggers, LOT_SIZE, lots),
+            "filtered": filtered}
 
 
 # --------------------------------------------------------------------------- #
@@ -127,15 +167,23 @@ def _fmt(s: dict) -> str:
             f"exp={s['expectancy']} pf={s['profit_factor']}")
 
 
-def report_text(symbol: str, report: dict) -> str:
+def report_text(symbol: str, report: dict, levels: str = "target",
+                filtered: dict | None = None) -> str:
     o = report["overall"]
-    lines = [f"Backtest — {symbol}  (breakout-pullback, session-low stop, R:R≥1.5, "
+    stop_desc = "target-first SL from R:R" if levels == "target" else "session-low stop"
+    lines = [f"Backtest — {symbol}  (breakout-pullback, {stop_desc}, R:R≥1.5, "
              f"one position at a time, flat by close; {report['lots']} lot × {report['lot_size']})",
              "hit = target-vs-stop only · EOD = exited at the bell (P&L still counted) · "
              "exp = net/trade · pf incl. EOD by sign", ""]
     lines.append(f"OVERALL  {_fmt(o)}")
     lines.append(f"  long   {_fmt(report['by_direction']['long'])}")
     lines.append(f"  short  {_fmt(report['by_direction']['short'])}")
+    if filtered is not None:
+        lines.append("")
+        lines.append(f"CLAUDE-FILTERED (took {filtered['overall']['n']} of {o['n']}):"
+                     f"  {_fmt(filtered['overall'])}")
+        lines.append(f"  long   {_fmt(filtered['by_direction']['long'])}")
+        lines.append(f"  short  {_fmt(filtered['by_direction']['short'])}")
     lines.append("")
     lines.append("Per day:")
     for d in report["by_day"]:
@@ -143,15 +191,17 @@ def report_text(symbol: str, report: dict) -> str:
     return "\n".join(lines)
 
 
-def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str) -> tuple[str, str]:
+def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str,
+                  levels: str = "target", filtered: dict | None = None) -> tuple[str, str]:
     from pathlib import Path
     Path(outdir).mkdir(parents=True, exist_ok=True)
     stamp = date.today().isoformat()
     csv_path = f"{outdir}/backtest_{symbol}_{stamp}.csv"
     md_path = f"{outdir}/backtest_{symbol}_{stamp}.md"
     pd.DataFrame(triggers).to_csv(csv_path, index=False)
-    Path(md_path).write_text("```\n" + report_text(symbol, report) + "\n```\n",
-                             encoding="utf-8")
+    Path(md_path).write_text(
+        "```\n" + report_text(symbol, report, levels=levels, filtered=filtered) + "\n```\n",
+        encoding="utf-8")
     return csv_path, md_path
 
 
@@ -163,6 +213,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lots", type=int, default=1, help="position size for the ₹ column")
     ap.add_argument("--chunk-days", type=int, default=3,
                     help="pagination window for the 1-min pull (Breeze caps rows/call)")
+    ap.add_argument("--levels", choices=["target", "stop"], default="target",
+                    help="target = SL derived from R:R off the objective; stop = session-low stop")
+    ap.add_argument("--claude", action="store_true",
+                    help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
     args = ap.parse_args(argv)
 
@@ -170,9 +224,15 @@ def main(argv: list[str] | None = None) -> int:
           f"(paginated, {args.chunk_days}d/chunk; needs creds + network)…", file=sys.stderr)
     base, daily = _pull(args.symbol, args.days, args.loader, args.chunk_days)
     snap = build_snapshot(args.symbol, base, daily, mtf_cfg=journal_mtf_config())
-    out = run_backtest(snap, lots=args.lots)
-    print(report_text(args.symbol, out["report"]))
-    csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out)
+    cfilter = None
+    if args.claude:
+        print("Running Claude take/skip per trigger (this is slow)…", file=sys.stderr)
+        cfilter = make_claude_filter(args.symbol, base, daily)
+    out = run_backtest(snap, lots=args.lots, target_driven=(args.levels == "target"),
+                       claude_filter=cfilter)
+    print(report_text(args.symbol, out["report"], levels=args.levels, filtered=out["filtered"]))
+    csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
+                                      levels=args.levels, filtered=out["filtered"])
     print(f"\nWrote {csv_path}\n      {md_path}", file=sys.stderr)
     return 0
 

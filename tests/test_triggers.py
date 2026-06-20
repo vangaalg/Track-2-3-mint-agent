@@ -119,3 +119,20 @@ def test_realistic_dedupes_and_marks_eod(monkeypatch):
     assert real[0]["outcome"] == "eod"
     assert real[0]["exit_ts"].startswith("2024-01-01T09:33")
     assert "exit" in real[0]
+
+
+def test_target_driven_derives_stop_from_rr_long():
+    # nearest resist ahead = 130; reward 30 -> risk 20 -> stop 80, rr fixed at 1.5
+    stop, target, rr = trade1_levels("long", 100.0, {"cpr_tc": 130.0}, target_driven=True)
+    assert target == 130.0 and rr == 1.5 and abs(stop - 80.0) < 1e-9
+
+
+def test_target_driven_derives_stop_from_rr_short():
+    stop, target, rr = trade1_levels("short", 100.0, {"cpr_bc": 70.0}, target_driven=True)
+    assert target == 70.0 and rr == 1.5 and abs(stop - 120.0) < 1e-9
+
+
+def test_target_driven_falls_back_when_no_objective_ahead():
+    # no resistance above entry -> stop-driven fallback (session-low stop + 1.5R target)
+    stop, target, rr = trade1_levels("long", 100.0, {"session_low": 90.0}, target_driven=True)
+    assert stop == 90.0 and target == 115.0 and rr == 1.5

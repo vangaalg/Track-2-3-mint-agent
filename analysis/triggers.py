@@ -112,6 +112,7 @@ def list_triggers(
     size_lots: int = DEFAULT_SIZE_LOTS,
     lot_size: int = LOT_SIZE,
     realistic: bool = False,
+    target_driven: bool = False,
 ) -> list[dict]:
     """Enumerate EVERY Trade-1 trigger across the full history (all sessions).
 
@@ -154,7 +155,7 @@ def list_triggers(
         levels = {k: _f(row.get(k)) for k in
                   ("ema_45", "supertrend", "cpr_pivot", "cpr_tc", "cpr_bc")}
         levels.update(_session_extremes(frame3m, ts[i]))
-        stop, target, rr = trade1_levels(direction, entry, levels)
+        stop, target, rr = trade1_levels(direction, entry, levels, target_driven=target_driven)
         if stop is None or target is None:
             continue
         if realistic:

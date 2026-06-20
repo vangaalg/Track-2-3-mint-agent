@@ -5,9 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from scoring.backtest import aggregate, run_backtest, report_text
+from scoring.backtest import aggregate, run_backtest, report_text, make_claude_filter
 from feeds.snapshot import build_snapshot
 from indicators.directional import journal_mtf_config
+from agent.read import ClaudeRead
 
 
 def test_aggregate_overall_and_breakdowns():
@@ -70,3 +71,37 @@ def test_run_backtest_shape_and_consistency():
         assert t["outcome"] in ("win", "loss", "eod") and "points" in t and "date" in t
         assert "exit_ts" in t and "exit" in t
     assert "OVERALL" in report_text("NIFTY", rep)        # renders without error
+
+
+def _stub_read(rec):
+    return ClaudeRead(agrees_with_engine=True, chart_analysis="ca", oi_analysis="oa",
+                      where_moving="wm", right_trade="rt", challenge="ch",
+                      recommendation=rec, confidence=3, key_risk="kr")
+
+
+def test_claude_filter_tags_and_splits_report():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    # stub filter: take longs, skip shorts
+    out = run_backtest(snap, lots=1,
+                       claude_filter=lambda t: "enter" if t["direction"] == "long" else "stand_down")
+    assert out["filtered"] is not None
+    assert all("claude" in t for t in out["triggers"])
+    taken = [t for t in out["triggers"] if t["claude"] == "enter"]
+    assert out["filtered"]["overall"]["n"] == len(taken)
+    assert all(t["direction"] == "long" for t in taken)
+    # the filtered block renders
+    assert "CLAUDE-FILTERED" in report_text("NIFTY", out["report"], filtered=out["filtered"])
+
+
+def test_make_claude_filter_uses_completer():
+    base, daily = _synth_1m(3), _synth_daily()
+    fn = make_claude_filter("NIFTY", base, daily,
+                            completer=lambda system, user: _stub_read("enter"))
+    verdict = fn({"ts": base.index[800].isoformat()})
+    assert verdict == "enter"
+
+
+def test_run_backtest_without_filter_has_no_filtered():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1)
+    assert out["filtered"] is None

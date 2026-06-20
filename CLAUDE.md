@@ -193,6 +193,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       test_triggers; eod aggregate in test_backtest; training multi-day expectations updated for the
       floor. Suite green (169). Still pending: a MIN-STOP-DISTANCE floor (tiny session-low stops still
       yield tiny 1.5R targets) is the next tuning knob.
+- [x] **Backtest v2 — target-driven levels + Claude take/skip filter (confirmed w/ trader).**
+      (A) `trade1_levels(..., target_driven=True)`: anchor on the structural OBJECTIVE ahead and
+      derive the SL so reward:risk == R_MULTIPLE exactly (fixes the SL off the target instead of
+      gluing it to the session low → kills the fraction-of-a-point instant stop-outs). Falls back to
+      the stop-driven journal model when nothing lies ahead. Threaded through `list_triggers(...,
+      target_driven=)`; backtest defaults to it (`--levels target|stop`). (B) `scoring.backtest.
+      make_claude_filter` runs `claude_read` per trigger against the AS-OF world (`build_snapshot_at`,
+      no leakage) → take/skip; `run_backtest(claude_filter=)` tags each trigger `claude` + adds a
+      CLAUDE-FILTERED (ENTER-only) report; CLI `--claude` (needs ANTHROPIC_API_KEY, slow). Tested:
+      target-driven long/short + fallback (test_triggers), filter split + completer seam (test_backtest).
+      Suite green (175). PENDING (trader asked): let Claude also DECIDE target/SL/RR after the trigger
+      (not just take/skip) — needs ClaudeRead level fields + backtest sims on Claude's levels.
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

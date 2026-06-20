@@ -88,14 +88,23 @@ def _round_strike(x: float) -> int:
     return int(round(x / STRIKE_STEP) * STRIKE_STEP)
 
 
-def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = None):
+def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = None,
+                  target_driven: bool = False):
     """Place stop & target for a Trade-1 entry from chart structure (+ OI walls).
 
     Reusable by both ``propose_trade1`` (latest bar) and ``analysis.triggers``
     (per-bar replay). ``levels`` is the chart-read levels dict (ema_45, supertrend,
-    cpr_*); ``oi`` optionally adds the call wall / put shelf. Returns
-    ``(stop, target, rr)`` — target falls back to an R-multiple when no structural
-    level lies ahead.
+    cpr_*); ``oi`` optionally adds the call wall / put shelf.
+
+    Two level models:
+      * default (journal) — STOP-driven: stop = the session extreme (day low for a
+        long), target = next structure ahead, floored to ``R_MULTIPLE``×risk.
+      * ``target_driven=True`` — anchor on the structural OBJECTIVE ahead and derive
+        the stop so reward:risk == ``R_MULTIPLE`` exactly. Fixes the SL off the target
+        instead of gluing it to the session low (which caused fraction-of-a-point
+        instant stop-outs). Falls back to the stop-driven model when nothing lies ahead.
+
+    Returns ``(stop, target, rr)``.
     """
     oi = oi or {}
     long = direction == "long"
@@ -106,6 +115,17 @@ def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = 
         resists.append(oi["call_wall"]["strike"])
     if oi.get("put_shelf"):
         supports.append(oi["put_shelf"]["strike"])
+
+    if target_driven:
+        # Target first: the next structural level ahead is the objective; the stop is
+        # whatever keeps reward:risk at R_MULTIPLE (no session-low gluing).
+        target = _nearest_above(entry, resists) if long else _nearest_below(entry, supports)
+        if target is not None:
+            reward = abs(target - entry)
+            risk = reward / R_MULTIPLE
+            stop = entry - risk if long else entry + risk
+            return stop, target, R_MULTIPLE
+        # nothing ahead -> fall through to the stop-driven model
 
     # The journal's stop = the session's running extreme (day low for a long, day
     # high for a short). Falls back to chart structure when it isn't supplied.
