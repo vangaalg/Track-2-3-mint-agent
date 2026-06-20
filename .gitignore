@@ -17,6 +17,8 @@ data/*.parquet
 data/*.feather
 # logged + backfilled option-chain OI snapshots (runtime-only)
 data/oi/
+# pasted chart exports for trigger validation (throwaway)
+data/validate/
 
 # Results — keep human-readable reports, drop raw dumps + runtime logs/DB.
 results/*.csv
