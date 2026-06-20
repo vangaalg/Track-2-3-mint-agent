@@ -136,3 +136,16 @@ def test_target_driven_falls_back_when_no_objective_ahead():
     # no resistance above entry -> stop-driven fallback (session-low stop + 1.5R target)
     stop, target, rr = trade1_levels("long", 100.0, {"session_low": 90.0}, target_driven=True)
     assert stop == 90.0 and target == 115.0 and rr == 1.5
+
+
+def test_min_stop_floor_target_driven():
+    # tiny structural target -> min_stop widens the stop and pushes the target out to keep R:R
+    stop, target, rr = trade1_levels("long", 100.0, {"cpr_tc": 100.3},
+                                     target_driven=True, min_stop=20)
+    assert rr == 1.5 and abs(stop - 80.0) < 1e-9 and abs(target - 130.0) < 1e-9
+
+
+def test_min_stop_floor_stop_driven():
+    # session low only 1pt below -> floored to 20, target to 1.5R
+    stop, target, rr = trade1_levels("long", 100.0, {"session_low": 99.0}, min_stop=20)
+    assert abs(stop - 80.0) < 1e-9 and abs(target - 130.0) < 1e-9 and rr == 1.5

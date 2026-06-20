@@ -134,3 +134,22 @@ def test_claude_filter_trades_claude_levels():
     for t in out["triggers"]:
         if t["claude"] == "enter":
             assert t["claude_rr"] == 1.5 and "claude_target" in t and "claude_stop" in t
+
+
+def test_make_claude_filter_tracks_errors():
+    base, daily = _synth_1m(3), _synth_daily()
+
+    def boom(system, user):
+        raise RuntimeError("api down")
+
+    fn = make_claude_filter("NIFTY", base, daily, completer=boom)
+    cf = fn({"ts": base.index[800].isoformat(), "direction": "long"})
+    assert cf["verdict"] == "stand_down" and cf.get("error") is True
+    assert fn.state["errors"] == 1 and "api down" in fn.state["first_error"]
+
+
+def test_min_stop_floors_backtest_stops():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1, min_stop=20)
+    for t in out["triggers"]:
+        assert abs(t["entry"] - t["eng_stop"]) >= 20 - 1e-6     # no tiny stops

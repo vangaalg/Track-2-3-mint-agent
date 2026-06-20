@@ -72,30 +72,48 @@ def aggregate(triggers: list[dict], lot_size: int = LOT_SIZE, lots: int = 1) -> 
 
 
 def make_claude_filter(symbol: str, base_1m, daily, memory: str = "",
-                       completer=None, cfg=None):
+                       completer=None, cfg=None, verbose: bool = False):
     """Build a per-trigger Claude take/skip filter for the backtest.
 
-    Returns ``fn(trigger) -> "enter"|"stand_down"``: rebuilds the AS-OF world at the
-    trigger's timestamp (``build_snapshot_at`` — no future leakage), runs the engine
-    proposal + ``claude_read`` against it, and returns Claude's verdict. ``completer``
-    is the injectable Anthropic seam (stub it in tests); live needs ANTHROPIC_API_KEY.
-    Errors fall back to "stand_down" (skip) so one bad bar can't kill the run.
+    Returns ``fn(trigger) -> {"verdict","target","stop"}``: rebuilds the AS-OF world at
+    the trigger's timestamp (``build_snapshot_at`` — no future leakage), runs the engine
+    proposal + ``claude_read`` against it, and returns Claude's verdict + its own levels.
+    ``completer`` is the injectable Anthropic seam (stub it in tests); live needs
+    ANTHROPIC_API_KEY.
+
+    Diagnostics: an errored read is tagged ``"error": True`` (still returns stand_down,
+    so one bad bar can't kill the run) and counted on ``fn.state``; the FIRST error's
+    traceback is captured there so the caller can tell genuine stand-downs from a
+    systematic failure. ``verbose`` prints each verdict to stderr as it goes.
     """
     from feeds.snapshot import build_snapshot_at
     from analysis.trade1 import propose_trade1
     from agent.read import claude_read
     cfg = cfg or journal_mtf_config()
+    state = {"n": 0, "enter": 0, "stand_down": 0, "errors": 0, "first_error": None}
 
     def fn(trigger: dict) -> dict:
+        state["n"] += 1
         try:
             snap = build_snapshot_at(symbol, base_1m, daily, trigger["ts"], mtf_cfg=cfg)
             prop = propose_trade1(snap)
             read = claude_read(snap, prop, memory, completer=completer)
-            return {"verdict": "enter" if read.recommendation == "enter" else "stand_down",
-                    "target": read.proposed_target, "stop": read.proposed_stop}
-        except Exception:
-            return {"verdict": "stand_down"}
+            v = "enter" if read.recommendation == "enter" else "stand_down"
+            state[v] += 1
+            if verbose:
+                lv = f" tgt {read.proposed_target} stp {read.proposed_stop}" if v == "enter" else ""
+                print(f"  [{state['n']}] {trigger['ts']} {trigger['direction']} -> {v}{lv}",
+                      file=sys.stderr)
+            return {"verdict": v, "target": read.proposed_target, "stop": read.proposed_stop}
+        except Exception as exc:
+            state["errors"] += 1
+            if state["first_error"] is None:
+                import traceback
+                state["first_error"] = traceback.format_exc()
+                print(f"  [{state['n']}] ERROR (first): {exc}", file=sys.stderr)
+            return {"verdict": "stand_down", "error": True}
 
+    fn.state = state
     return fn
 
 
@@ -129,21 +147,22 @@ def clamp_levels(direction: str, entry: float, target, stop,
 
 
 def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
-                 claude_filter=None) -> dict:
+                 claude_filter=None, min_stop: float = 0.0) -> dict:
     """Backtest the trigger over a pre-built snapshot's feats/frames.
 
     Reuses the LIVE resolver (``journal_mtf_config``) so the backtest fires exactly the
     triggers the cockpit + training would. ``target_driven`` uses the target-first
-    level model (SL derived from R:R). If ``claude_filter`` is given, each trigger is
-    tagged with Claude's take/skip verdict and a CLAUDE-FILTERED (ENTER-only) report
-    is added alongside the unfiltered one.
+    level model (SL derived from R:R); ``min_stop`` floors the stop distance (points).
+    If ``claude_filter`` is given, each trigger is tagged with Claude's take/skip verdict
+    and a CLAUDE-FILTERED (ENTER-only) report is added alongside the unfiltered one.
 
     Returns ``{"triggers": [...], "report": {...}, "filtered": {...}|None}``.
     """
     from analysis.triggers import _resolve_intraday
     cfg = cfg or journal_mtf_config()
     triggers = list_triggers(snap.feats, snap.frames, cfg=cfg, size_lots=lots,
-                             lot_size=LOT_SIZE, realistic=True, target_driven=target_driven)
+                             lot_size=LOT_SIZE, realistic=True, target_driven=target_driven,
+                             min_stop=min_stop)
     filtered = None
     if claude_filter is not None:
         frame3m = snap.frames["3min"]
@@ -263,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="pagination window for the 1-min pull (Breeze caps rows/call)")
     ap.add_argument("--levels", choices=["target", "stop"], default="target",
                     help="target = SL derived from R:R off the objective; stop = session-low stop")
+    ap.add_argument("--min-stop", type=float, default=0.0,
+                    help="floor the stop distance in points (kills tiny-stop instant exits; 0=off)")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
@@ -274,10 +295,19 @@ def main(argv: list[str] | None = None) -> int:
     snap = build_snapshot(args.symbol, base, daily, mtf_cfg=journal_mtf_config())
     cfilter = None
     if args.claude:
-        print("Running Claude take/skip per trigger (this is slow)…", file=sys.stderr)
-        cfilter = make_claude_filter(args.symbol, base, daily)
+        print("Running Claude take/skip per trigger (this is slow; verdicts below)…",
+              file=sys.stderr)
+        cfilter = make_claude_filter(args.symbol, base, daily, verbose=True)
     out = run_backtest(snap, lots=args.lots, target_driven=(args.levels == "target"),
-                       claude_filter=cfilter)
+                       claude_filter=cfilter, min_stop=args.min_stop)
+    if cfilter is not None:                              # diagnostics: errors vs genuine
+        st = cfilter.state
+        print(f"\nClaude verdicts: {st['enter']} enter / {st['stand_down']} stand_down / "
+              f"{st['errors']} ERRORED (of {st['n']}).", file=sys.stderr)
+        if st["errors"]:
+            print("First error was:\n" + (st["first_error"] or ""), file=sys.stderr)
+            print("→ the stand_downs may be masked failures, not real Claude calls.",
+                  file=sys.stderr)
     print(report_text(args.symbol, out["report"], levels=args.levels, filtered=out["filtered"]))
     csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
                                       levels=args.levels, filtered=out["filtered"])

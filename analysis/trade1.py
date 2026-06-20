@@ -89,7 +89,7 @@ def _round_strike(x: float) -> int:
 
 
 def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = None,
-                  target_driven: bool = False):
+                  target_driven: bool = False, min_stop: float = 0.0):
     """Place stop & target for a Trade-1 entry from chart structure (+ OI walls).
 
     Reusable by both ``propose_trade1`` (latest bar) and ``analysis.triggers``
@@ -103,6 +103,11 @@ def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = 
         the stop so reward:risk == ``R_MULTIPLE`` exactly. Fixes the SL off the target
         instead of gluing it to the session low (which caused fraction-of-a-point
         instant stop-outs). Falls back to the stop-driven model when nothing lies ahead.
+
+    ``min_stop`` (points) floors the stop distance — when the structural levels put
+    the stop a fraction of a point from entry (the tiny-trade degeneracy), the risk is
+    widened to ``min_stop`` and, in target-driven mode, the target is pushed out to
+    keep R:R. 0 = off.
 
     Returns ``(stop, target, rr)``.
     """
@@ -123,6 +128,9 @@ def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = 
         if target is not None:
             reward = abs(target - entry)
             risk = reward / R_MULTIPLE
+            if min_stop and risk < min_stop:        # floor the stop, push target to keep R:R
+                risk = min_stop
+                target = entry + R_MULTIPLE * risk * (1 if long else -1)
             stop = entry - risk if long else entry + risk
             return stop, target, R_MULTIPLE
         # nothing ahead -> fall through to the stop-driven model
@@ -138,6 +146,9 @@ def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = 
         target = _nearest_below(entry, supports)
 
     risk = abs(entry - stop) if stop is not None else None
+    if risk is not None and min_stop and risk < min_stop:   # floor a too-tight stop
+        risk = min_stop
+        stop = entry - risk if long else entry + risk
     # Enforce a MINIMUM reward:risk. A structural target closer than R_MULTIPLE×risk
     # (or none at all) is pushed out to the floor, so a "win" is always a real move
     # — kills the near-zero-point targets that made rr collapse toward 0.
