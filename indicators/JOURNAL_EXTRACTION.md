@@ -43,8 +43,10 @@ logged days validate them") — and are registered at the bottom.
 > `scoring/trigger_check.py`).** The harness on his 19-Jun export proved the direction was
 > *backwards*: his 3-min entry is a **breakout CONTINUATION**, not a fade — but the entry is a
 > **VRL retest**, not a bare 5-EMA touch (a v1 cut that fired the wrong bars and missed his
-> trade). The mechanic he confirmed: the **FIRST upper-band breach** (`close > bb_upper`,
-> above the 45-EMA) is the trigger and the **VRL = that breach bar's HIGH** (set once, fixed).
+> trade). The mechanic he confirmed: the **FIRST upper-band breach** — the bar's **HIGH crosses
+> the band** (`high > bb_upper`; the close may still be inside, e.g. Bank Nifty 13:42 high
+> 57608.75 with its close below the band), above the 45-EMA — is the trigger and the
+> **VRL = that breach bar's HIGH** (set once, fixed).
 > Price extends up to a peak, then **retraces back DOWN to the VRL**; the LONG fires on the bar
 > where **`low ≤ VRL` (retest) AND `close > VRL` (VRL holds) AND `close < ema_5` (closes below
 > the 5-EMA)**. The **5-EMA close is the discriminator**: his 13:48 breach set VRL = 23962.65;

@@ -172,12 +172,12 @@ def report_candidates(feats: pd.DataFrame, calls: pd.Series) -> None:
         if np.isnan(bb_u[i]) or np.isnan(e45[i]) or np.isnan(e5[i]):
             continue
         if state == 0:
-            if close[i] > bb_u[i] and close[i] > e45[i]:
+            if high[i] > bb_u[i] and close[i] > e45[i]:
                 state, arm_ts, vrl = 1, idx[i], high[i]
-                print(f"  {_hhmm(arm_ts)} up-breach -> ARM long, VRL={vrl:.2f} (breach high)")
-            elif close[i] < bb_l[i] and close[i] < e45[i]:
+                print(f"  {_hhmm(arm_ts)} up-breach (high>{bb_u[i]:.2f}) -> ARM long, VRL={vrl:.2f} (breach high)")
+            elif low[i] < bb_l[i] and close[i] < e45[i]:
                 state, arm_ts, vrl = -1, idx[i], low[i]
-                print(f"  {_hhmm(arm_ts)} down-breach -> ARM short, VRL={vrl:.2f} (breach low)")
+                print(f"  {_hhmm(arm_ts)} down-breach (low<{bb_l[i]:.2f}) -> ARM short, VRL={vrl:.2f} (breach low)")
         elif state == 1:
             if close[i] < e45[i]:
                 print(f"    {_hhmm(idx[i])} CANCELLED (closed below 45-EMA)")

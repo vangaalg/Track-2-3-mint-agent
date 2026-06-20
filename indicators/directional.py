@@ -209,9 +209,10 @@ def vote_breakout_pullback(df: pd.DataFrame) -> pd.Series:
     """The trader's REAL 3-min entry: a Bollinger breakout, then a VRL retest that
     closes back below the 5-EMA.
 
-    Confirmed from his 19-Jun chart: the FIRST upper-band breach (``close > bb_upper``)
-    while above the 45-EMA is the trigger, and the **VRL = that breach bar's HIGH**
-    (set once, fixed — NOT raised by later breaches). Price extends up to a peak, then
+    Confirmed from his 19-Jun charts: the FIRST upper-band breach (the bar's **HIGH**
+    crosses the band, ``high > bb_upper`` — the close may still be inside) while above
+    the 45-EMA is the trigger, and the **VRL = that breach bar's HIGH** (set once, fixed
+    — NOT raised by later breaches). Price extends up to a peak, then
     **retraces back DOWN to the VRL**; the entry fires on the bar whose **low touches
     the VRL** (``low <= vrl``), the VRL **holds** (``close > vrl`` — not a breakdown),
     and the bar **closes below the 5-EMA** (``close < ema_5``). The 5-EMA close is the
@@ -243,10 +244,10 @@ def vote_breakout_pullback(df: pd.DataFrame) -> pd.Series:
             state, vrl = FLAT, np.nan
             continue
         if state == FLAT:
-            if close[i] > bb_u[i] and close[i] > ema45[i]:
-                state, vrl = LONG_ARM, high[i]      # first up-breach: VRL = its high
-            elif close[i] < bb_l[i] and close[i] < ema45[i]:
-                state, vrl = SHORT_ARM, low[i]      # first down-breach: VRL = its low
+            if high[i] > bb_u[i] and close[i] > ema45[i]:
+                state, vrl = LONG_ARM, high[i]      # first up-breach (high crosses): VRL = its high
+            elif low[i] < bb_l[i] and close[i] < ema45[i]:
+                state, vrl = SHORT_ARM, low[i]      # first down-breach (low crosses): VRL = its low
         elif state == LONG_ARM:
             if close[i] < ema45[i]:                 # trend broke -> cancel
                 state, vrl = FLAT, np.nan
