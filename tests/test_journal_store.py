@@ -74,3 +74,22 @@ def test_settle_store_grades_2x2(tmp_path):
     r = store.load_records(db)[0]
     assert r["outcome_status"] == "win" and r["matrix"] == "deserved"
     assert r["outcome"]["points"] == 60.0
+
+
+def test_trigger_label_and_reason_round_trip(tmp_path):
+    db = tmp_path / "journal.db"
+    p = _payload()
+    p["trigger_label"] = "genuine"
+    p["reason_why"] = "genuine: clean close below the 5-EMA, held the 45-EMA (lesson: take it)"
+    rid = store.save_decision(p, path=db)
+    r = store.load_records(db)[0]
+    assert r["trigger_label"] == "genuine"
+    assert "clean close" in r["reason_why"]
+    # update_reason patches the reason later (live settle) without touching the label
+    store.update_reason(rid, "false: lucky bounce off a graze (lesson: skip)", path=db)
+    r = store.load_records(db)[0]
+    assert r["reason_why"].startswith("false:") and r["trigger_label"] == "genuine"
+    # passing a label overwrites it too
+    store.update_reason(rid, "genuine: ...", trigger_label="false", path=db)
+    assert store.load_records(db)[0]["trigger_label"] == "false"
+

@@ -34,6 +34,7 @@ from analysis.triggers import replay_today, list_triggers, simulate_intraday
 from analysis.proposal import Recommendation
 from agent.memory import load_decisions, distill_memory, distill_context
 from agent.read import claude_read
+from agent.reason import explain_outcome
 from agent.chat import spar_turn
 from execution import breeze_exec
 from journal.log import log_decision, DEFAULT_LOG
@@ -87,6 +88,7 @@ MACRO_FN = _default_macro
 TRAIN_PULL_FN = _default_train_pull
 READ_COMPLETER = None    # claude_read completer (None -> live Anthropic call)
 CHAT_COMPLETER = None     # spar_turn completer (None -> live Anthropic call)
+REASON_COMPLETER = None   # explain_outcome completer (None -> live Anthropic call)
 
 # --- in-process state (single local user) ---------------------------------- #
 _state: dict = {
@@ -177,6 +179,41 @@ def _learning_memory() -> str:
     except Exception:
         pass
     return memory
+
+
+def _reason_why(ctx: dict) -> dict | None:
+    """Claude's post-outcome reason-why for a resolved trigger (None if it errors)."""
+    try:
+        rw = explain_outcome(ctx, _learning_memory(), completer=REASON_COMPLETER)
+        return asdict(rw)
+    except Exception:
+        return None
+
+
+def _reason_text(rw: dict | None) -> str | None:
+    """Compact scalar string for the store/queries from a reason-why dict."""
+    if not rw:
+        return None
+    return f"{rw.get('trigger_quality', '?')}: {rw.get('why', '')} " \
+           f"(lesson: {rw.get('lesson', '')})".strip()
+
+
+def _settle_reasons(settled: list[dict]) -> None:
+    """Generate Claude's reason-why ONCE for each newly-resolved live trade that
+    lacks one, and patch it onto the store row (so it feeds the learning memory)."""
+    for r in settled or []:
+        if (r.get("outcome_status") in ("win", "loss") and not r.get("reason_why")
+                and r.get("id")):
+            prop = r.get("proposal") or {}
+            rw = _reason_why({
+                "instrument": r.get("symbol"), "ts": r.get("ts"), "direction": r.get("direction"),
+                "entry": r.get("entry"), "stop": r.get("stop"), "target": r.get("target"),
+                "action": r.get("decision"), "trigger_label": r.get("trigger_label"),
+                "outcome": r.get("outcome"),
+                "chart_read": (prop.get("context") or {}).get("chart_read"),
+            })
+            if rw:
+                store.update_reason(r["id"], _reason_text(rw), path=JOURNAL_DB)
 
 
 def _run_read() -> dict:
@@ -300,11 +337,21 @@ def record():
     frames = _state["snap"].frames if _state["snap"] is not None else {}
     decisions = settle_log(DEFAULT_LOG, frames)
     try:
-        settle_store(frames, path=JOURNAL_DB)   # grade the rich store too (same 2x2)
+        settled = settle_store(frames, path=JOURNAL_DB)   # grade the rich store too (same 2x2)
+        _settle_reasons(settled)                            # post-mortem newly-resolved trades
     except Exception:
         pass
     recent = decisions[-12:]
-    return {"summary": matrix_summary(decisions),
+    posts = []     # settled live trades that carry a Claude post-mortem
+    try:
+        for r in store.load_records(JOURNAL_DB, kind="live", limit=20):
+            if r.get("reason_why"):
+                posts.append({"ts": r.get("ts"), "direction": r.get("direction"),
+                              "label": r.get("trigger_label"), "matrix": r.get("matrix"),
+                              "outcome": r.get("outcome_status"), "reason_why": r.get("reason_why")})
+    except Exception:
+        pass
+    return {"summary": matrix_summary(decisions), "posts": posts[-8:],
             "recent": [{"decision": r.get("decision"), "process": r.get("process_grade"),
                         "matrix": r.get("matrix"), "ts": (r.get("proposal") or {}).get("ts"),
                         "direction": (r.get("proposal") or {}).get("direction"),
@@ -352,7 +399,8 @@ async def chat(text: str = Form(""), files: list[UploadFile] = File(default=[]))
     return {"reply": reply}
 
 
-def _save_context(decision: str, symbol: str, execution: dict | None) -> None:
+def _save_context(decision: str, symbol: str, execution: dict | None,
+                  label: str | None = None) -> None:
     """Archive the WHOLE decision moment to the SQLite store (chat, Claude read,
     chart datapoints, raw chain, all macro) so the agent can learn from everything."""
     snap, prop, chain = _state["snap"], _state["prop"], _state["chain"]
@@ -366,6 +414,7 @@ def _save_context(decision: str, symbol: str, execution: dict | None) -> None:
     payload = {
         "ts": snap.ts, "symbol": symbol, "decision": decision, "spot": snap.spot,
         "proposal": prop.as_dict(),
+        "trigger_label": (label or "").strip().lower() or None,
         "claude_read": asdict(read) if read is not None else None,
         "chat": _state.get("chat") or None,
         "chart": _chart_bundle(snap),
@@ -380,17 +429,18 @@ def _save_context(decision: str, symbol: str, execution: dict | None) -> None:
 
 
 @app.post("/api/decision")
-def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Form("NIFTY")):
+def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Form("NIFTY"),
+             label: str = Form("")):
     prop = _state["prop"]
     if prop is None:
         raise HTTPException(status_code=409, detail="no proposal yet")
     if action == "approve":
         result = breeze_exec.place(prop, live=live)
         rec = log_decision(prop, "approved", execution=result)
-        _save_context("approved", symbol, result)
+        _save_context("approved", symbol, result, label=label)
         return {"status": result["status"], "logged": rec["decision"]}
     rec = log_decision(prop, "rejected")
-    _save_context("rejected", symbol, None)
+    _save_context("rejected", symbol, None, label=label)
     return {"status": "rejected", "logged": rec["decision"]}
 
 
@@ -519,7 +569,8 @@ def _rr(direction: str, entry: float, stop: float, target: float) -> float | Non
 @app.post("/api/train/answer")
 def train_answer(tid: int = Form(...), action: str = Form(...),
                  entry: float = Form(0.0), target: float = Form(0.0),
-                 stop: float = Form(0.0), reason: str = Form("")):
+                 stop: float = Form(0.0), reason: str = Form(""),
+                 label: str = Form("")):
     """Grade the trader's take/skip vs the known outcome, save it, feed learning."""
     if _train["triggers"] is None or tid < 0 or tid >= len(_train["triggers"]):
         raise HTTPException(status_code=404, detail="unknown trigger id")
@@ -564,10 +615,22 @@ def train_answer(tid: int = Form(...), action: str = Form(...),
         agree = (c_action == action)
         round_winner = _round_winner(cell, c_cell)
 
+    label = (label or "").strip().lower() or None     # trader's genuine/false trigger label
+
+    # Claude's post-outcome reason-why (process not P&L) on the trader's executed levels.
+    lv = your_levels or {"entry": trig["entry"], "stop": trig["eng_stop"], "target": trig["eng_target"]}
+    reason_why = _reason_why({
+        "instrument": _train["symbol"], "ts": trig["ts"], "direction": direction,
+        "entry": lv["entry"], "stop": lv["stop"], "target": lv["target"],
+        "action": action, "trigger_label": label, "outcome": your,
+        "chart_read": getattr(snap, "chart_read", None),
+    })
+
     proposal = case["prop"].as_dict()
     proposal = {**proposal, "direction": direction, "size_lots": TRAIN_LOTS,
                 "reason": reason.strip() or None,
-                "claude_eval": claude_eval, "agree": agree}
+                "claude_eval": claude_eval, "agree": agree,
+                "claude_reason": reason_why}
     if action == "take":
         proposal.update(entry=entry, stop=stop, target=target, rr_ratio=rr)
     payload = {
@@ -578,15 +641,16 @@ def train_answer(tid: int = Form(...), action: str = Form(...),
         "chart": _chart_bundle(snap), "chain": _chain_rows(case["chain"], snap.spot),
         "macro": None, "oi_summary": case["oi"], "notes": snap.notes,
         "outcome": your, "matrix": cell, "process_grade": f"training_{action}",
+        "trigger_label": label, "reason_why": _reason_text(reason_why),
     }
     try:
         store.save_decision(payload, path=JOURNAL_DB)
     except Exception:
         pass
     return {"action": action, "direction": direction, "entry": entry, "rr": rr,
-            "reason": reason.strip() or None, "your_levels": your_levels,
+            "reason": reason.strip() or None, "label": label, "your_levels": your_levels,
             "your_outcome": your, "engine_outcome": engine, "cell": cell,
-            "agree": agree, "round_winner": round_winner,
+            "agree": agree, "round_winner": round_winner, "reason_why": reason_why,
             "claude": asdict(read) if read is not None else None,
             "score": _train_score(), "record": _train_record()}
 

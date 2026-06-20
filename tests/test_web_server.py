@@ -189,3 +189,18 @@ def test_decision_persists_full_context(client, tmp_path, monkeypatch):
     assert "3min" in r["chart"] and r["chart"]["3min"]["bars"]        # chart datapoints
     assert r["chain"] and r["chain"][0]["strike"] is not None         # raw chain
     assert r["macro"]["usd_inr"]["price"] == 1                        # macro values
+
+
+def test_live_decision_captures_trigger_label(client, tmp_path, monkeypatch):
+    """A live decision records the trader's genuine/false trigger label; settling the
+    track record (/api/record) runs the post-mortem path without error."""
+    from journal import store
+    from agent.reason import ReasonWhy
+    monkeypatch.setattr(srv, "DEFAULT_LOG", str(tmp_path / "d.jsonl"))
+    monkeypatch.setattr(srv, "REASON_COMPLETER", lambda system, user: ReasonWhy(
+        why="ran straight to target", trigger_quality="false", lesson="skip the graze"))
+    client.get("/api/snapshot")
+    client.post("/api/decision", data={"action": "reject", "label": "false"})
+    r = store.load_records(srv.JOURNAL_DB)[0]
+    assert r["trigger_label"] == "false" and r["reason_why"] is None   # reject -> no outcome yet
+    assert client.get("/api/record").status_code == 200               # settle path is clean

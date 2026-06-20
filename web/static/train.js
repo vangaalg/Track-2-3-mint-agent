@@ -46,6 +46,8 @@ function markAnswered(tid) {
 async function loadCase() {
   $("revealBox").hidden = true; $("takeForm").style.display = "";
   $("formMsg").textContent = ""; $("readBox").innerHTML = "<span class='muted'>Loading Claude's read…</span>";
+  document.querySelectorAll('input[name="trigLabel"]').forEach((el) => { el.checked = false; });
+  $("inReason").value = "";
   initCharts();
   try {
     CUR = await (await fetch(`/api/train/case/${curTid}?tf=${chartTF}&bars=200`)).json();
@@ -144,6 +146,8 @@ async function answer(action) {
   if (curTid === null) return;
   const fd = new FormData(); fd.append("tid", curTid); fd.append("action", action);
   fd.append("entry", $("inEntry").value); fd.append("reason", $("inReason").value);
+  const lbl = document.querySelector('input[name="trigLabel"]:checked');
+  if (lbl) fd.append("label", lbl.value);
   if (action === "take") { fd.append("target", $("inTarget").value); fd.append("stop", $("inStop").value); }
   const r = await fetch("/api/train/answer", { method: "POST", body: fd });
   const d = await r.json();
@@ -175,15 +179,21 @@ function renderReveal(d) {
     ? `You <b>TOOK</b> it (entry ${d.your_levels.entry} · target ${d.your_levels.target} / stop ${d.your_levels.stop} · R:R ${d.rr ?? "—"}) → ${_oc(d.your_outcome)}`
     : `You <b>SKIPPED</b> it → would-be ${_oc(d.your_outcome)}`;
   const reasonLine = d.reason ? `<p class="muted">Your reason: ${d.reason}</p>` : "";
+  const lblLine = d.label ? `<p class="muted">Your label: <b>${d.label.toUpperCase()}</b> trigger</p>` : "";
+  const rw = d.reason_why;
+  const pmLine = rw
+    ? `<div class="postmortem"><b>🤖 Claude post-mortem</b> — trigger <b class="${rw.trigger_quality === "genuine" ? "win-txt" : "loss-txt"}">${(rw.trigger_quality || "").toUpperCase()}</b>`
+      + `<p>${rw.why || ""}</p><p class="muted">Lesson: ${rw.lesson || ""}</p></div>`
+    : "";
   const vsLine = d.claude
     ? `<p class="vs">You <b>${d.agree ? "AGREED" : "DISAGREED"}</b> with Claude · <b>${ROUND_TXT[d.round_winner] || ""}</b></p>`
     : "";
   $("revealBox").hidden = false;
   $("revealBox").innerHTML =
     `<div class="reveal-cell ${d.cell}"><span class="rc-lbl">${lbl}</span><span class="rc-sub">${sub}</span></div>`
-    + `<p>${youLine}</p>` + reasonLine
+    + `<p>${youLine}</p>` + reasonLine + lblLine
     + `<p>Engine levels → ${_oc(d.engine_outcome)} (target ${d.engine_outcome.target} / stop ${d.engine_outcome.stop} · R:R ${d.engine_outcome.rr ?? "—"})</p>`
-    + `<p>Claude had said: <b>${claude}</b></p>` + vsLine
+    + `<p>Claude had said: <b>${claude}</b></p>` + vsLine + pmLine
     + `<p class="muted small">Saved to the learning store (kind=training, 2 lots) — the agent will see this.</p>`
     + `<button id="next2" class="btn primary">Next trigger ▶</button>`;
   $("next2").onclick = nextTrigger;

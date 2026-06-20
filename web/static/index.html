@@ -81,6 +81,10 @@
       <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>
       <div id="readBox" class="readbox"><span class="muted">No Claude read yet — fires on an ENTER, or press Analyse.</span></div>
       <div id="decision" class="decision" hidden>
+        <div class="labelrow">Trigger:
+          <label><input type="radio" name="liveLabel" value="genuine" /> 👍 genuine</label>
+          <label><input type="radio" name="liveLabel" value="false" /> 👎 false</label>
+        </div>
         <button id="approveBtn" class="btn ok">✅ Approve</button>
         <button id="rejectBtn" class="btn no">❌ Reject</button>
       </div>
@@ -102,6 +106,7 @@
     <div id="recMatrix" class="matrix">—</div>
     <div id="recSummary" class="row small muted">—</div>
     <div class="tablewrap"><table id="recTbl"></table></div>
+    <div id="recPosts" class="postmortems"></div>
   </section>
 
   <!-- Chat -->

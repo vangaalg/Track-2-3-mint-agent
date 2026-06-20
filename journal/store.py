@@ -34,6 +34,8 @@ _SCALAR_COLS = (
     "entry", "stop", "target", "size_lots", "rr_ratio", "vehicle", "spot",
     "confidence", "agrees_with_engine",
     "process_grade", "matrix", "outcome_status", "outcome_points", "outcome_rupees",
+    # Phase 2 — the trader's genuine/false trigger label + Claude's post-outcome reason.
+    "trigger_label", "reason_why",
 )
 # JSON blob columns holding the full structures (stored as ``<name>_json`` TEXT).
 _BLOB_COLS = (
@@ -61,14 +63,16 @@ def init_db(path: str | Path = DB_PATH) -> None:
         "confidence INTEGER", "agrees_with_engine INTEGER",
         "process_grade TEXT", "matrix TEXT",
         "outcome_status TEXT", "outcome_points REAL", "outcome_rupees REAL",
+        "trigger_label TEXT", "reason_why TEXT",
     ] + [f"{c}_json TEXT" for c in _BLOB_COLS]
     with _connect(path) as conn:
         conn.execute(f"CREATE TABLE IF NOT EXISTS decisions ({', '.join(cols)})")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_decisions_ts ON decisions(ts)")
-        # Migration: add the `kind` column to a pre-existing DB that lacks it.
+        # Migration: add columns to a pre-existing DB that lacks them.
         have = {r["name"] for r in conn.execute("PRAGMA table_info(decisions)")}
-        if "kind" not in have:
-            conn.execute("ALTER TABLE decisions ADD COLUMN kind TEXT")
+        for c in ("kind", "trigger_label", "reason_why"):
+            if c not in have:
+                conn.execute(f"ALTER TABLE decisions ADD COLUMN {c} TEXT")
 
 
 def save_decision(payload: dict, path: str | Path = DB_PATH) -> int:
@@ -100,6 +104,9 @@ def save_decision(payload: dict, path: str | Path = DB_PATH) -> int:
         "process_grade": payload.get("process_grade"), "matrix": payload.get("matrix"),
         "outcome_status": outc.get("status"), "outcome_points": outc.get("points"),
         "outcome_rupees": outc.get("rupees"),
+        # Phase 2 — trader's genuine/false trigger label + Claude's reason-why text.
+        "trigger_label": payload.get("trigger_label"),
+        "reason_why": payload.get("reason_why"),
     }
     for c in _BLOB_COLS:
         row[f"{c}_json"] = json.dumps(payload.get(c)) if payload.get(c) is not None else None
@@ -122,6 +129,21 @@ def update_outcome(row_id: int, outcome: dict, process_grade: str | None,
             "outcome_rupees=?, process_grade=?, matrix=? WHERE id=?",
             (json.dumps(outcome), outcome.get("status"), outcome.get("points"),
              outcome.get("rupees"), process_grade, matrix, row_id))
+
+
+def update_reason(row_id: int, reason_why: str | None,
+                  trigger_label: str | None = None, path: str | Path = DB_PATH) -> None:
+    """Fill in Claude's post-outcome reason-why (and optional trader label) on a row.
+
+    Live decisions are saved before the trade resolves, so the reason-why is generated
+    later (at settle) and patched in here; ``trigger_label`` is only overwritten when
+    a non-None value is passed (so a trader label set earlier survives)."""
+    with _connect(path) as conn:
+        if trigger_label is None:
+            conn.execute("UPDATE decisions SET reason_why=? WHERE id=?", (reason_why, row_id))
+        else:
+            conn.execute("UPDATE decisions SET reason_why=?, trigger_label=? WHERE id=?",
+                         (reason_why, trigger_label, row_id))
 
 
 def _row_to_dict(r: sqlite3.Row) -> dict:

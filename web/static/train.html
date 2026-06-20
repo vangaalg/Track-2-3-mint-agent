@@ -81,6 +81,11 @@
           <span class="rr">R:R <b id="rrShow">—</b></span>
         </div>
         <textarea id="inReason" class="reasonbox" rows="2" placeholder="Why take / skip? (optional — trains the agent on your reasoning)"></textarea>
+        <div class="labelrow">Is this trigger genuine?
+          <label><input type="radio" name="trigLabel" value="genuine" /> 👍 genuine</label>
+          <label><input type="radio" name="trigLabel" value="false" /> 👎 false</label>
+          <span class="muted small">(teaches Claude which triggers to take)</span>
+        </div>
         <div class="decision">
           <button id="takeBtn" class="btn ok">✅ Take</button>
           <button id="skipBtn" class="btn no">⏭ Skip</button>

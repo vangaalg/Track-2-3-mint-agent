@@ -101,11 +101,14 @@ def distill_context(records: list[dict], max_recent: int = 8) -> str:
     how it actually settled (with the 2x2 cell). Feeds richer self-improvement — the
     agent sees its own past reads against outcomes, not just tallies.
     """
-    rich = [r for r in records if r.get("claude_read") or r.get("chat")]
+    rich = [r for r in records
+            if r.get("claude_read") or r.get("chat") or r.get("reason_why")
+            or r.get("trigger_label")]
     if not rich:
         return ""
     lines = ["", "Past reasoning vs. outcomes (learn from these — your own reads graded "
-             "by PROCESS, not P&L; never reinforce a 'dangerous' lucky win):"]
+             "by PROCESS, not P&L; never reinforce a 'dangerous' lucky win). The trader's "
+             "genuine/false trigger labels are ground truth — sharpen take/skip against them:"]
     for r in rich[-max_recent:]:
         prop = r.get("proposal") or {}
         read = r.get("claude_read") or {}
@@ -121,10 +124,16 @@ def distill_context(records: list[dict], max_recent: int = 8) -> str:
         reason = (prop.get("reason") or "").strip().replace("\n", " ")
         if len(reason) > 160:
             reason = reason[:157] + "…"
+        label = (r.get("trigger_label") or "").strip()
+        why = (r.get("reason_why") or "").strip().replace("\n", " ")
+        if len(why) > 200:
+            why = why[:197] + "…"
         lines.append(
             f"  - [{tag}] {r.get('ts', '?')} {prop.get('direction', '?')} · Claude {verdict} "
             f"(conf {read.get('confidence', '?')}/5), trader {r.get('decision', '?')} "
             f"→ {tail}{f' [{cell}]' if cell else ''}"
+            + (f" · trader labelled trigger: {label.upper()}" if label else "")
             + (f" · risk: {risk}" if risk else "")
-            + (f" · trader's reason: {reason}" if reason else ""))
+            + (f" · trader's reason: {reason}" if reason else "")
+            + (f" · post-mortem: {why}" if why else ""))
     return "\n".join(lines)

@@ -112,6 +112,16 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .takeform .levels .rr b.bad { color:var(--red); }
 .reasonbox { width:100%; margin:4px 0 8px; padding:7px; border:1px solid var(--line);
   border-radius:6px; background:var(--tile); color:var(--txt); font:inherit; resize:vertical; }
+.labelrow { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:4px 0 8px;
+  font-size:13px; color:var(--muted); }
+.labelrow label { color:var(--txt); cursor:pointer; }
+.postmortem { margin-top:8px; padding:8px 10px; border:1px solid var(--line);
+  border-left:3px solid var(--blue, #2962ff); border-radius:6px; background:var(--tile); }
+.postmortem p { margin:4px 0; }
+.postmortems { margin-top:8px; }
+.postmortems .pm-head { font-weight:600; font-size:12px; color:var(--muted); margin:6px 0 4px; }
+.postmortems .pm { padding:6px 8px; border-left:3px solid var(--blue, #2962ff);
+  background:var(--tile); border-radius:4px; margin-bottom:5px; font-size:12px; }
 .reveal { margin-top:10px; border-top:1px solid var(--line); padding-top:10px; font-size:13px; }
 .reveal p { margin:6px 0; }
 .reveal-cell { display:flex; flex-direction:column; padding:8px 10px; border-radius:8px;

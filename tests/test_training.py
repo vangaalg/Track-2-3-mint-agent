@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 import analysis.triggers as tg
 import web.server as srv
 from agent.read import ClaudeRead
+from agent.reason import ReasonWhy
 from feeds.snapshot import build_snapshot_at
 from journal import store
 from journal.outcomes import grade_training, settle_store
@@ -133,6 +134,9 @@ def tclient(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "READ_COMPLETER", lambda system, user: ClaudeRead(
         agrees_with_engine=True, chart_analysis="ca", oi_analysis="oa", where_moving="wm",
         right_trade="rt", challenge="ch", recommendation="stand_down", confidence=3, key_risk="kr"))
+    monkeypatch.setattr(srv, "REASON_COMPLETER", lambda system, user: ReasonWhy(
+        why="held the 45-EMA and ran to target", trigger_quality="genuine",
+        lesson="clean close below the 5-EMA is the tell"))
     # deterministic trigger list at a real 3-min boundary on day 2
     trig = {"tid": 0, "ts": "2024-01-02T09:30:00+05:30", "date": "2024-01-02",
             "direction": "long", "entry": 24000.0, "eng_stop": 23960.0,
@@ -149,6 +153,23 @@ def test_train_triggers_lists_without_outcome(tclient):
     t = d["triggers"][0]
     assert t["tid"] == 0 and t["direction"] == "long"
     assert "outcome" not in t and "eng_stop" not in t      # the game hides these
+
+
+def test_train_answer_captures_label_and_reason(tclient):
+    tclient.get("/api/train/triggers")
+    tclient.get("/api/train/case/0")
+    d = tclient.post("/api/train/answer", data={
+        "tid": 0, "action": "take", "entry": 24000.0, "target": 24080.0,
+        "stop": 23960.0, "reason": "clean breakout pullback", "label": "genuine"}).json()
+    # the post-mortem reason-why comes back for the reveal panel
+    assert d["label"] == "genuine"
+    assert d["reason_why"]["trigger_quality"] == "genuine"
+    assert "45-EMA" in d["reason_why"]["why"]
+    # stored on the training row -> feeds the learning memory
+    rows = srv.store.load_records(srv.JOURNAL_DB, kind="training")
+    assert rows[-1]["trigger_label"] == "genuine"
+    assert rows[-1]["reason_why"].startswith("genuine:")
+    assert rows[-1]["proposal"]["claude_reason"]["lesson"].startswith("clean close")
 
 
 def test_train_case_has_read_and_no_outcome(tclient):

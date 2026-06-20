@@ -184,6 +184,15 @@ function renderRecord(d) {
       + `<td>${r.matrix || "—"}</td></tr>`;
   }
   $("recTbl").innerHTML = h + "</tbody>";
+  const posts = d.posts || [];
+  $("recPosts").innerHTML = posts.length
+    ? "<div class='pm-head'>🤖 Claude post-mortems</div>" + posts.slice().reverse().map((p) => {
+        const t = p.ts ? p.ts.slice(11, 16) : "—";
+        const lab = p.label ? ` · you: ${p.label}` : "";
+        return `<div class="pm"><span class="muted">${t} ${p.direction || ""} ${p.outcome || ""}${lab}</span>`
+          + `<div>${p.reason_why || ""}</div></div>`;
+      }).join("")
+    : "";
 }
 
 async function analyse() {
@@ -198,9 +207,13 @@ async function analyse() {
 
 async function decide(action) {
   const fd = new FormData(); fd.append("action", action);
+  const lbl = document.querySelector('input[name="liveLabel"]:checked');
+  if (lbl) fd.append("label", lbl.value);
   const r = await fetch("/api/decision", { method: "POST", body: fd });
   const d = await r.json();
-  $("decisionMsg").textContent = `Logged ${d.logged} · execution ${d.status || "—"}`;
+  $("decisionMsg").textContent = `Logged ${d.logged} · execution ${d.status || "—"}`
+    + (lbl ? ` · trigger ${lbl.value}` : "");
+  document.querySelectorAll('input[name="liveLabel"]').forEach((el) => { el.checked = false; });
 }
 
 async function sendChat(ev) {

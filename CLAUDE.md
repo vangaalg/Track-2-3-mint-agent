@@ -346,12 +346,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       to act on (14:21 vs 14:39) + target/trailing = the Phase-2 Claude agent's learned job. Docs
       updated (config.example, DIRECTIONAL_SPEC, JOURNAL_EXTRACTION). Tested in test_directional /
       test_trigger_check / test_triggers / test_training (session-low stop) + suite green (156).
-  - **PENDING — Phase 2: Claude trigger agent (confirmed split: code emits candidates, Claude
-    manages).** (1) LEARN which candidate triggers are genuine: trader labels genuine/false/missed
-    → `journal/store.py` + `agent/memory.distill_*` → `agent/read.py` take/skip (reuse training-mode
-    infra). (2) DYNAMIC levels: once entered, Claude proposes + **trails** target/stop/**TSL** as
-    price moves (propose-only). Open: cadence (per-bar vs on-move), TSL basis (5-EMA/Supertrend/
-    swing), cockpit surfacing. Scope after the trigger is validated against more of his charts.
+  - [x] **Phase 2 Slice 1 — take/skip + P&L + "reason why" learning loop (genuine/false labels).**
+    Confirmed with the trader: take/skip + evaluate P&L + **find the reason why**, labelled in **both**
+    training replay and live. New `agent/reason.py` `explain_outcome` (injectable completer like
+    `claude_read`; `ReasonWhy` = why-won/lost + `trigger_quality` genuine/false + lesson, graded by
+    PROCESS not P&L). `journal/store.py` gained `trigger_label` + `reason_why` columns (migrated) +
+    `update_reason` (live settle patches the reason post-outcome). Web: `REASON_COMPLETER` seam;
+    `/api/train/answer` takes a `label` + runs the post-mortem on the trader's executed levels (stored
+    on the training row + returned for the reveal); `/api/decision` carries the live `label`;
+    `/api/record` runs `_settle_reasons` (one post-mortem per newly-resolved LIVE trade) + returns
+    recent `posts`. `agent/memory.distill_context` now surfaces the trader's genuine/false labels +
+    Claude's post-mortems so take/skip sharpens against ground truth. Frontend: genuine/false radios +
+    post-mortem panel in `/train` (reveal) and the live cockpit (`recPosts`). Tested in
+    test_agent_reason / test_journal_store / test_training / test_web_server + suite green (163).
+  - **PENDING — Phase 2 Slice 2: dynamic level management.** Once entered, Claude proposes + **trails**
+    target/stop/**TSL** as price moves (propose-only). Open: cadence (per-bar vs on-move), TSL basis
+    (5-EMA/Supertrend/swing), cockpit surfacing.
 - [ ] **Trade 2 (combined-premium / strangle)** bucket: net premium + breakevens,
       combined SL, intraday-only. Own rulebook + proposal + replay + grading.
 - [ ] **Trade 3 (expiry-day OTM momentum, Sensex CE)** bucket: rupee-sized,
