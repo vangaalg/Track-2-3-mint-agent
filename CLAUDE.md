@@ -312,21 +312,27 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       `scoring.validate_export.load_export`; `platform` mode runs the trigger on the export's OWN
       indicator values (isolates the logic), `--recompute` does the whole pipeline. data/validate/
       gitignored. Tested in tests/test_trigger_check.py.
-- [x] **Corrected the 3-min strategy → breakout + pullback CONTINUATION (the REAL entry).** The
-      harness on the trader's 19-Jun export proved `bb_reversal` was **backwards** (a fade): his
-      actual entry is **breakout + pullback continuation** (his 13:48 upper-band breakout above the
-      45-EMA → 13:51 pullback to the 5-EMA = LONG, which rallied). New **`vote_breakout_pullback`**
-      (`indicators/directional.py`): an upper-band breakout while above the 45-EMA arms a long,
-      fires when the pullback's **low touches the 5-EMA** (mirror short: lower-band breakout below
-      45-EMA, high touches 5-EMA); close back through the 45-EMA cancels; latches flat after firing
-      (one trigger per setup). `journal_trigger_config` → `voters=["breakout_pullback"]`,
+- [x] **Corrected the 3-min strategy → breakout CONTINUATION via a VRL RETEST (the REAL entry).**
+      The harness on the trader's 19-Jun export proved `bb_reversal` was backwards (a fade), and a
+      first cut ("low touches the 5-EMA") fired the wrong bars + missed his trade. The trader gave
+      the precise mechanic, confirmed against the data: the **FIRST upper-band breach** (`close >
+      bb_upper`, above the 45-EMA) is the trigger and the **VRL = that breach bar's HIGH** (fixed,
+      e.g. 13:48 → VRL 23962.65). Price extends up, then retraces to the VRL; the LONG fires on the
+      bar where **`low ≤ VRL` (retest) AND `close > VRL` (VRL holds) AND `close < ema_5` (closed
+      below the 5-EMA)**. The 5-EMA close is the DISCRIMINATOR — 14:03 retested but closed *above*
+      the 5-EMA (no entry); **14:18** retested (low 23962.45) and closed *below* it (23965.45 <
+      23975.58) = entry. New **`vote_breakout_pullback`** (`indicators/directional.py`) implements
+      this state machine (mirror short: first lower-band breach, VRL = its low, fire on `high ≥ VRL
+      AND close < VRL AND close > ema_5`); close through the 45-EMA cancels; latches flat after
+      firing (one trigger per setup). `journal_trigger_config` → `voters=["breakout_pullback"]`,
       `confirm_closes=0`; the **squeeze fade is split out** to `squeeze_trigger_config()` /
       `vote_bb_reversal` (`--strategy squeeze`). `journal_mtf_config`/`trigger_only` + web wiring
-      unchanged → live + training flip automatically. Harness validated: fires **LONG 13:51** (no
-      long at 13:06). Deliberately HIGH-RECALL (touch vs close, breakout close vs high are fuzzy) —
-      to be **learned by the Phase-2 Claude trigger agent**, not hardcoded. Docs updated
-      (config.example, DIRECTIONAL_SPEC, JOURNAL_EXTRACTION). Tested in tests/test_directional.py +
-      test_trigger_check.py + suite green (155).
+      unchanged → live + training flip automatically. Harness validated: fires **LONG 14:18** (no
+      14:00/14:12/15:15); the `--candidates` view explains each retest's pass/fail. HIGH-RECALL on
+      the fuzzy edges (the `close>VRL` guard, touch vs close, the short side which the trader wants
+      OI-gated — 13:06/13:12) — to be **learned by the Phase-2 Claude trigger agent**, not hardcoded.
+      Docs updated (config.example, DIRECTIONAL_SPEC, JOURNAL_EXTRACTION). Tested in
+      tests/test_directional.py + test_trigger_check.py + suite green (155).
   - **PENDING — Phase 2: Claude trigger agent (confirmed split: code emits candidates, Claude
     manages).** (1) LEARN which candidate triggers are genuine: trader labels genuine/false/missed
     → `journal/store.py` + `agent/memory.distill_*` → `agent/read.py` take/skip (reuse training-mode

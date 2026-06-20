@@ -41,17 +41,21 @@ logged days validate them") — and are registered at the bottom.
 >
 > **Trigger correction #2 — the REAL strategy (confirmed against the trader's chart via
 > `scoring/trigger_check.py`).** The harness on his 19-Jun export proved the direction was
-> *backwards*: his 3-min entry is a **breakout + pullback CONTINUATION**, not a fade. An
-> **upper-band breakout while above the 45-EMA** is up-momentum and arms a LONG; the entry
-> fires on the **retrace to the 5-EMA** (low touches it), in the SAME direction as the
-> breakout (his 13:48 breakout → 13:51 pullback long, which then rallied). Mirror for short.
-> Implemented as **`vote_breakout_pullback`** and made the journal default
-> (`journal_trigger_config`, `confirm_closes=0`). The **squeeze fade `vote_bb_reversal` is
-> kept as a SEPARATE strategy** (`squeeze_trigger_config`, `--strategy squeeze` in the
-> harness) — it requires a coil and *fades* the poke, the opposite play. `vote_three_min`
-> stays for experimentation. The genuine/false tweaks (pullback = touch vs close, breakout on
-> close vs high) are deliberately left high-recall, to be learned by the Phase-2 Claude
-> trigger agent rather than hardcoded.
+> *backwards*: his 3-min entry is a **breakout CONTINUATION**, not a fade — but the entry is a
+> **VRL retest**, not a bare 5-EMA touch (a v1 cut that fired the wrong bars and missed his
+> trade). The mechanic he confirmed: the **FIRST upper-band breach** (`close > bb_upper`,
+> above the 45-EMA) is the trigger and the **VRL = that breach bar's HIGH** (set once, fixed).
+> Price extends up to a peak, then **retraces back DOWN to the VRL**; the LONG fires on the bar
+> where **`low ≤ VRL` (retest) AND `close > VRL` (VRL holds) AND `close < ema_5` (closes below
+> the 5-EMA)**. The **5-EMA close is the discriminator**: his 13:48 breach set VRL = 23962.65;
+> 14:03 retested but closed *above* the 5-EMA (no entry); **14:18** retested (low 23962.45) and
+> closed *below* the 5-EMA (23965.45 < 23975.58) = the real entry. Mirror for short (first
+> lower-band breach, VRL = its low). Implemented as **`vote_breakout_pullback`**, the journal
+> default (`journal_trigger_config`, `confirm_closes=0`). The **squeeze fade `vote_bb_reversal`
+> is kept SEPARATE** (`squeeze_trigger_config`, `--strategy squeeze`) — it requires a coil and
+> *fades* the poke. `vote_three_min` stays for experimentation. The remaining fuzzy edges (the
+> `close>VRL` guard, touch vs close, the short side which the trader wants OI-gated) are left
+> high-recall, to be learned by the Phase-2 Claude trigger agent rather than hardcoded.
 
 ---
 

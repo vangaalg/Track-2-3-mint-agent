@@ -222,7 +222,7 @@ def test_squeeze_config_fires_one_trigger_per_reversal():
     assert flips == 1 and longs[0] >= 3
 
 
-# --- breakout + pullback continuation (the trader's real 3-min entry) ---------- #
+# --- breakout -> VRL retest + 5-EMA close (the trader's real 3-min entry) ------- #
 def _bp_frame(rows):
     """rows: (close, low, high, bb_upper, bb_lower, ema_5, ema_45) per bar."""
     idx = pd.date_range("2024-01-01 09:15", periods=len(rows), freq="3min", tz="Asia/Kolkata")
@@ -230,49 +230,66 @@ def _bp_frame(rows):
     return pd.DataFrame(rows, columns=cols, index=idx)
 
 
-def test_breakout_pullback_long_arms_and_fires():
+def test_breakout_vrl_retest_fires_long_on_close_below_5ema():
     from indicators.directional import vote_breakout_pullback
-    # bar0: close>upper & >45EMA -> arm long; bar1: low touches 5-EMA -> fire long.
+    # bar0: up-breach above the 45-EMA -> arm long, VRL = breach high (112).
+    # bar1: retest low<=VRL, close>VRL, and CLOSES BELOW the 5-EMA -> FIRE long.
     df = _bp_frame([
-        (101.0, 100.6, 101.2, 100.5, 98.0, 100.0, 99.0),   # arm (low above 5-EMA)
-        (100.3, 99.8, 100.5, 100.5, 98.0, 100.0, 99.0),    # pullback -> FIRE long
-        (100.4, 100.2, 100.6, 100.5, 98.0, 100.0, 99.0),   # no fresh breakout -> flat
+        (110.0, 108.0, 112.0, 109.0, 90.0, 105.0, 100.0),   # arm, VRL=112
+        (113.0, 111.0, 117.0, 109.0, 90.0, 120.0, 100.0),   # low<=112, close>112, close<5EMA -> FIRE
     ])
-    v = vote_breakout_pullback(df).tolist()
-    assert v == [0, 1, 0]
+    assert vote_breakout_pullback(df).tolist() == [0, 1]
 
 
-def test_breakout_pullback_short_mirror():
+def test_breakout_vrl_retest_above_5ema_does_not_fire():
     from indicators.directional import vote_breakout_pullback
+    # the 14:03 case: retest touches the VRL and holds, but CLOSES ABOVE the 5-EMA -> no entry.
     df = _bp_frame([
-        (99.0, 98.8, 99.4, 102.0, 99.5, 100.0, 101.0),     # close<lower & <45EMA -> arm short
-        (99.2, 99.0, 100.3, 102.0, 99.5, 100.0, 101.0),    # high touches 5-EMA -> FIRE short
-        (99.1, 98.9, 99.3, 102.0, 99.5, 100.0, 101.0),     # no re-arm -> flat
-    ])
-    v = vote_breakout_pullback(df).tolist()
-    assert v == [0, -1, 0]
-
-
-def test_breakout_pullback_cancels_on_45ema_break():
-    from indicators.directional import vote_breakout_pullback
-    df = _bp_frame([
-        (101.0, 100.6, 101.2, 100.5, 98.0, 100.0, 99.0),   # arm long
-        (98.5, 98.0, 99.0, 100.5, 98.0, 100.0, 99.0),      # close < 45EMA -> CANCEL (no fire)
-        (99.5, 99.0, 100.0, 100.5, 98.0, 100.0, 99.0),     # low<=5EMA but disarmed -> no fire
+        (110.0, 108.0, 112.0, 109.0, 90.0, 105.0, 100.0),   # arm, VRL=112
+        (113.0, 111.0, 117.0, 109.0, 90.0, 112.5, 100.0),   # low<=112, close>112 but close>5EMA
     ])
     assert vote_breakout_pullback(df).abs().sum() == 0
 
 
-def test_breakout_pullback_downward_breach_never_long():
+def test_breakout_vrl_breakdown_does_not_fire():
     from indicators.directional import vote_breakout_pullback
-    # a downward breach arms a short; it must never produce a +1 (long).
+    # close back BELOW the VRL (a breakdown through the breakout origin) is not an entry.
     df = _bp_frame([
-        (99.0, 98.8, 99.4, 102.0, 99.5, 100.0, 101.0),
-        (99.2, 99.0, 100.3, 102.0, 99.5, 100.0, 101.0),
-        (99.1, 98.9, 99.3, 102.0, 99.5, 100.0, 101.0),
+        (110.0, 108.0, 112.0, 109.0, 90.0, 105.0, 100.0),   # arm, VRL=112
+        (111.5, 110.0, 113.0, 109.0, 90.0, 120.0, 100.0),   # low<=112 but close 111.5 < VRL 112
     ])
-    assert (vote_breakout_pullback(df) >= 0).sum() >= 0     # sanity
-    assert (vote_breakout_pullback(df) == 1).sum() == 0     # no long from a down breach
+    assert vote_breakout_pullback(df).abs().sum() == 0
+
+
+def test_breakout_vrl_retest_short_mirror():
+    from indicators.directional import vote_breakout_pullback
+    # bar0: down-breach below the 45-EMA -> arm short, VRL = breach low (88).
+    # bar1: retest high>=VRL, close<VRL, and CLOSES ABOVE the 5-EMA -> FIRE short.
+    df = _bp_frame([
+        (90.0, 88.0, 92.0, 110.0, 91.0, 95.0, 100.0),       # arm, VRL=88
+        (87.0, 86.0, 89.0, 110.0, 91.0, 85.0, 100.0),       # high>=88, close<88, close>5EMA -> FIRE
+    ])
+    assert vote_breakout_pullback(df).tolist() == [0, -1]
+
+
+def test_breakout_vrl_cancels_on_45ema_break():
+    from indicators.directional import vote_breakout_pullback
+    df = _bp_frame([
+        (110.0, 108.0, 112.0, 109.0, 90.0, 105.0, 100.0),   # arm long, VRL=112
+        (95.0, 94.0, 96.0, 120.0, 90.0, 105.0, 100.0),      # close<45EMA -> CANCEL (no re-arm: close<upper)
+        (113.0, 111.0, 117.0, 120.0, 90.0, 120.0, 100.0),   # would retest, but disarmed -> no fire
+    ])
+    assert vote_breakout_pullback(df).abs().sum() == 0
+
+
+def test_breakout_vrl_one_fire_per_setup():
+    from indicators.directional import vote_breakout_pullback
+    df = _bp_frame([
+        (110.0, 108.0, 112.0, 109.0, 90.0, 105.0, 100.0),   # arm, VRL=112
+        (113.0, 111.0, 117.0, 109.0, 90.0, 120.0, 100.0),   # FIRE long
+        (113.0, 111.0, 114.0, 120.0, 90.0, 120.0, 100.0),   # retest-like but flat & no new breach
+    ])
+    assert vote_breakout_pullback(df).tolist() == [0, 1, 0]
 
 
 # --- MTF 45-EMA confidence: multi-timeframe agreement grades conviction --------- #
