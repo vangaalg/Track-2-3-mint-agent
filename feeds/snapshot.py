@@ -62,6 +62,12 @@ def _chart_read(feats: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig) -> di
     conf, align = mtf_ema45_confidence(feats, calls)
     trig = feats["3min"].iloc[-1]
     daily = feats["1day"].iloc[-1]
+    # Session low/high so far (the journal's stop basis = today's running extreme).
+    f3 = feats["3min"]
+    today = f3.index[-1].normalize()
+    sess = f3[f3.index.normalize() == today]
+    sess_low = _f(sess["low"].min()) if "low" in sess else None
+    sess_high = _f(sess["high"].max()) if "high" in sess else None
     return {
         "mtf_call": str(call),
         "regime_45_daily": _sign(daily["close"] - daily["ema_45"]),
@@ -75,6 +81,8 @@ def _chart_read(feats: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig) -> di
             "cpr_pivot": _f(trig.get("cpr_pivot")),
             "cpr_tc": _f(trig.get("cpr_tc")),
             "cpr_bc": _f(trig.get("cpr_bc")),
+            "session_low": sess_low,
+            "session_high": sess_high,
         },
         # Raw chart numbers for the always-visible market-data panel.
         "numbers": {

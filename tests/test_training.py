@@ -47,6 +47,8 @@ def test_list_triggers_multi_day(monkeypatch):
          "flat", "short", "short", "short", "flat", "flat", "flat", "flat", "flat", "flat"],
         index=index)
     high = [100.4] * 20; low = [99.6] * 20
+    low[0] = 99.0            # day-1 session low -> the long's stop (session-low basis)
+    high[10] = 101.0         # day-2 session high -> the short's stop (session-high basis)
     high[5] = 102.0          # day-1 long hits target 101
     low[15] = 98.0           # day-2 short hits target 99
     frame3m = pd.DataFrame({"open": 100.0, "high": high, "low": low, "close": 100.0,

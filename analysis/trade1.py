@@ -107,11 +107,14 @@ def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = 
     if oi.get("put_shelf"):
         supports.append(oi["put_shelf"]["strike"])
 
+    # The journal's stop = the session's running extreme (day low for a long, day
+    # high for a short). Falls back to chart structure when it isn't supplied.
+    sess_low, sess_high = levels.get("session_low"), levels.get("session_high")
     if long:
-        stop = _nearest_below(entry, supports)
+        stop = sess_low if (sess_low is not None and sess_low < entry) else _nearest_below(entry, supports)
         target = _nearest_above(entry, resists)
     else:
-        stop = _nearest_above(entry, resists)
+        stop = sess_high if (sess_high is not None and sess_high > entry) else _nearest_above(entry, resists)
         target = _nearest_below(entry, supports)
 
     risk = abs(entry - stop) if stop is not None else None

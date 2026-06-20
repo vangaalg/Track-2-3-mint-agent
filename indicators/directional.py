@@ -206,29 +206,26 @@ def vote_bb_reversal(df: pd.DataFrame) -> pd.Series:
 
 
 def vote_breakout_pullback(df: pd.DataFrame) -> pd.Series:
-    """The trader's REAL 3-min entry: a Bollinger breakout, then a VRL retest that
-    closes back below the 5-EMA.
+    """The trader's REAL 3-min entry: the first 5-EMA pullback after a breakout.
 
-    Confirmed from his 19-Jun charts: the FIRST upper-band breach (the bar's **HIGH**
-    crosses the band, ``high > bb_upper`` — the close may still be inside) while above
-    the 45-EMA is the trigger, and the **VRL = that breach bar's HIGH** (set once, fixed
-    — NOT raised by later breaches). Price extends up to a peak, then
-    **retraces back DOWN to the VRL**; the entry fires on the bar whose **low touches
-    the VRL** (``low <= vrl``), the VRL **holds** (``close > vrl`` — not a breakdown),
-    and the bar **closes below the 5-EMA** (``close < ema_5``). The 5-EMA close is the
-    discriminator: an earlier retest that closes ABOVE the 5-EMA is NOT an entry (his
-    14:03 vs 14:18). Mirror for short (first lower-band breach, VRL = its low; fire when
-    ``high >= vrl and close < vrl and close > ema_5``). A close back through the 45-EMA
-    cancels the armed setup. Latches FLAT after firing -> one entry per breach setup.
+    Confirmed against his 19-Jun Nifty + Bank Nifty charts: a **breakout** is the bar
+    whose **HIGH crosses the upper band** (``high > bb_upper``; the close may still be
+    inside) while **above the 45-EMA** and at/above the 5-EMA. The entry is the **FIRST
+    bar that CLOSES below the 5-EMA** after that breakout (the pullback to the fast EMA),
+    while still above the 45-EMA — e.g. Nifty 14:18 (close 23965.45 < 5-EMA 23975.58),
+    Bank Nifty 14:39 (57715.45 < 57725.28). **One entry per setup**; a fresh breakout
+    re-arms (Bank Nifty also fires 14:21, the first pullback of an earlier breakout). A
+    close back through the 45-EMA cancels an armed setup. Mirror for short (low crosses
+    the lower band, below the 45-EMA; fire on the first close ABOVE the 5-EMA).
 
-    Deliberately HIGH-RECALL on the fuzzy edges (touch vs close, the ``close>vrl``
-    guard) — the genuine/false boundary is meant to be learned by the Claude trigger
-    agent, not hardcoded. Needs ``close``, ``low``, ``high``, ``bb_upper``, ``bb_lower``,
-    ``ema_5``, ``ema_45`` (all from ``engine.compute_indicators``).
+    The ``close>=ema_5`` arm guard means re-arming needs price back above the fast EMA,
+    so the same pulled-back bar can't re-fire — a genuinely fresh breakout does. Emits an
+    isolated +1/-1 on each entry bar so the flip-detection yields one trigger per pullback.
+    Needs ``close``, ``high``, ``low``, ``bb_upper``, ``bb_lower``, ``ema_5``, ``ema_45``.
     """
     close = df["close"].to_numpy(dtype=float)
-    low = df["low"].to_numpy(dtype=float)
     high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
     bb_u = df["bb_upper"].to_numpy(dtype=float)
     bb_l = df["bb_lower"].to_numpy(dtype=float)
     ema5 = df["ema_5"].to_numpy(dtype=float)
@@ -237,29 +234,28 @@ def vote_breakout_pullback(df: pd.DataFrame) -> pd.Series:
     out = np.zeros(len(df), dtype="int8")
     FLAT, LONG_ARM, SHORT_ARM = 0, 1, -1
     state = FLAT
-    vrl = np.nan
     for i in range(len(df)):
         # NaN warm-up (bands/EMAs not ready) -> stay flat
         if np.isnan(bb_u[i]) or np.isnan(ema45[i]) or np.isnan(ema5[i]):
-            state, vrl = FLAT, np.nan
+            state = FLAT
             continue
         if state == FLAT:
-            if high[i] > bb_u[i] and close[i] > ema45[i]:
-                state, vrl = LONG_ARM, high[i]      # first up-breach (high crosses): VRL = its high
-            elif low[i] < bb_l[i] and close[i] < ema45[i]:
-                state, vrl = SHORT_ARM, low[i]      # first down-breach (low crosses): VRL = its low
+            if high[i] > bb_u[i] and close[i] > ema45[i] and close[i] >= ema5[i]:
+                state = LONG_ARM        # up-breach (high crosses), uptrend, above the 5-EMA
+            elif low[i] < bb_l[i] and close[i] < ema45[i] and close[i] <= ema5[i]:
+                state = SHORT_ARM
         elif state == LONG_ARM:
-            if close[i] < ema45[i]:                 # trend broke -> cancel
-                state, vrl = FLAT, np.nan
-            elif low[i] <= vrl and close[i] > vrl and close[i] < ema5[i]:
-                out[i] = 1                          # retest the VRL + close below the 5-EMA
-                state, vrl = FLAT, np.nan
+            if close[i] < ema45[i]:     # trend broke -> cancel
+                state = FLAT
+            elif close[i] < ema5[i]:    # FIRST pullback close below the 5-EMA -> enter long
+                out[i] = 1
+                state = FLAT
         elif state == SHORT_ARM:
             if close[i] > ema45[i]:
-                state, vrl = FLAT, np.nan
-            elif high[i] >= vrl and close[i] < vrl and close[i] > ema5[i]:
+                state = FLAT
+            elif close[i] > ema5[i]:    # first pull-up close above the 5-EMA -> enter short
                 out[i] = -1
-                state, vrl = FLAT, np.nan
+                state = FLAT
     return pd.Series(out, index=df.index, dtype="int8").rename("vote_breakout_pullback")
 
 

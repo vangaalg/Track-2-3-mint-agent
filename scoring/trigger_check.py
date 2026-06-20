@@ -160,50 +160,40 @@ def report_triggers(feats: pd.DataFrame, calls: pd.Series, strategy: str,
 
 
 def report_candidates(feats: pd.DataFrame, calls: pd.Series) -> None:
-    """Replay the breakout -> VRL-retest state machine and show each setup's fate."""
+    """Replay the breakout -> first-5-EMA-pullback state machine and show each setup."""
     close = feats["close"].to_numpy(float)
     low = feats["low"].to_numpy(float); high = feats["high"].to_numpy(float)
     bb_u = feats["bb_upper"].to_numpy(float); bb_l = feats["bb_lower"].to_numpy(float)
     e5 = feats["ema_5"].to_numpy(float); e45 = feats["ema_45"].to_numpy(float)
     idx = feats.index
-    print("\nBreakout -> VRL-retest setups (VRL = first-breach extreme):")
-    state, arm_ts, vrl, n = 0, None, float("nan"), 0
+    print("\nBreakout -> first 5-EMA pullback (one entry per setup, re-arm on a new breakout):")
+    state, arm_ts, n = 0, None, 0
     for i in range(len(feats)):
         if np.isnan(bb_u[i]) or np.isnan(e45[i]) or np.isnan(e5[i]):
             continue
         if state == 0:
-            if high[i] > bb_u[i] and close[i] > e45[i]:
-                state, arm_ts, vrl = 1, idx[i], high[i]
-                print(f"  {_hhmm(arm_ts)} up-breach (high>{bb_u[i]:.2f}) -> ARM long, VRL={vrl:.2f} (breach high)")
-            elif low[i] < bb_l[i] and close[i] < e45[i]:
-                state, arm_ts, vrl = -1, idx[i], low[i]
-                print(f"  {_hhmm(arm_ts)} down-breach (low<{bb_l[i]:.2f}) -> ARM short, VRL={vrl:.2f} (breach low)")
+            if high[i] > bb_u[i] and close[i] > e45[i] and close[i] >= e5[i]:
+                state, arm_ts = 1, idx[i]
+                print(f"  {_hhmm(arm_ts)} up-breach (high {high[i]:.2f}>{bb_u[i]:.2f}) -> ARM long")
+            elif low[i] < bb_l[i] and close[i] < e45[i] and close[i] <= e5[i]:
+                state, arm_ts = -1, idx[i]
+                print(f"  {_hhmm(arm_ts)} down-breach (low {low[i]:.2f}<{bb_l[i]:.2f}) -> ARM short")
         elif state == 1:
             if close[i] < e45[i]:
                 print(f"    {_hhmm(idx[i])} CANCELLED (closed below 45-EMA)")
                 state = 0
-            elif low[i] <= vrl:                       # a retest attempt -> explain it
-                if close[i] > vrl and close[i] < e5[i]:
-                    print(f"    {_hhmm(idx[i])} FIRED LONG: low {low[i]:.2f}<=VRL {vrl:.2f}, "
-                          f"close {close[i]:.2f}>VRL & < 5-EMA {e5[i]:.2f}")
-                    state, n = 0, n + 1
-                else:
-                    why = "close <= VRL (broke down)" if close[i] <= vrl else f"close {close[i]:.2f} ABOVE 5-EMA {e5[i]:.2f}"
-                    print(f"    {_hhmm(idx[i])} retest, no fire: low {low[i]:.2f}<=VRL {vrl:.2f} but {why}")
+            elif close[i] < e5[i]:
+                print(f"    {_hhmm(idx[i])} FIRED LONG: first close {close[i]:.2f} below 5-EMA {e5[i]:.2f}")
+                state, n = 0, n + 1
         elif state == -1:
             if close[i] > e45[i]:
                 print(f"    {_hhmm(idx[i])} CANCELLED (closed above 45-EMA)")
                 state = 0
-            elif high[i] >= vrl:
-                if close[i] < vrl and close[i] > e5[i]:
-                    print(f"    {_hhmm(idx[i])} FIRED SHORT: high {high[i]:.2f}>=VRL {vrl:.2f}, "
-                          f"close {close[i]:.2f}<VRL & > 5-EMA {e5[i]:.2f}")
-                    state, n = 0, n + 1
-                else:
-                    why = "close >= VRL (broke up)" if close[i] >= vrl else f"close {close[i]:.2f} BELOW 5-EMA {e5[i]:.2f}"
-                    print(f"    {_hhmm(idx[i])} retest, no fire: high {high[i]:.2f}>=VRL {vrl:.2f} but {why}")
+            elif close[i] > e5[i]:
+                print(f"    {_hhmm(idx[i])} FIRED SHORT: first close {close[i]:.2f} above 5-EMA {e5[i]:.2f}")
+                state, n = 0, n + 1
     if state != 0:
-        print(f"    (setup armed at {_hhmm(arm_ts)} still open at end of data, VRL={vrl:.2f})")
+        print(f"    (setup armed at {_hhmm(arm_ts)} still waiting for a pullback at end of data)")
     if n == 0:
         print("  (no fired setups)")
 

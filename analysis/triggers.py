@@ -28,6 +28,16 @@ def _f(x):
         return None
 
 
+def _session_extremes(frame3m: pd.DataFrame, ts) -> dict:
+    """Running session low/high up to (and including) the entry bar ``ts`` — the
+    journal's stop basis (day low for longs, day high for shorts)."""
+    t = pd.Timestamp(ts)
+    sess = frame3m[(frame3m.index <= t) & (frame3m.index.normalize() == t.normalize())]
+    if sess.empty:
+        return {}
+    return {"session_low": _f(sess["low"].min()), "session_high": _f(sess["high"].max())}
+
+
 def simulate_trade(direction, entry, stop, target, highs, lows, close_last):
     """Walk forward bars and resolve a trade to the first of stop/target.
 
@@ -104,6 +114,7 @@ def list_triggers(
         row = feats.iloc[i]
         levels = {k: _f(row.get(k)) for k in
                   ("ema_45", "supertrend", "cpr_pivot", "cpr_tc", "cpr_bc")}
+        levels.update(_session_extremes(frames_by_tf["3min"], ts[i]))
         stop, target, rr = trade1_levels(direction, entry, levels)
         if stop is None or target is None:
             continue
@@ -161,6 +172,7 @@ def replay_today(
         row = feats.iloc[i]
         levels = {k: _f(row.get(k)) for k in
                   ("ema_45", "supertrend", "cpr_pivot", "cpr_tc", "cpr_bc")}
+        levels.update(_session_extremes(frames_by_tf["3min"], ts[i]))
         stop, target, rr = trade1_levels(direction, entry, levels)
         if stop is None or target is None:
             continue

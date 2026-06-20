@@ -57,7 +57,7 @@ def test_replay_today_win_and_loss(monkeypatch):
 def test_replay_today_stop_out(monkeypatch):
     import analysis.triggers as trig
     closes = [100, 100, 100, 99.8, 99.4, 99.0]
-    lows = [99, 99, 99, 99.4, 99.0, 98.5]   # stop 99.5 hit at bar3
+    lows = [99, 99, 99, 99.4, 99.0, 98.5]   # session low 99.0 = the long's stop
     highs = [100, 100, 100, 100, 99.8, 99.4]
     frames = _frames(closes, highs, lows)
     feats = frames.assign(ema_45=99.0, supertrend=98.0, cpr_pivot=99.5,
@@ -67,7 +67,8 @@ def test_replay_today_stop_out(monkeypatch):
 
     out = replay_today({"3min": feats}, {"3min": frames}, cfg=_StubMTF())
     t = out["last"]
-    assert t["outcome"] == "loss" and t["points"] == -0.5
+    # stop = the session low (99.0), hit at bar4 -> loss of 1.0 point
+    assert t["stop"] == 99.0 and t["outcome"] == "loss" and t["points"] == -1.0
     assert out["summary"]["losses"] == 1
 
 

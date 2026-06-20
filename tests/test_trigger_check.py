@@ -41,12 +41,12 @@ def test_platform_mode_parses_and_builds_signals(tmp_path):
 
 
 def test_platform_breakout_pullback_fires_long(tmp_path):
-    # bar0 breaks above the band & is above the 45-EMA -> arm long, VRL = breach high (101.2).
-    # bar1 retests the VRL (low 100.5 <= 101.2) and CLOSES BELOW the 5-EMA -> fire long.
-    # Row tuple = (open, high, low, close, bb_top, bb_mid, bb_bot, ema_5, ema_45).
+    # bar0 high crosses the band, above the 45-EMA, close>=5-EMA -> arm long.
+    # bar1 is the FIRST close below the 5-EMA -> fire long. Row tuple =
+    # (open, high, low, close, bb_top, bb_mid, bb_bot, ema_5, ema_45).
     rows = [
-        ((11, 24), (100, 101.2, 100.6, 101.0, 100.5, 100, 98.0, 100.0, 99.0)),   # arm, VRL=101.2
-        ((11, 27), (101.5, 103.0, 100.5, 101.5, 100.5, 100, 98.0, 103.0, 99.0)),  # retest+close<5EMA -> fire
+        ((11, 24), (100, 101.2, 100.6, 101.0, 100.5, 100, 98.0, 100.0, 99.0)),   # arm (high 101.2>100.5)
+        ((11, 27), (101.5, 103.0, 100.5, 101.5, 100.5, 100, 98.0, 103.0, 99.0)),  # close 101.5<5EMA 103 -> fire
         ((11, 30), (101.4, 101.6, 101.2, 101.4, 100.5, 100, 98.0, 103.0, 99.0)),  # flat, no new breach
     ]
     path = _write_export(tmp_path, rows)

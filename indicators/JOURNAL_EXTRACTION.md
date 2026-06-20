@@ -39,25 +39,23 @@ logged days validate them") — and are registered at the bottom.
 > `np.sign(sum)` — net-sign OR, so EMA-5 state alone fired and the signal over-triggered.
 > First fix was `vote_bb_reversal` (a squeeze-gated breach→revert, EMA-5 confirmed).
 >
-> **Trigger correction #2 — the REAL strategy (confirmed against the trader's chart via
-> `scoring/trigger_check.py`).** The harness on his 19-Jun export proved the direction was
-> *backwards*: his 3-min entry is a **breakout CONTINUATION**, not a fade — but the entry is a
-> **VRL retest**, not a bare 5-EMA touch (a v1 cut that fired the wrong bars and missed his
-> trade). The mechanic he confirmed: the **FIRST upper-band breach** — the bar's **HIGH crosses
-> the band** (`high > bb_upper`; the close may still be inside, e.g. Bank Nifty 13:42 high
-> 57608.75 with its close below the band), above the 45-EMA — is the trigger and the
-> **VRL = that breach bar's HIGH** (set once, fixed).
-> Price extends up to a peak, then **retraces back DOWN to the VRL**; the LONG fires on the bar
-> where **`low ≤ VRL` (retest) AND `close > VRL` (VRL holds) AND `close < ema_5` (closes below
-> the 5-EMA)**. The **5-EMA close is the discriminator**: his 13:48 breach set VRL = 23962.65;
-> 14:03 retested but closed *above* the 5-EMA (no entry); **14:18** retested (low 23962.45) and
-> closed *below* the 5-EMA (23965.45 < 23975.58) = the real entry. Mirror for short (first
-> lower-band breach, VRL = its low). Implemented as **`vote_breakout_pullback`**, the journal
-> default (`journal_trigger_config`, `confirm_closes=0`). The **squeeze fade `vote_bb_reversal`
-> is kept SEPARATE** (`squeeze_trigger_config`, `--strategy squeeze`) — it requires a coil and
-> *fades* the poke. `vote_three_min` stays for experimentation. The remaining fuzzy edges (the
-> `close>VRL` guard, touch vs close, the short side which the trader wants OI-gated) are left
-> high-recall, to be learned by the Phase-2 Claude trigger agent rather than hardcoded.
+> **Trigger correction #2 — the REAL strategy (confirmed against TWO of the trader's 19-Jun
+> charts — Nifty + Bank Nifty — via `scoring/trigger_check.py`).** His 3-min entry is a
+> **breakout CONTINUATION**: a **breakout** is the bar whose **HIGH crosses the upper band**
+> (`high > bb_upper`; the close may still be inside, e.g. Bank Nifty 13:42 high 57608.75 with the
+> close below the band) while above the 45-EMA and at/above the 5-EMA. The **entry is the FIRST
+> bar that CLOSES below the 5-EMA** after that breakout (the pullback to the fast EMA) — Nifty
+> **14:18** (23965.45 < 5-EMA 23975.58), Bank Nifty **14:39** (57715.45 < 57725.28). **One entry
+> per setup; a fresh breakout re-arms** (Bank Nifty also fires **14:21**, the first pullback of an
+> earlier breakout). The **stop = the session low so far** (day high for shorts), e.g. Bank Nifty
+> 57464. (An earlier cut keyed the entry to a *VRL retest* of the breach high — that was a
+> coincidence on Nifty and missed Bank Nifty 14:39; the VRL is now just context.) Mirror for short
+> (low crosses the lower band, below the 45-EMA; first close ABOVE the 5-EMA). A close through the
+> 45-EMA cancels. Implemented as **`vote_breakout_pullback`**, the journal default
+> (`journal_trigger_config`, `confirm_closes=0`); stop in `analysis.trade1.trade1_levels` (session
+> low/high). The **squeeze fade `vote_bb_reversal` is kept SEPARATE** (`squeeze_trigger_config`,
+> `--strategy squeeze`). Target/trailing + which pullback to act on (14:21 vs 14:39) are the
+> Phase-2 Claude trigger agent's learned job, not hardcoded.
 
 ---
 
