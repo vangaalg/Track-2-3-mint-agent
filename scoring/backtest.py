@@ -20,7 +20,10 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
 
 import pandas as pd
 
@@ -308,13 +311,16 @@ def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str,
                   conf_filtered: dict | None = None, min_confidence: int = 0) -> tuple[str, str]:
     from pathlib import Path
     Path(outdir).mkdir(parents=True, exist_ok=True)
-    stamp = date.today().isoformat()
+    # IST date+time so successive runs don't overwrite each other (was date-only)
+    stamp = datetime.now(IST).strftime("%Y%m%d_%H%M%S_IST")
     csv_path = f"{outdir}/backtest_{symbol}_{stamp}.csv"
     md_path = f"{outdir}/backtest_{symbol}_{stamp}.md"
     pd.DataFrame(triggers).to_csv(csv_path, index=False)
+    gen = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
     Path(md_path).write_text(
-        "```\n" + report_text(symbol, report, levels=levels, filtered=filtered,
-                              conf_filtered=conf_filtered, min_confidence=min_confidence)
+        f"_generated {gen}_\n\n```\n"
+        + report_text(symbol, report, levels=levels, filtered=filtered,
+                      conf_filtered=conf_filtered, min_confidence=min_confidence)
         + "\n```\n", encoding="utf-8")
     return csv_path, md_path
 
