@@ -152,7 +152,7 @@ def clamp_levels(direction: str, entry: float, target, stop,
 def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
                  claude_filter=None, min_stop: float = 0.0,
                  atr_mult: float = 0.0, atr_period: int = 14,
-                 min_confidence: int = 0) -> dict:
+                 min_confidence: int = 0, skip_open_min: int = 0) -> dict:
     """Backtest the trigger over a pre-built snapshot's feats/frames.
 
     Reuses the LIVE resolver (``journal_mtf_config``) so the backtest fires exactly the
@@ -171,7 +171,8 @@ def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
     cfg = cfg or journal_mtf_config()
     triggers = list_triggers(snap.feats, snap.frames, cfg=cfg, size_lots=lots,
                              lot_size=LOT_SIZE, realistic=True, target_driven=target_driven,
-                             min_stop=min_stop, atr_mult=atr_mult, atr_period=atr_period)
+                             min_stop=min_stop, atr_mult=atr_mult, atr_period=atr_period,
+                             skip_open_min=skip_open_min)
     filtered = None
     if claude_filter is not None:
         frame3m = snap.frames["3min"]
@@ -343,6 +344,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-confidence", type=int, default=0, metavar="N",
                     help="keep only HTF-aligned triggers (45-EMA MTF confidence >= N, 1..5); "
                          "adds a CONFIDENCE-FILTERED report. Measurement only — live unchanged.")
+    ap.add_argument("--skip-open-min", type=int, default=0, metavar="N",
+                    help="skip triggers in the first N minutes after the 09:15 open "
+                         "(opening-whipsaw filter; 0=off). Measurement only — live unchanged.")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
@@ -361,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
     out = run_backtest(snap, lots=args.lots, target_driven=(args.levels == "target"),
                        claude_filter=cfilter, min_stop=args.min_stop,
                        atr_mult=args.atr_mult, atr_period=args.atr_period,
-                       min_confidence=args.min_confidence)
+                       min_confidence=args.min_confidence, skip_open_min=args.skip_open_min)
     if cfilter is not None:                              # diagnostics: errors vs genuine
         st = cfilter.state
         print(f"\nClaude verdicts: {st['enter']} enter / {st['stand_down']} stand_down / "

@@ -184,3 +184,16 @@ def test_report_text_renders_confidence_block():
     out = run_backtest(snap, lots=1, min_confidence=2)
     txt = report_text("NIFTY", out["report"], conf_filtered=out["conf_filtered"], min_confidence=2)
     assert "CONFIDENCE-FILTERED" in txt and "≥2/5" in txt
+
+
+def test_skip_open_min_drops_early_triggers():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    full = run_backtest(snap, lots=1)["triggers"]
+    assert full, "fixture should produce at least one trigger"
+    # set the cutoff just past the earliest trigger so it (and any before it) is dropped
+    earliest = min(pd.Timestamp(t["ts"]) for t in full)
+    skip_min = (earliest.hour * 60 + earliest.minute) - (9 * 60 + 15) + 1
+    skipped = run_backtest(snap, lots=1, skip_open_min=skip_min)["triggers"]
+    cutoff = pd.Timestamp(f"{(9*60+15+skip_min)//60:02d}:{(9*60+15+skip_min)%60:02d}").time()
+    assert all(pd.Timestamp(t["ts"]).time() >= cutoff for t in skipped)   # kept ones are late enough
+    assert len(skipped) < len(full)                                       # the early one(s) were dropped

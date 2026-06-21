@@ -117,6 +117,7 @@ def list_triggers(
     min_stop: float = 0.0,
     atr_mult: float = 0.0,
     atr_period: int = 14,
+    skip_open_min: int = 0,
 ) -> list[dict]:
     """Enumerate EVERY Trade-1 trigger across the full history (all sessions).
 
@@ -149,6 +150,13 @@ def list_triggers(
     # must be at least atr_mult × ATR away, so the floor scales with volatility.
     atr_ser = (_atr(frame3m, atr_period).reindex(calls.index).to_numpy()
                if atr_mult and atr_mult > 0 else None)
+    # Optional "skip the opening N minutes" rule: NSE opens 09:15, so a trigger whose
+    # time-of-day is before 09:15 + skip_open_min is dropped (opening whipsaw filter).
+    open_cutoff = None
+    if skip_open_min and skip_open_min > 0:
+        from datetime import time as _time
+        mins = 9 * 60 + 15 + skip_open_min
+        open_cutoff = _time(mins // 60, mins % 60)
 
     out: list[dict] = []
     busy_until = None        # realistic mode: in a trade until its exit timestamp
@@ -158,6 +166,8 @@ def list_triggers(
             continue
         if realistic and busy_until is not None and ts[i] <= busy_until:
             continue                                  # still in a position — one at a time
+        if open_cutoff is not None and ts[i].time() < open_cutoff:
+            continue                                  # inside the opening-whipsaw window
         direction, entry = c[i], float(close[i])
         row = feats.iloc[i]
         levels = {k: _f(row.get(k)) for k in

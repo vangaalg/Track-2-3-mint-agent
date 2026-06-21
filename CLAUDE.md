@@ -238,6 +238,17 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       does NOT change the live engine (confidence still only sizes; promoting it to a live gate is a deferred
       STRATEGY call, since the trader earlier confirmed HTF = context, not a veto). Tested: confidence
       subset/off-by-default + report render; preflight fast-fail path. Suite green (185).
+- [x] **Backtest `--skip-open-min` opening-whipsaw filter + IST output filenames.** First 30-day
+      confidence runs showed (a) HTF-alignment WORKS at the aggregate (≥3/5 took −308→−64 pts, pf
+      0.82→0.94; the dropped counter-trend trades lost ~244 pts) but longs stay negative even when
+      aligned (pf 0.71, hit 17%), and (b) a cluster of instant stop-outs at the 09:15–09:30 open.
+      `list_triggers(skip_open_min=N)` drops triggers whose IST time-of-day is before 09:15+N (NSE
+      open), applied BEFORE the realistic one-position dedup so it's a real rule, not a post-hoc cut;
+      default 0 = off (live/training unchanged). `run_backtest(skip_open_min=)` + CLI `--skip-open-min N`.
+      Also: backtest output files now stamp the full **IST date+time** (`backtest_NIFTY_YYYYMMDD_HHMMSS_IST.
+      {csv,md}` + a `_generated … IST_` md header) so successive same-day runs no longer overwrite each
+      other (trade ts in the CSV were already IST +05:30). Tested: skip-open drops the earliest trigger +
+      kept ones are past the cutoff; IST filename/header. Suite green (187).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/
