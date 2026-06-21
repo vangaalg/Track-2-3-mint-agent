@@ -287,6 +287,16 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     150≈2 pts). Sweep is intraday/flat-by-EOD (uses `_resolve_intraday`). Tested: cost lowers exp 1:1 +
     header note. Decided w/ data: 40/50 is a better BASELINE, not an edge — the lever is SELECTION (take the
     better half → halve costs) + MANAGEMENT (trail). Suite green (190; 1 pre-existing oi_store fail).
+  - **Persistent local OHLCV store (pull-once, accumulate-for-years).** The backtest used to re-pull the
+    whole window from Breeze every run (slow + network-fragile). New `feeds/ohlcv_store.py` keeps a growing
+    parquet per `(symbol, interval)` under `data/ohlcv/` (`merge_save` dedups on ts, newest wins; `coverage`
+    reports first/last/n). `scoring.backtest._pull` now MERGES each pull into the store and fetches only the
+    **gap** since the last stored bar (full window on first run / `--refresh`); `--offline` serves entirely
+    from the store (no network, instant — for iterating sweeps/excursion). History accumulates across runs,
+    so you bank years locally beyond Breeze's per-call cap. `data/ohlcv/` gitignored (the nested dir wasn't
+    matched by `data/*.parquet`). Tested in tests/test_ohlcv_store.py (merge/dedup/extend, empty read-through,
+    offline _pull). Suite green (191; 1 pre-existing oi_store fail). NOTE: only pulls FORWARD from the store's
+    last bar — older-than-first-pull backfill still needs a dedicated step (Breeze caps 1-min history anyway).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

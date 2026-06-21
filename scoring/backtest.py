@@ -207,37 +207,68 @@ def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
 # --------------------------------------------------------------------------- #
 # CLI — pull + report
 # --------------------------------------------------------------------------- #
-def _pull(symbol: str, days: int, loader_name: str, chunk_days: int = 3):
-    """Pull ~`days` of 1-minute base + a long daily history (runs on the user's box).
+def _pull(symbol: str, days: int, loader_name: str, chunk_days: int = 3,
+          offline: bool = False, refresh: bool = False):
+    """Serve ~`days` of 1-minute base + a long daily history from the local store,
+    pulling from Breeze only what's missing (runs on the user's box).
 
     Breeze's get_historical_data_v2 caps rows per call (~1000 ≈ ~3 trading days of
-    1-minute bars), so a single 30-day request silently truncates to the most recent
-    window. We PAGINATE: walk the range in `chunk_days`-wide windows, pull each, and
-    concatenate (dedup + sort). Empty windows (weekends/holidays) are skipped.
+    1-minute bars), so we PAGINATE in `chunk_days`-wide windows. Every pull is MERGED
+    into ``feeds.ohlcv_store`` (parquet under data/ohlcv/), so each run only fetches
+    the GAP since the last stored bar and history accumulates for years. ``offline``
+    serves entirely from the store (no network); ``refresh`` re-pulls the full window.
     """
     import time
+    from feeds import ohlcv_store as store
+    today = date.today()
+
+    # OFFLINE: serve the whole window from the local store, no network at all.
+    if offline:
+        base = store.load_ohlcv(symbol, "minute")
+        daily = store.load_ohlcv(symbol, "day")
+        if base is None or base.empty:
+            raise SystemExit(f"--offline but no stored 1-min data for {symbol!r} in "
+                             f"{store.STORE_DIR}/. Run once online first to seed it.")
+        cov = store.coverage(symbol, "minute")
+        print(f"  OFFLINE: {cov[2]} stored 1-min bars {cov[0].date()}…{cov[1].date()}",
+              file=sys.stderr)
+        if days:                                        # honour the requested window
+            cutoff = pd.Timestamp(today - timedelta(days=days), tz=base.index.tz)
+            base = base[base.index >= cutoff]
+        return base, daily
+
     from loaders import get_loader
     loader = get_loader(loader_name)
-    today = date.today()
-    cur = today - timedelta(days=days + 4)
-    parts: list[pd.DataFrame] = []
+    # Pull only the GAP: from the last stored bar forward (full window on first run /
+    # when --refresh). Each run MERGES into the store, so history accumulates for years.
+    cov = store.coverage(symbol, "minute")
+    start = today - timedelta(days=days + 4)
+    if cov is not None and not refresh:
+        start = max(start, cov[1].date() + timedelta(days=1))
+        print(f"  store has {cov[2]} bars to {cov[1].date()}; pulling {start}…{today}",
+              file=sys.stderr)
+    cur = start
     while cur <= today:
         chunk_end = min(cur + timedelta(days=chunk_days - 1), today)
         try:
             part = loader.load(symbol, "minute", start=cur, end=chunk_end, use_cache=False)
             if part is not None and not part.empty:
-                parts.append(part)
+                store.merge_save(symbol, "minute", part)    # persist as we go
                 print(f"  {cur} … {chunk_end}: {len(part)} bars", file=sys.stderr)
         except Exception as exc:                       # empty window or transient error
             print(f"  {cur} … {chunk_end}: skipped ({exc})", file=sys.stderr)
         cur = chunk_end + timedelta(days=1)
         time.sleep(0.3)                                # gentle on Breeze rate limits
-    if not parts:
-        raise RuntimeError(f"no 1-minute data pulled for {symbol!r} over {days}d — "
+    base = store.load_ohlcv(symbol, "minute")
+    if base is None or base.empty:
+        raise RuntimeError(f"no 1-minute data for {symbol!r} (store empty + pull failed) — "
                            "check creds/session token and the symbol.")
-    base = pd.concat(parts)
-    base = base[~base.index.duplicated(keep="first")].sort_index()
     daily = loader.load(symbol, "day", start=today - timedelta(days=800), use_cache=False)
+    store.merge_save(symbol, "day", daily)
+    daily = store.load_ohlcv(symbol, "day")
+    if days:                                            # return just the requested window
+        cutoff = pd.Timestamp(today - timedelta(days=days), tz=base.index.tz)
+        base = base[base.index >= cutoff]
     return base, daily
 
 
@@ -466,15 +497,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cost", type=float, default=0.0, metavar="RUPEES",
                     help="per round-trip cost in ₹/lot (brokerage+spread+slippage); the "
                          "level sweep reports NET of it (e.g. 150 ≈ 2 NIFTY points)")
+    ap.add_argument("--offline", action="store_true",
+                    help="backtest off the saved local store only (no network; instant). "
+                         "Seed it once with a normal online run first.")
+    ap.add_argument("--refresh", action="store_true",
+                    help="re-pull the full window from Breeze instead of just the new gap")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
     args = ap.parse_args(argv)
 
-    _preflight(args.loader)
-    print(f"Pulling ~{args.days}d of {args.symbol} 1-min via '{args.loader}' "
-          f"(paginated, {args.chunk_days}d/chunk; needs creds + network)…", file=sys.stderr)
-    base, daily = _pull(args.symbol, args.days, args.loader, args.chunk_days)
+    if args.offline:
+        print(f"OFFLINE: backtesting {args.symbol} off the local store (no network)…",
+              file=sys.stderr)
+    else:
+        _preflight(args.loader)
+        print(f"Updating {args.symbol} store via '{args.loader}' (pulling only the new gap; "
+              f"--refresh to re-pull, --offline to skip network)…", file=sys.stderr)
+    base, daily = _pull(args.symbol, args.days, args.loader, args.chunk_days,
+                        offline=args.offline, refresh=args.refresh)
     snap = build_snapshot(args.symbol, base, daily, mtf_cfg=journal_mtf_config())
     cfilter = None
     if args.claude:

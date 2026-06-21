@@ -17,6 +17,8 @@ data/*.parquet
 data/*.feather
 # logged + backfilled option-chain OI snapshots (runtime-only)
 data/oi/
+# persistent local OHLCV store (pull-once, accumulate-for-years)
+data/ohlcv/
 # pasted chart exports for trigger validation (throwaway)
 data/validate/
 
