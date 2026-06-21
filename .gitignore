@@ -17,6 +17,10 @@ data/*.parquet
 data/*.feather
 # logged + backfilled option-chain OI snapshots (runtime-only)
 data/oi/
+# per-instrument OI summary time series (PCR/max-pain/levels — plot data)
+data/oi_summary/
+# macro time series (VIX / USD-INR / indices / crude)
+data/macro/
 # persistent local OHLCV store (pull-once, accumulate-for-years)
 data/ohlcv/
 # pasted chart exports for trigger validation (throwaway)

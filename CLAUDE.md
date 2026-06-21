@@ -338,6 +338,30 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       Note: US index *futures* + GIFT Nifty still not in the macro feed (free-tier);
       store captures whatever snap.macro holds, so they're picked up automatically later.
 
+- [x] **Forward OI/macro accumulation recorder (`feeds/recorder.py`) — the live flywheel.** After 3 years
+      of backtests ruled out every STATIC price-derived edge (direction / HTF filter / levels / and every
+      single selection feature failed the OOS per-period test — nothing positive in all 3 thirds), the
+      trader reframed: the 3-min trigger is the ATTENTION signal, the real edge is their READING (OI-wall
+      S/R + their ±37/±72 extension bands, PCR/max-pain, macro) and the gap is EXECUTION. Historical
+      intraday OI can't be bought back, so we accumulate it live now. New `feeds/macro_store.py` (macro
+      time series → data/macro/macro.parquet), `feeds/oi_summary_store.py` (per-instrument PCR/max-pain/
+      walls/bands rows → data/oi_summary/<sym>.parquet, plot-ready), `feeds/oi_levels.py` (PURE wall_levels
+      = project the trader's bands off summarise_chain's call_wall/put_shelf; NIFTY fixed [37,72], others
+      `scaled_offsets` by price). `feeds/recorder.py`: pure `record_once` (per-instrument chain→oi_store +
+      summary→oi_summary_store + macro once; per-instrument try/except so a failing instrument never blocks
+      NIFTY; injectable fetchers → offline-tested), `in_session` (Mon–Fri 09:15–15:30 IST), `implied_spot`
+      (put-call parity fallback), `run` loop + CLI (`python -m feeds.recorder`, `--once`, `--instruments`,
+      `--stocks`). Decisions w/ trader: indices every 15 min, stocks every 60 min; ±37/72 NIFTY-only (others
+      scale by price); record PCR+max-pain as a time series for line-graph plotting; scope = NIFTY+BankNifty
+      first, Sensex(BSE/BFO)+Nifty-50 stocks listed but opt-in until Breeze calls verified. data/macro/ +
+      data/oi_summary/ gitignored; config.example recorder block. Tested in tests/test_recorder.py (stores
+      dedup, level math, session bounds, record_once writes all 3 artifacts + isolates a failing instrument,
+      implied-spot fallback, instrument selection). Suite green (200; 1 pre-existing unrelated oi_store fail).
+      NOTES: Sensex BSE/BFO + per-stock Breeze codes + monthly-expiry weekdays need live verification (the
+      trader runs it on their open-network machine; sandbox is egress-locked). FOLLOW-ONS: plot the
+      oi_summary series in the cockpit; once enough intraday OI/macro accrues, extend the `--selection` OOS
+      analysis with OI/macro (non-price) features — the one untested lever.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

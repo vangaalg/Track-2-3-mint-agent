@@ -161,3 +161,19 @@ feeds:
     # scorecard sources live in feeds/td_macro.py: crude (WTI/USD), USD/INR,
     # US30/Dow (DJI), Nasdaq (IXIC) via Twelve Data; India VIX via Breeze.
     # GIFT Nifty has no reliable free feed — best-effort, degrades if absent.
+
+# Forward OI/macro recorder (feeds/recorder.py) — the live accumulation flywheel.
+# Records each instrument's chain (-> data/oi/) + a PCR/max-pain/levels summary row
+# (-> data/oi_summary/) + macro (-> data/macro/) on a cadence during market hours.
+# Run on your machine each trading day: `python -m feeds.recorder` (smoke-test a
+# single live cycle first with `python -m feeds.recorder --once --instruments NIFTY`).
+# Scope starts with the indices; add --stocks for the Nifty-50 once verified. The
+# instrument defaults live in feeds/recorder.py (DEFAULT_INSTRUMENTS / NIFTY50_STOCKS);
+# this block documents the knobs (CLI flags override).
+recorder:
+  index_every_min: 15          # indices snapshotted every 15 min (the trader's call)
+  stock_every_min: 60          # Nifty-50 stocks every 1 hour (lighter on rate limits)
+  # band offsets are the trader's S/R extension points. NIFTY is a FIXED [37, 72];
+  # other instruments use "scale" (price-scaled off NIFTY's 37/72; ATR-based later).
+  # expiry weekday + exchange are per-instrument (NIFTY NFO/Tue=1; SENSEX BFO is BSE,
+  # disabled until its Breeze call is verified; stocks are monthly-expiry NFO).
