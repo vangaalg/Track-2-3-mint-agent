@@ -62,6 +62,31 @@ def simulate_trade(direction, entry, stop, target, highs, lows, close_last):
     return outcome, round(exit_px, 2), round(points, 2)
 
 
+def trigger_excursion(frame3m: pd.DataFrame, ts, direction: str, entry: float) -> tuple:
+    """How far price travels AFTER a trigger, in points, over the rest of its session.
+
+    Returns ``(mfe, mae, eod)`` where (all signed in the trigger's favour-frame):
+      * ``mfe`` = max FAVOURABLE excursion — the furthest price ran the trigger's way
+        (clamped at 0 if it never went favourable),
+      * ``mae`` = max ADVERSE excursion — the worst heat against the trigger (≥0),
+      * ``eod`` = signed points if held to the close (+ = profit).
+    This is target-agnostic (no stop/target) — it measures the raw move the trigger
+    predicts, so we can size targets off the real distribution instead of a guess.
+    """
+    t = pd.Timestamp(ts)
+    sess = frame3m[(frame3m.index > t) & (frame3m.index.normalize() == t.normalize())]
+    if sess.empty:
+        return 0.0, 0.0, 0.0
+    long = direction == "long"
+    hi, lo = float(sess["high"].max()), float(sess["low"].min())
+    close_last = float(sess["close"].iloc[-1])
+    if long:
+        mfe, mae, eod = hi - entry, entry - lo, close_last - entry
+    else:
+        mfe, mae, eod = entry - lo, hi - entry, entry - close_last
+    return round(max(mfe, 0.0), 2), round(max(mae, 0.0), 2), round(eod, 2)
+
+
 def simulate_intraday(frame3m: pd.DataFrame, ts, direction: str, entry: float,
                       stop: float, target: float) -> tuple[str, float, float]:
     """Resolve a trigger's outcome within its OWN session (Trade 1 is intraday).

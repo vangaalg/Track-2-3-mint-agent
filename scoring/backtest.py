@@ -27,7 +27,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 import pandas as pd
 
-from analysis.triggers import list_triggers
+from analysis.triggers import list_triggers, trigger_excursion
 from analysis.trade1 import LOT_SIZE
 from indicators.directional import journal_mtf_config
 from feeds.snapshot import build_snapshot
@@ -268,6 +268,55 @@ def _preflight(loader_name: str, timeout: float = 5.0) -> None:
         )
 
 
+def _pctile(vals, qs=(0.25, 0.5, 0.75, 0.9)) -> dict:
+    if not vals:
+        return {q: None for q in qs}
+    s = pd.Series(vals)
+    return {q: round(float(s.quantile(q)), 1) for q in qs}
+
+
+def excursion_stats(snap, triggers: list[dict]) -> dict:
+    """Attach mfe/mae/eod_pts (points AFTER the trigger) to each trigger and summarise
+    the favourable vs adverse reach, overall + per direction. Target-agnostic — it
+    measures the raw move the trigger predicts so targets can be set off the real
+    distribution. ``edge_ratio`` = median MFE / median MAE (>1 ⇒ runs farther our way
+    than against ⇒ genuine directional pull; ≈1 ⇒ coin-flip)."""
+    frame3m = snap.frames["3min"]
+    for t in triggers:
+        mfe, mae, eod = trigger_excursion(frame3m, t["ts"], t["direction"], t["entry"])
+        t["mfe"], t["mae"], t["eod_pts"] = mfe, mae, eod
+
+    def _block(rows):
+        mfe = [r["mfe"] for r in rows]
+        mae = [r["mae"] for r in rows]
+        eod = [r["eod_pts"] for r in rows]
+        med_mfe = float(pd.Series(mfe).median()) if mfe else None
+        med_mae = float(pd.Series(mae).median()) if mae else None
+        return {
+            "n": len(rows), "mfe": _pctile(mfe), "mae": _pctile(mae),
+            "med_mfe": None if med_mfe is None else round(med_mfe, 1),
+            "med_mae": None if med_mae is None else round(med_mae, 1),
+            "med_eod": None if not eod else round(float(pd.Series(eod).median()), 1),
+            "edge_ratio": None if not med_mae else round(med_mfe / med_mae, 2),
+        }
+    return {"overall": _block(triggers),
+            "long": _block([t for t in triggers if t["direction"] == "long"]),
+            "short": _block([t for t in triggers if t["direction"] == "short"])}
+
+
+def excursion_text(stats: dict) -> str:
+    def _row(name, b):
+        if not b["n"]:
+            return f"  {name:7s} n=0"
+        p = lambda d: f"p25/50/75/90 = {d[0.25]}/{d[0.5]}/{d[0.75]}/{d[0.9]}"
+        return (f"  {name:7s} n={b['n']}  MFE {p(b['mfe'])}  |  MAE {p(b['mae'])}  |  "
+                f"median MFE/MAE = {b['med_mfe']}/{b['med_mae']} (edge {b['edge_ratio']})  "
+                f"hold-to-close median {b['med_eod']}")
+    return ("POST-TRIGGER EXCURSION (points after entry, target-agnostic; "
+            "MFE=favourable reach, MAE=adverse heat)\n"
+            + "\n".join(_row(n, stats[n]) for n in ("overall", "long", "short")))
+
+
 def _fmt(s: dict) -> str:
     hit = "—" if s["hit_rate"] is None else f"{s['hit_rate'] * 100:.0f}%"
     return (f"n={s['n']}  W/L/EOD={s['wins']}/{s['losses']}/{s['eod']}  hit={hit}  "
@@ -347,6 +396,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--skip-open-min", type=int, default=0, metavar="N",
                     help="skip triggers in the first N minutes after the 09:15 open "
                          "(opening-whipsaw filter; 0=off). Measurement only — live unchanged.")
+    ap.add_argument("--excursion", action="store_true",
+                    help="report post-trigger MFE/MAE (how far price runs the trigger's way "
+                         "vs against) + add mfe/mae/eod_pts columns to the CSV")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
@@ -376,6 +428,8 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
     print(report_text(args.symbol, out["report"], levels=args.levels, filtered=out["filtered"],
                       conf_filtered=out["conf_filtered"], min_confidence=args.min_confidence))
+    if args.excursion:
+        print("\n" + excursion_text(excursion_stats(snap, out["triggers"])))
     csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
                                       levels=args.levels, filtered=out["filtered"],
                                       conf_filtered=out["conf_filtered"],

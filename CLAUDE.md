@@ -249,6 +249,20 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       {csv,md}` + a `_generated … IST_` md header) so successive same-day runs no longer overwrite each
       other (trade ts in the CSV were already IST +05:30). Tested: skip-open drops the earliest trigger +
       kept ones are past the cutoff; IST filename/header. Suite green (187).
+- [x] **Post-trigger excursion analysis (`--excursion`) — empirical target distribution.** After the
+      365-day run REVERSED the 30-day read (unfiltered +356/pf 1.03 with long+176≈short+180 BALANCED, but
+      the ≥4 HTF-confidence filter was a −1882-pt/₹−141k DISASTER over the year — the low-confidence trades
+      it threw away netted +8.2/trade vs −7.3 for the kept high-confidence ones, i.e. the confidence score
+      is INVERTED: breakout-pullback works in non-extended setups, dies in mature all-TF-aligned trends —
+      so min-confidence is KILLED as a live-gate candidate, kept only as the measurement that caught it).
+      New `analysis.triggers.trigger_excursion(frame3m, ts, dir, entry)` → `(mfe, mae, eod)`: target-agnostic
+      max FAVOURABLE / ADVERSE reach (points) + hold-to-close over the rest of the session.
+      `scoring.backtest.excursion_stats`/`excursion_text` summarise p25/50/75/90 of MFE & MAE + `edge_ratio`
+      (median MFE/MAE; >1 = genuine directional pull, ≈1 = coin-flip) overall + per direction; CLI
+      `--excursion` prints it AND adds `mfe/mae/eod_pts` columns to the CSV. This sets targets off the REAL
+      move distribution instead of the arbitrary R:R-1.5. Sanity: edge_ratio ≈1.08 on a random synthetic
+      walk. Tested in test_backtest + test_triggers. Suite green (188; 1 pre-existing unrelated oi_store
+      failure). NEXT: half-year stability split to confirm the confidence-inversion isn't itself noise.
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

@@ -197,3 +197,26 @@ def test_skip_open_min_drops_early_triggers():
     cutoff = pd.Timestamp(f"{(9*60+15+skip_min)//60:02d}:{(9*60+15+skip_min)%60:02d}").time()
     assert all(pd.Timestamp(t["ts"]).time() >= cutoff for t in skipped)   # kept ones are late enough
     assert len(skipped) < len(full)                                       # the early one(s) were dropped
+
+
+def test_trigger_excursion_basic():
+    from analysis.triggers import trigger_excursion
+    idx = pd.date_range("2024-01-02 09:15", periods=5, freq="3min", tz="Asia/Kolkata")
+    f = pd.DataFrame({"open": [100]*5, "high": [101, 105, 103, 102, 101],
+                      "low": [99, 98, 97, 100, 100], "close": [100, 104, 101, 101, 100]}, index=idx)
+    # long from 100: best high after t0 is 105 -> MFE 5; worst low 97 -> MAE 3; close 100 -> eod 0
+    mfe, mae, eod = trigger_excursion(f, idx[0], "long", 100.0)
+    assert mfe == 5.0 and mae == 3.0 and eod == 0.0
+    # short mirrors: favourable is downward -> MFE 3, adverse up -> MAE 5
+    mfe, mae, eod = trigger_excursion(f, idx[0], "short", 100.0)
+    assert mfe == 3.0 and mae == 5.0 and eod == 0.0
+
+
+def test_excursion_stats_shape_and_columns():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1)
+    from scoring.backtest import excursion_stats, excursion_text
+    st = excursion_stats(snap, out["triggers"])
+    assert st["overall"]["n"] == len(out["triggers"])
+    assert all("mfe" in t and "mae" in t and "eod_pts" in t for t in out["triggers"])
+    assert "POST-TRIGGER EXCURSION" in excursion_text(st)
