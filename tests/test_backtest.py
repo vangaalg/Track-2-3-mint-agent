@@ -233,3 +233,15 @@ def test_level_sweep_shape_and_oos_split():
         assert c["rr"] == round(c["target"] / c["stop"], 2)
         assert "exp_h1" in c and "exp_h2" in c
     assert "LEVEL SWEEP" in level_sweep_text(sw)
+
+
+def test_level_sweep_cost_lowers_expectancy():
+    snap = build_snapshot("NIFTY", _synth_1m(5), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1)
+    from scoring.backtest import level_sweep, level_sweep_text
+    gross = level_sweep(snap, out["triggers"], [40], [50], lot_size=75, lots=1, cost_pts=0)
+    net = level_sweep(snap, out["triggers"], [40], [50], lot_size=75, lots=1, cost_pts=2.0)
+    # cost of exactly 2 pts/trade lowers expectancy by exactly 2
+    assert abs((gross["cells"][0]["exp"] - net["cells"][0]["exp"]) - 2.0) < 1e-6
+    assert "NET of 2.00 pt/trade" in level_sweep_text(net)
+    assert "GROSS" in level_sweep_text(gross)

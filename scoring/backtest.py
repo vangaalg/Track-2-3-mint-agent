@@ -318,9 +318,14 @@ def excursion_text(stats: dict) -> str:
             + "\n".join(_row(n, stats[n]) for n in ("overall", "long", "short")))
 
 
-def level_sweep(snap, triggers: list[dict], targets, stops, lot_size: int, lots: int) -> dict:
+def level_sweep(snap, triggers: list[dict], targets, stops, lot_size: int, lots: int,
+                cost_pts: float = 0.0) -> dict:
     """Hold the trigger ENTRIES fixed and re-simulate each (target_pts, stop_pts) pair
     against the real bars — a controlled test of which fixed levels extract the most.
+    Every trade is intraday (``_resolve_intraday`` exits at the bell — flat by EOD).
+
+    ``cost_pts`` is the per-round-trip cost in index points (brokerage + spread +
+    slippage), subtracted from every trade so the table reads NET of costs.
 
     For each cell reports expectancy (net points / trade) over the whole window plus
     the first and second HALVES of the date range, so a level only counts if it holds
@@ -339,7 +344,7 @@ def level_sweep(snap, triggers: list[dict], targets, stops, lot_size: int, lots:
             stop = e - sl if d == "long" else e + sl
             target = e + tg if d == "long" else e - tg
             _, _, pts, _ = _resolve_intraday(frame3m, t["ts"], d, e, stop, target)
-            rows.append((t["date"], pts))
+            rows.append((t["date"], pts - cost_pts))            # net of round-trip cost
         exp = lambda rs: round(sum(p for _, p in rs) / len(rs), 2) if rs else None
         h1 = [r for r in rows if r[0] < mid]
         h2 = [r for r in rows if r[0] >= mid]
@@ -348,13 +353,17 @@ def level_sweep(snap, triggers: list[dict], targets, stops, lot_size: int, lots:
                 "exp_h1": exp(h1), "exp_h2": exp(h2)}
 
     cells = [_sim(tg, sl) for tg in targets for sl in stops]
-    return {"cells": cells, "split_date": mid, "lot_size": lot_size, "lots": lots}
+    return {"cells": cells, "split_date": mid, "lot_size": lot_size, "lots": lots,
+            "cost_pts": cost_pts}
 
 
 def level_sweep_text(sweep: dict) -> str:
     cells = sorted(sweep["cells"], key=lambda c: (c["exp"] is None, -(c["exp"] or 0)))
-    lines = [f"LEVEL SWEEP (fixed target × stop on the real bars; OOS split at {sweep['split_date']}; "
-             f"exp = net pts/trade; * = profitable in BOTH halves)",
+    cost = sweep.get("cost_pts", 0.0)
+    cost_note = (f"NET of {cost:.2f} pt/trade cost (≈₹{cost * sweep['lot_size']:.0f}/lot)"
+                 if cost else "GROSS (no costs — pass --cost)")
+    lines = [f"LEVEL SWEEP (fixed target × stop on the real bars, intraday/flat-by-EOD; "
+             f"{cost_note}; OOS split at {sweep['split_date']}; * = profitable in BOTH halves)",
              "  target  stop   R:R    n    net      exp   exp_H1   exp_H2"]
     for c in cells:
         both = (c["exp_h1"] or 0) > 0 and (c["exp_h2"] or 0) > 0
@@ -454,6 +463,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="comma-separated target distances in points for --level-sweep")
     ap.add_argument("--sweep-stops", default="15,20,30,40,50",
                     help="comma-separated stop distances in points for --level-sweep")
+    ap.add_argument("--cost", type=float, default=0.0, metavar="RUPEES",
+                    help="per round-trip cost in ₹/lot (brokerage+spread+slippage); the "
+                         "level sweep reports NET of it (e.g. 150 ≈ 2 NIFTY points)")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
@@ -490,7 +502,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.level_sweep:
         tgs = [float(x) for x in args.sweep_targets.split(",") if x.strip()]
         sls = [float(x) for x in args.sweep_stops.split(",") if x.strip()]
-        txt = level_sweep_text(level_sweep(snap, out["triggers"], tgs, sls, LOT_SIZE, args.lots))
+        cost_pts = args.cost / LOT_SIZE                          # ₹/lot → index points
+        txt = level_sweep_text(level_sweep(snap, out["triggers"], tgs, sls, LOT_SIZE,
+                                           args.lots, cost_pts=cost_pts))
         print("\n" + txt); extra.append(txt)
     csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
                                       levels=args.levels, filtered=out["filtered"],

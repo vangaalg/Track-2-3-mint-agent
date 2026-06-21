@@ -277,6 +277,16 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       take — the AI/judgment layer, trained on the new per-trigger mfe/mae labels) and **MANAGEMENT** (trail
       to bank the +50 MFE that the median gives back by close), NOT level tuning. Tested: sweep shape +
       OOS split fields + render. Suite green (189; 1 pre-existing unrelated oi_store failure).
+  - **Cost-aware sweep (`--cost`).** Real-NIFTY sweep (617 trades) surprised us: a coherent profitable
+    REGION exists — **wide stop (~50) + modest target (~40), i.e. R:R<1** — best cell **40t/50s = +1398 pts
+    gross, +2.27/trade, stable BOTH halves (+2.30/+2.24)**; neighbours all positive, so not a fluke. This
+    BEATS the live R:R-1.5 target-driven model (its ~85-pt target is too far) and CONTRADICTS the journal's
+    R:R≥1.5 rule (with edge_ratio≈1, a 40-pt target<median-MFE-56 hits often, a 50-pt stop≈median-MAE-52
+    rarely). BUT +2.27 pt/trade gross ≈ ₹170/lot is ~breakeven after costs. `level_sweep(cost_pts=)`
+    subtracts a per-round-trip cost so the grid reads NET; CLI `--cost RUPEES` (₹/lot → pts via lot_size;
+    150≈2 pts). Sweep is intraday/flat-by-EOD (uses `_resolve_intraday`). Tested: cost lowers exp 1:1 +
+    header note. Decided w/ data: 40/50 is a better BASELINE, not an edge — the lever is SELECTION (take the
+    better half → halve costs) + MANAGEMENT (trail). Suite green (190; 1 pre-existing oi_store fail).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/
