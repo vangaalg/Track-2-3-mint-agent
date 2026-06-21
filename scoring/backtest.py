@@ -254,7 +254,8 @@ def _preflight(loader_name: str, timeout: float = 5.0) -> None:
     if not host:                                          # unknown loader → skip the check
         return
     try:
-        socket.setdefaulttimeout(timeout)
+        # NB: use create_connection's own timeout — do NOT call socket.setdefaulttimeout,
+        # which sets a process-wide default that would then kill every later data read.
         with socket.create_connection((host, 443), timeout=timeout):
             pass
     except OSError as exc:
