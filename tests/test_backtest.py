@@ -220,3 +220,16 @@ def test_excursion_stats_shape_and_columns():
     assert st["overall"]["n"] == len(out["triggers"])
     assert all("mfe" in t and "mae" in t and "eod_pts" in t for t in out["triggers"])
     assert "POST-TRIGGER EXCURSION" in excursion_text(st)
+
+
+def test_level_sweep_shape_and_oos_split():
+    snap = build_snapshot("NIFTY", _synth_1m(5), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1)
+    from scoring.backtest import level_sweep, level_sweep_text
+    sw = level_sweep(snap, out["triggers"], [30, 50], [20, 30], lot_size=75, lots=1)
+    assert len(sw["cells"]) == 4                     # 2 targets x 2 stops
+    for c in sw["cells"]:
+        assert c["n"] == len(out["triggers"])        # every entry simulated in each cell
+        assert c["rr"] == round(c["target"] / c["stop"], 2)
+        assert "exp_h1" in c and "exp_h2" in c
+    assert "LEVEL SWEEP" in level_sweep_text(sw)

@@ -263,6 +263,20 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       move distribution instead of the arbitrary R:R-1.5. Sanity: edge_ratio ≈1.08 on a random synthetic
       walk. Tested in test_backtest + test_triggers. Suite green (188; 1 pre-existing unrelated oi_store
       failure). NEXT: half-year stability split to confirm the confidence-inversion isn't itself noise.
+- [x] **`--level-sweep` (target × stop grid, OOS split) + the no-edge verdict.** The full-year `--excursion`
+      on real NIFTY (591 trades, Jul 2025–Jun 2026) returned **edge_ratio ≈ 1.0** (median MFE 55 ≈ MAE 53;
+      long 1.00 / short 1.10; hold-to-close median +2): the breakout-pullback entry has **no directional
+      edge** — price runs ~as far against as for. So target/stop tuning can't manufacture an edge (symmetric
+      move ⇒ every (target,stop) ≈ breakeven). `scoring.backtest.level_sweep` holds the trigger ENTRIES
+      fixed and re-simulates each fixed (target_pts, stop_pts) pair on the real bars via `_resolve_intraday`,
+      reporting net + expectancy over the whole window AND first/second HALVES (OOS), flagging cells
+      profitable in BOTH halves with `*`. CLI `--level-sweep` (+ `--sweep-targets`/`--sweep-stops`, default
+      targets 20/30/40/50/70 × stops 15/20/30/40/50). Confirmed on synthetic: a no-edge walk yields all
+      cells negative, zero `*`. `write_outputs(extra=)` now appends the excursion + sweep blocks into the
+      saved md (was console-only). Decided with user/data: the lever is **SELECTION** (which triggers to
+      take — the AI/judgment layer, trained on the new per-trigger mfe/mae labels) and **MANAGEMENT** (trail
+      to bank the +50 MFE that the median gives back by close), NOT level tuning. Tested: sweep shape +
+      OOS split fields + render. Suite green (189; 1 pre-existing unrelated oi_store failure).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

@@ -318,6 +318,52 @@ def excursion_text(stats: dict) -> str:
             + "\n".join(_row(n, stats[n]) for n in ("overall", "long", "short")))
 
 
+def level_sweep(snap, triggers: list[dict], targets, stops, lot_size: int, lots: int) -> dict:
+    """Hold the trigger ENTRIES fixed and re-simulate each (target_pts, stop_pts) pair
+    against the real bars — a controlled test of which fixed levels extract the most.
+
+    For each cell reports expectancy (net points / trade) over the whole window plus
+    the first and second HALVES of the date range, so a level only counts if it holds
+    OUT-OF-SAMPLE (the lesson from the confidence-filter blow-up). Entries are held
+    fixed (no re-dedup), so cells differ only by their levels — the cleanest comparison.
+    """
+    from analysis.triggers import _resolve_intraday
+    frame3m = snap.frames["3min"]
+    dates = sorted({t["date"] for t in triggers})
+    mid = dates[len(dates) // 2] if dates else None
+
+    def _sim(tg, sl):
+        rows = []
+        for t in triggers:
+            e, d = t["entry"], t["direction"]
+            stop = e - sl if d == "long" else e + sl
+            target = e + tg if d == "long" else e - tg
+            _, _, pts, _ = _resolve_intraday(frame3m, t["ts"], d, e, stop, target)
+            rows.append((t["date"], pts))
+        exp = lambda rs: round(sum(p for _, p in rs) / len(rs), 2) if rs else None
+        h1 = [r for r in rows if r[0] < mid]
+        h2 = [r for r in rows if r[0] >= mid]
+        return {"target": tg, "stop": sl, "rr": round(tg / sl, 2), "n": len(rows),
+                "net": round(sum(p for _, p in rows), 0), "exp": exp(rows),
+                "exp_h1": exp(h1), "exp_h2": exp(h2)}
+
+    cells = [_sim(tg, sl) for tg in targets for sl in stops]
+    return {"cells": cells, "split_date": mid, "lot_size": lot_size, "lots": lots}
+
+
+def level_sweep_text(sweep: dict) -> str:
+    cells = sorted(sweep["cells"], key=lambda c: (c["exp"] is None, -(c["exp"] or 0)))
+    lines = [f"LEVEL SWEEP (fixed target × stop on the real bars; OOS split at {sweep['split_date']}; "
+             f"exp = net pts/trade; * = profitable in BOTH halves)",
+             "  target  stop   R:R    n    net      exp   exp_H1   exp_H2"]
+    for c in cells:
+        both = (c["exp_h1"] or 0) > 0 and (c["exp_h2"] or 0) > 0
+        lines.append(f"  {c['target']:>5}  {c['stop']:>4}  {c['rr']:>4}  {c['n']:>4}  "
+                     f"{c['net']:>+7.0f}  {c['exp']:>+6.2f}  {c['exp_h1']:>+6.2f}  "
+                     f"{c['exp_h2']:>+6.2f}  {'*' if both else ''}")
+    return "\n".join(lines)
+
+
 def _fmt(s: dict) -> str:
     hit = "—" if s["hit_rate"] is None else f"{s['hit_rate'] * 100:.0f}%"
     return (f"n={s['n']}  W/L/EOD={s['wins']}/{s['losses']}/{s['eod']}  hit={hit}  "
@@ -359,7 +405,8 @@ def report_text(symbol: str, report: dict, levels: str = "target",
 
 def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str,
                   levels: str = "target", filtered: dict | None = None,
-                  conf_filtered: dict | None = None, min_confidence: int = 0) -> tuple[str, str]:
+                  conf_filtered: dict | None = None, min_confidence: int = 0,
+                  extra: str = "") -> tuple[str, str]:
     from pathlib import Path
     Path(outdir).mkdir(parents=True, exist_ok=True)
     # IST date+time so successive runs don't overwrite each other (was date-only)
@@ -368,11 +415,11 @@ def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str,
     md_path = f"{outdir}/backtest_{symbol}_{stamp}.md"
     pd.DataFrame(triggers).to_csv(csv_path, index=False)
     gen = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
-    Path(md_path).write_text(
-        f"_generated {gen}_\n\n```\n"
-        + report_text(symbol, report, levels=levels, filtered=filtered,
-                      conf_filtered=conf_filtered, min_confidence=min_confidence)
-        + "\n```\n", encoding="utf-8")
+    body = report_text(symbol, report, levels=levels, filtered=filtered,
+                       conf_filtered=conf_filtered, min_confidence=min_confidence)
+    if extra:
+        body += "\n\n" + extra
+    Path(md_path).write_text(f"_generated {gen}_\n\n```\n" + body + "\n```\n", encoding="utf-8")
     return csv_path, md_path
 
 
@@ -400,6 +447,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--excursion", action="store_true",
                     help="report post-trigger MFE/MAE (how far price runs the trigger's way "
                          "vs against) + add mfe/mae/eod_pts columns to the CSV")
+    ap.add_argument("--level-sweep", action="store_true",
+                    help="sweep a grid of fixed target × stop (points) on the real bars, with "
+                         "an out-of-sample first/second-half split; finds the best levels")
+    ap.add_argument("--sweep-targets", default="20,30,40,50,70",
+                    help="comma-separated target distances in points for --level-sweep")
+    ap.add_argument("--sweep-stops", default="15,20,30,40,50",
+                    help="comma-separated stop distances in points for --level-sweep")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
@@ -429,12 +483,19 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr)
     print(report_text(args.symbol, out["report"], levels=args.levels, filtered=out["filtered"],
                       conf_filtered=out["conf_filtered"], min_confidence=args.min_confidence))
+    extra = []
     if args.excursion:
-        print("\n" + excursion_text(excursion_stats(snap, out["triggers"])))
+        txt = excursion_text(excursion_stats(snap, out["triggers"]))
+        print("\n" + txt); extra.append(txt)
+    if args.level_sweep:
+        tgs = [float(x) for x in args.sweep_targets.split(",") if x.strip()]
+        sls = [float(x) for x in args.sweep_stops.split(",") if x.strip()]
+        txt = level_sweep_text(level_sweep(snap, out["triggers"], tgs, sls, LOT_SIZE, args.lots))
+        print("\n" + txt); extra.append(txt)
     csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
                                       levels=args.levels, filtered=out["filtered"],
                                       conf_filtered=out["conf_filtered"],
-                                      min_confidence=args.min_confidence)
+                                      min_confidence=args.min_confidence, extra="\n\n".join(extra))
     print(f"\nWrote {csv_path}\n      {md_path}", file=sys.stderr)
     return 0
 
