@@ -379,11 +379,17 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       unrelated oi_store fail). RISKS: Breeze may block a cloud IP (verify the `connected` probe first);
       daily token stays manual by design.
 
+- [x] **Two specialist subagents (`.claude/agents/`, advisory personas).** `option-trader.md` (full
+      option-strategy playbook → risk-defined, cost-aware, intraday-flat trades; grounded in the journal
+      method — OI-wall S/R + ±37/72 bands, PCR/max-pain, macro — and the hard backtest truths: the 3-min
+      trigger is only an ATTENTION signal with no standalone edge, ~₹150/round-trip costs, deep-ITM
+      low-extrinsic vehicle, grade by process not P&L; tools Read/Grep/Glob/Bash). `it-architect.md`
+      (designs/maintains the infra — feeds/stores/recorder/deploy/backtest-rig/cockpit/learning loop —
+      reusing this repo's patterns: injectable test seams, no-lookahead, graceful degradation, pure-core,
+      cost/reliability aware; tools incl. Edit/Write). Confirmed w/ trader: advisory personas (not app
+      modules), built right after the Railway deploy. No code/tests (agent defs).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
-- [ ] **Two specialist subagents (`.claude/agents/`, advisory personas — confirmed, Railway-first done):**
-      `option-trader` (full option-strategy playbook → risk-defined profitable trades, grounded in the
-      journal method + the backtest cost/edge findings) and `it-architect` (designs/maintains the trading
-      infrastructure, reusing this repo's patterns). Short markdown agent defs; no app modules.
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
       exactly: **data → Claude's read → trader take/skip+target/stop → reveal+compare**.
