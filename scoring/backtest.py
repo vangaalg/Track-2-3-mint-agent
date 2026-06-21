@@ -228,6 +228,33 @@ def _pull(symbol: str, days: int, loader_name: str, chunk_days: int = 3):
     return base, daily
 
 
+def _preflight(loader_name: str, timeout: float = 5.0) -> None:
+    """Fail fast (seconds, not hours) if the data host is unreachable.
+
+    A dead network / DNS makes each Breeze call hang on getaddrinfo retries, so a
+    30-day paginated pull can grind silently for ages. Resolve + TCP-connect once
+    up front and raise a clear, actionable error instead.
+    """
+    import socket
+    host = {"breeze": "breezeapi.icicidirect.com",
+            "twelvedata": "api.twelvedata.com"}.get(loader_name)
+    if not host:                                          # unknown loader → skip the check
+        return
+    try:
+        socket.setdefaulttimeout(timeout)
+        with socket.create_connection((host, 443), timeout=timeout):
+            pass
+    except OSError as exc:
+        raise SystemExit(
+            f"\nCannot reach {host!r} ({exc}).\n"
+            f"This is a NETWORK/DNS problem on this machine, not the backtest.\n"
+            f"  • disconnect any VPN/proxy that may block icicidirect.com\n"
+            f"  • check the internet is up (try opening a website)\n"
+            f"  • try switching DNS to 8.8.8.8 / 8.8.4.4, then: ipconfig /flushdns\n"
+            f"  • allow python.exe through the firewall/antivirus\n"
+        )
+
+
 def _fmt(s: dict) -> str:
     hit = "—" if s["hit_rate"] is None else f"{s['hit_rate'] * 100:.0f}%"
     return (f"n={s['n']}  W/L/EOD={s['wins']}/{s['losses']}/{s['eod']}  hit={hit}  "
@@ -293,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
     args = ap.parse_args(argv)
 
+    _preflight(args.loader)
     print(f"Pulling ~{args.days}d of {args.symbol} 1-min via '{args.loader}' "
           f"(paginated, {args.chunk_days}d/chunk; needs creds + network)…", file=sys.stderr)
     base, daily = _pull(args.symbol, args.days, args.loader, args.chunk_days)
