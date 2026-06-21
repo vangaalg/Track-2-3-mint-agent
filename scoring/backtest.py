@@ -349,6 +349,112 @@ def excursion_text(stats: dict) -> str:
             + "\n".join(_row(n, stats[n]) for n in ("overall", "long", "short")))
 
 
+def selection_features(snap, triggers: list[dict], sel_target: float = 40.0,
+                       sel_stop: float = 50.0) -> list[dict]:
+    """Attach each trigger's ENTRY-MOMENT context features + its outcome at a fixed
+    (sel_target, sel_stop) level, so we can ask *which features pick the good trades*.
+
+    Features are direction-relative where it matters (so longs/shorts pool cleanly):
+    momentum/extension are signed in the trigger's own direction. The outcome
+    ``sel_pnl`` is the realised points at the chosen fixed levels (intraday, flat-by-EOD).
+    """
+    from analysis.triggers import _resolve_intraday
+    from indicators.engine import atr as _atr
+    f3 = snap.feats["3min"]
+    frame3 = snap.frames["3min"]
+    atr = _atr(frame3, 14).reindex(f3.index)
+    rows = []
+    for t in triggers:
+        ts = pd.Timestamp(t["ts"])
+        if ts not in f3.index:
+            continue
+        r = f3.loc[ts]
+        if isinstance(r, pd.DataFrame):
+            r = r.iloc[0]
+        d = t["direction"]; long = d == "long"; c = t["entry"]; sgn = 1.0 if long else -1.0
+        rsi = float(r["rsi_14"]); st = float(r["st_dir"])
+        feat = {
+            "tid": t["tid"], "direction": d, "date": t["date"],
+            "tod_min": (ts.hour * 60 + ts.minute) - (9 * 60 + 15),   # mins since open
+            "dow": int(ts.dayofweek),
+            "rsi_dir": rsi if long else 100 - rsi,                    # momentum in trade dir
+            "macd_hist_dir": round(sgn * float(r["macd_hist"]), 2),
+            "ext_ema45_pct": round(sgn * (c - float(r["ema_45"])) / c * 100, 3),  # how extended
+            "ext_ema5_pct": round(sgn * (c - float(r["ema_5"])) / c * 100, 3),
+            "bb_width": round(float(r["bb_width"]), 4),
+            "atr_pts": round(float(atr.get(ts, float("nan"))), 2),
+            "st_agree": int((st > 0) == long),                       # supertrend with the trade?
+            "mtf_conf": int(t.get("mtf_confidence", 0)),
+        }
+        stop = c - sgn * sel_stop
+        target = c + sgn * sel_target
+        _, _, pnl, _ = _resolve_intraday(frame3, ts, d, c, stop, target)
+        feat["sel_pnl"] = round(pnl, 2)
+        t.update({f"feat_{k}": v for k, v in feat.items()
+                  if k not in ("tid", "direction", "date")})       # also land in the CSV
+        rows.append(feat)
+    return rows
+
+
+_DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def selection_report(rows: list[dict], sel_target: float, sel_stop: float,
+                     cost_pts: float = 0.0) -> str:
+    """Rank context features by how cleanly they separate winning triggers from losers.
+
+    For each numeric feature: split triggers into quartiles and show mean net P&L per
+    quartile (a big spread ⇒ the feature carries selection signal). Categorical features
+    (day-of-week, supertrend-agreement) are shown per category. The single best bucket
+    is the most actionable take/skip lead.
+    """
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return "SELECTION: no triggers."
+    df["net"] = df["sel_pnl"] - cost_pts
+    base = df["net"].mean()
+    numeric = ["tod_min", "rsi_dir", "macd_hist_dir", "ext_ema45_pct", "ext_ema5_pct",
+               "bb_width", "atr_pts", "mtf_conf"]
+    out = [f"SELECTION ANALYSIS  (outcome = {sel_target:.0f}t/{sel_stop:.0f}s, "
+           f"net of {cost_pts:.2f} pt cost; baseline {base:+.2f}/trade over n={len(df)})",
+           "rank features by quartile spread — a big spread means the feature picks winners"]
+    best = []                                                   # (mean, label, n) buckets
+    ranked = []
+    for col in numeric:
+        sub = df[[col, "net"]].dropna()
+        if sub[col].nunique() < 4:
+            continue
+        try:
+            q, edges = pd.qcut(sub[col], 4, retbins=True, duplicates="drop")
+        except ValueError:
+            continue
+        g = sub.groupby(q, observed=True)["net"].agg(["mean", "count"])
+        ranked.append((g["mean"].max() - g["mean"].min(), col, g))
+    ranked.sort(reverse=True)
+    for spread, col, g in ranked:
+        out.append(f"\n{col}  (spread {spread:.1f}/trade):")
+        for interval, row in g.iterrows():
+            lo, hi = interval.left, interval.right
+            out.append(f"  [{lo:>8.2f}, {hi:>8.2f}]  exp {row['mean']:+6.2f}  (n={int(row['count'])})")
+            best.append((row["mean"], f"{col} in [{lo:.2f},{hi:.2f}]", int(row["count"])))
+    for col in ("dow", "st_agree"):
+        if col not in df:
+            continue
+        g = df.groupby(col, observed=True)["net"].agg(["mean", "count"])
+        out.append(f"\n{col}:")
+        for k, row in g.iterrows():
+            name = _DOW[int(k)] if col == "dow" else ("with-trade" if k else "against")
+            out.append(f"  {name:>10}  exp {row['mean']:+6.2f}  (n={int(row['count'])})")
+            best.append((row["mean"], f"{col}={name}", int(row["count"])))
+    best = [b for b in best if b[2] >= max(20, len(df) // 20)]   # ignore thin buckets
+    best.sort(reverse=True)
+    if best:
+        out.append("\nBest single buckets (n≥{}):".format(max(20, len(df) // 20)))
+        for m, lbl, n in best[:5]:
+            out.append(f"  {lbl:<28} exp {m:+6.2f}  (n={n})")
+    return "\n".join(out)
+
+
 def level_sweep(snap, triggers: list[dict], targets, stops, lot_size: int, lots: int,
                 cost_pts: float = 0.0) -> dict:
     """Hold the trigger ENTRIES fixed and re-simulate each (target_pts, stop_pts) pair
@@ -490,6 +596,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--level-sweep", action="store_true",
                     help="sweep a grid of fixed target × stop (points) on the real bars, with "
                          "an out-of-sample first/second-half split; finds the best levels")
+    ap.add_argument("--selection", action="store_true",
+                    help="rank entry-moment features by how well they separate winning triggers "
+                         "from losers (outcome at --sel-target/--sel-stop, net of --cost)")
+    ap.add_argument("--sel-target", type=float, default=40.0,
+                    help="target (pts) for the --selection outcome (default 40, the sweep winner)")
+    ap.add_argument("--sel-stop", type=float, default=50.0,
+                    help="stop (pts) for the --selection outcome (default 50)")
     ap.add_argument("--sweep-targets", default="20,30,40,50,70",
                     help="comma-separated target distances in points for --level-sweep")
     ap.add_argument("--sweep-stops", default="15,20,30,40,50",
@@ -546,6 +659,10 @@ def main(argv: list[str] | None = None) -> int:
         cost_pts = args.cost / LOT_SIZE                          # ₹/lot → index points
         txt = level_sweep_text(level_sweep(snap, out["triggers"], tgs, sls, LOT_SIZE,
                                            args.lots, cost_pts=cost_pts))
+        print("\n" + txt); extra.append(txt)
+    if args.selection:
+        rows = selection_features(snap, out["triggers"], args.sel_target, args.sel_stop)
+        txt = selection_report(rows, args.sel_target, args.sel_stop, cost_pts=args.cost / LOT_SIZE)
         print("\n" + txt); extra.append(txt)
     csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
                                       levels=args.levels, filtered=out["filtered"],

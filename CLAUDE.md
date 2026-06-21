@@ -297,6 +297,17 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     matched by `data/*.parquet`). Tested in tests/test_ohlcv_store.py (merge/dedup/extend, empty read-through,
     offline _pull). Suite green (191; 1 pre-existing oi_store fail). NOTE: only pulls FORWARD from the store's
     last bar — older-than-first-pull backfill still needs a dedicated step (Breeze caps 1-min history anyway).
+  - **Selection analysis (`--selection`) — the edge lever after levels were ruled out.** The cost-aware
+    sweep (₹150) confirmed levels are a dead end: best cell 40/50 nets only +0.27 pt/trade (~₹12k/yr/lot),
+    every other cell negative — so the edge can only be in WHICH triggers you take. `scoring.backtest.
+    selection_features` attaches each trigger's ENTRY-MOMENT context (tod_min, dow, rsi_dir, macd_hist_dir,
+    ext_ema45_pct, ext_ema5_pct, bb_width, atr_pts, st_agree, mtf_conf — direction-relative where it
+    matters) + its outcome at a fixed (`--sel-target`/`--sel-stop`, default 40/50) level; features also land
+    on the trigger dicts → CSV. `selection_report` ranks each numeric feature by quartile spread of net
+    P&L (big spread ⇒ selection signal), shows day-of-week + supertrend-agreement, and lists the best
+    single buckets (n≥max(20,N/20)). CLI `--selection` (net of `--cost`). This is the foundation the
+    judgment/AI layer learns on — find the trigger SUBSET that clears costs. Tested: features land + report
+    renders. Suite green (192; 1 pre-existing unrelated oi_store failure).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

@@ -245,3 +245,18 @@ def test_level_sweep_cost_lowers_expectancy():
     assert abs((gross["cells"][0]["exp"] - net["cells"][0]["exp"]) - 2.0) < 1e-6
     assert "NET of 2.00 pt/trade" in level_sweep_text(net)
     assert "GROSS" in level_sweep_text(gross)
+
+
+def test_selection_features_and_report():
+    snap = build_snapshot("NIFTY", _synth_1m(8), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1)
+    from scoring.backtest import selection_features, selection_report
+    rows = selection_features(snap, out["triggers"], sel_target=40, sel_stop=50)
+    assert len(rows) == len(out["triggers"])
+    # features land on the trigger dicts (→ CSV) and carry an outcome
+    for r in rows:
+        assert "rsi_dir" in r and "tod_min" in r and "sel_pnl" in r and "st_agree" in r
+    for t in out["triggers"]:
+        assert "feat_rsi_dir" in t and "feat_sel_pnl" in t
+    txt = selection_report(rows, 40, 50, cost_pts=2.0)
+    assert "SELECTION ANALYSIS" in txt and "baseline" in txt
