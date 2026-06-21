@@ -260,3 +260,16 @@ def test_selection_features_and_report():
         assert "feat_rsi_dir" in t and "feat_sel_pnl" in t
     txt = selection_report(rows, 40, 50, cost_pts=2.0)
     assert "SELECTION ANALYSIS" in txt and "baseline" in txt
+
+
+def test_selection_oos_and_rule_report():
+    snap = build_snapshot("NIFTY", _synth_1m(15), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1)
+    from scoring.backtest import selection_features, selection_report, rule_report
+    rows = selection_features(snap, out["triggers"], 40, 50)
+    txt = selection_report(rows, 40, 50, cost_pts=2.0, n_periods=3)
+    assert "ROBUST buckets" in txt and "P1..P3" in txt
+    # combined rule reports kept subset + per-period stability verdict
+    rt = rule_report(rows, cost_pts=2.0, max_atr=15, min_tod=30, max_ext45=0.25)
+    assert "COMBINED RULE" in rt and "KEPT" in rt
+    assert ("EDGE" in rt) or ("NOT stable" in rt)

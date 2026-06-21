@@ -308,6 +308,19 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     single buckets (n≥max(20,N/20)). CLI `--selection` (net of `--cost`). This is the foundation the
     judgment/AI layer learns on — find the trigger SUBSET that clears costs. Tested: features land + report
     renders. Suite green (192; 1 pre-existing unrelated oi_store failure).
+  - **OOS-validated selection + combined-rule tester.** The 3-year run (n=1912, `--days 1100` got ~3yr)
+    showed the 40/50 baseline is −0.70/trade after ₹150 cost (NEGATIVE over 3yr — the +0.27 was a 1yr
+    artifact), so selection is mandatory. A COHERENT thesis emerged across independent features: the
+    breakout-pullback wins on CALM/NON-EXTENDED setups, dies on hot/stretched/high-vol/all-TF-aligned
+    chases — low `atr_pts` +1.6 vs high −2.5 (monotonic, cleanest), avoid-open `tod_min`, avoid-extended
+    `ext_ema45`/`macd_hist_dir`, and `mtf_conf` INVERTED (confirms the year finding). Noise flagged:
+    `ext_ema5_pct` +4.31 is a qcut ARTIFACT (entry is always just past the 5-EMA → near-constant feature),
+    `st_agree=against` (n=105) thin, `dow=Fri` likely expiry. To avoid another confidence-filter trap,
+    `selection_report` now splits every bucket into `n_periods` chronological slices (P1..P3) and flags `*`
+    only if positive in ALL; `rule_report` tests a COMBINED rule (`--sel-rule` + `--rule-max-atr`/
+    `--rule-min-tod`/`--rule-max-ext45`/`--rule-max-conf`, defaults atr≤15/tod≥30m/ext45≤0.25) reporting the
+    kept subset's per-period expectancy + an EDGE/NOT-stable verdict. Synthetic no-edge → "NOT stable" as
+    expected. Tested: OOS columns + rule render + verdict. Suite green (193; 1 pre-existing oi_store fail).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

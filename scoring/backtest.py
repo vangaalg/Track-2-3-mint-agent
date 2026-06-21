@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 
 import pandas as pd
+import numpy as np
 
 from analysis.triggers import list_triggers, trigger_excursion
 from analysis.trade1 import LOT_SIZE
@@ -399,26 +400,48 @@ def selection_features(snap, triggers: list[dict], sel_target: float = 40.0,
 _DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def selection_report(rows: list[dict], sel_target: float, sel_stop: float,
-                     cost_pts: float = 0.0) -> str:
-    """Rank context features by how cleanly they separate winning triggers from losers.
+def _assign_period(dates: pd.Series, n_periods: int) -> pd.Series:
+    """Map each row's date to a chronological period 0..n-1 (equal-date-count chunks)
+    so we can check a bucket holds OUT-OF-SAMPLE across the window, not just overall."""
+    uniq = sorted(pd.Series(dates).unique())
+    date_to_p = {}
+    for pi, chunk in enumerate(np.array_split(uniq, n_periods)):
+        for d in chunk:
+            date_to_p[d] = pi
+    return pd.Series(dates).map(date_to_p).to_numpy()
 
-    For each numeric feature: split triggers into quartiles and show mean net P&L per
-    quartile (a big spread ⇒ the feature carries selection signal). Categorical features
-    (day-of-week, supertrend-agreement) are shown per category. The single best bucket
-    is the most actionable take/skip lead.
+
+def _period_cells(net: pd.Series, period: np.ndarray, n_periods: int):
+    """Per-period mean of ``net``; returns (list_of_means, stable) where stable = the
+    bucket is positive in EVERY period (the OOS gate)."""
+    means = []
+    for p in range(n_periods):
+        vals = net[period == p]
+        means.append(round(float(vals.mean()), 2) if len(vals) else None)
+    stable = all(m is not None and m > 0 for m in means)
+    return means, stable
+
+
+def selection_report(rows: list[dict], sel_target: float, sel_stop: float,
+                     cost_pts: float = 0.0, n_periods: int = 3) -> str:
+    """Rank context features by how cleanly they separate winning triggers from losers,
+    AND show each top bucket's expectancy in each of ``n_periods`` chronological slices
+    so we only trust buckets that hold OUT-OF-SAMPLE (the confidence-filter lesson). A
+    bucket positive in EVERY period is flagged ``*``.
     """
     df = pd.DataFrame(rows)
     if df.empty:
         return "SELECTION: no triggers."
     df["net"] = df["sel_pnl"] - cost_pts
+    period = _assign_period(df["date"], n_periods)
     base = df["net"].mean()
     numeric = ["tod_min", "rsi_dir", "macd_hist_dir", "ext_ema45_pct", "ext_ema5_pct",
                "bb_width", "atr_pts", "mtf_conf"]
     out = [f"SELECTION ANALYSIS  (outcome = {sel_target:.0f}t/{sel_stop:.0f}s, "
-           f"net of {cost_pts:.2f} pt cost; baseline {base:+.2f}/trade over n={len(df)})",
-           "rank features by quartile spread — a big spread means the feature picks winners"]
-    best = []                                                   # (mean, label, n) buckets
+           f"net of {cost_pts:.2f} pt cost; baseline {base:+.2f}/trade over n={len(df)}; "
+           f"P1..P{n_periods} = chronological thirds, * = positive in ALL)",
+           "rank features by quartile spread — big spread = the feature picks winners"]
+    candidates = []                                            # (mean, label, n, per, stable)
     ranked = []
     for col in numeric:
         sub = df[[col, "net"]].dropna()
@@ -431,28 +454,65 @@ def selection_report(rows: list[dict], sel_target: float, sel_stop: float,
         g = sub.groupby(q, observed=True)["net"].agg(["mean", "count"])
         ranked.append((g["mean"].max() - g["mean"].min(), col, g))
     ranked.sort(reverse=True)
+    pstr = lambda per: " ".join(f"{(m if m is not None else 0):+5.1f}" for m in per)
     for spread, col, g in ranked:
         out.append(f"\n{col}  (spread {spread:.1f}/trade):")
         for interval, row in g.iterrows():
             lo, hi = interval.left, interval.right
-            out.append(f"  [{lo:>8.2f}, {hi:>8.2f}]  exp {row['mean']:+6.2f}  (n={int(row['count'])})")
-            best.append((row["mean"], f"{col} in [{lo:.2f},{hi:.2f}]", int(row["count"])))
+            mask = (df[col] > lo) & (df[col] <= hi)
+            per, stable = _period_cells(df["net"][mask], period[mask.to_numpy()], n_periods)
+            out.append(f"  [{lo:>8.2f},{hi:>8.2f}] exp {row['mean']:+6.2f} "
+                       f"(n={int(row['count'])})  P:{pstr(per)} {'*' if stable else ''}")
+            candidates.append((row["mean"], f"{col} in [{lo:.2f},{hi:.2f}]",
+                               int(row["count"]), per, stable))
     for col in ("dow", "st_agree"):
         if col not in df:
             continue
-        g = df.groupby(col, observed=True)["net"].agg(["mean", "count"])
         out.append(f"\n{col}:")
-        for k, row in g.iterrows():
+        for k, sub in df.groupby(col, observed=True):
+            per, stable = _period_cells(sub["net"], period[(df[col] == k).to_numpy()], n_periods)
             name = _DOW[int(k)] if col == "dow" else ("with-trade" if k else "against")
-            out.append(f"  {name:>10}  exp {row['mean']:+6.2f}  (n={int(row['count'])})")
-            best.append((row["mean"], f"{col}={name}", int(row["count"])))
-    best = [b for b in best if b[2] >= max(20, len(df) // 20)]   # ignore thin buckets
-    best.sort(reverse=True)
-    if best:
-        out.append("\nBest single buckets (n≥{}):".format(max(20, len(df) // 20)))
-        for m, lbl, n in best[:5]:
-            out.append(f"  {lbl:<28} exp {m:+6.2f}  (n={n})")
+            out.append(f"  {name:>10}  exp {sub['net'].mean():+6.2f} (n={len(sub)})  "
+                       f"P:{pstr(per)} {'*' if stable else ''}")
+            candidates.append((sub["net"].mean(), f"{col}={name}", len(sub), per, stable))
+    thr = max(20, len(df) // 20)
+    robust = [c for c in candidates if c[2] >= thr and c[4]]    # n big enough AND stable
+    robust.sort(reverse=True)
+    out.append(f"\nROBUST buckets (n≥{thr} AND positive in all {n_periods} periods):")
+    out += ([f"  {lbl:<26} exp {m:+6.2f} (n={n})  P:{pstr(per)}"
+             for m, lbl, n, per, _ in robust[:8]] or ["  (none — no single bucket is stable)"])
     return "\n".join(out)
+
+
+def rule_report(rows: list[dict], cost_pts: float = 0.0, n_periods: int = 3,
+                max_atr=None, min_tod=None, max_ext45=None, max_conf=None) -> str:
+    """Test a COMBINED selection rule (calm + post-open + not-extended …) and report the
+    kept subset's net expectancy overall AND per chronological period, vs taking all.
+    The rule is an edge only if it clears costs in EVERY period (not just overall)."""
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return "RULE: no triggers."
+    df["net"] = df["sel_pnl"] - cost_pts
+    period = _assign_period(df["date"], n_periods)
+    mask = pd.Series(True, index=df.index)
+    crit = []
+    if max_atr is not None:
+        mask &= df["atr_pts"] <= max_atr; crit.append(f"atr≤{max_atr}")
+    if min_tod is not None:
+        mask &= df["tod_min"] >= min_tod; crit.append(f"tod≥{min_tod}m")
+    if max_ext45 is not None:
+        mask &= df["ext_ema45_pct"] <= max_ext45; crit.append(f"ext45≤{max_ext45}")
+    if max_conf is not None:
+        mask &= df["mtf_conf"] <= max_conf; crit.append(f"mtf_conf≤{max_conf}")
+    sub = df[mask]
+    per, stable = _period_cells(sub["net"], period[mask.to_numpy()], n_periods)
+    pstr = " ".join(f"P{i+1} {m:+.2f}" if m is not None else f"P{i+1} —"
+                    for i, m in enumerate(per))
+    return ("COMBINED RULE: " + (" AND ".join(crit) if crit else "(no criteria)") + "\n"
+            f"  ALL  : exp {df['net'].mean():+.2f}/trade  (n={len(df)})\n"
+            f"  KEPT : exp {sub['net'].mean():+.2f}/trade  (n={len(sub)}, "
+            f"{100*len(sub)/len(df):.0f}% of triggers)  {pstr}\n"
+            f"  -> {'EDGE — positive in all periods' if stable else 'NOT stable across periods'}")
 
 
 def level_sweep(snap, triggers: list[dict], targets, stops, lot_size: int, lots: int,
@@ -603,6 +663,16 @@ def main(argv: list[str] | None = None) -> int:
                     help="target (pts) for the --selection outcome (default 40, the sweep winner)")
     ap.add_argument("--sel-stop", type=float, default=50.0,
                     help="stop (pts) for the --selection outcome (default 50)")
+    ap.add_argument("--sel-rule", action="store_true",
+                    help="test a COMBINED selection rule (calm + post-open + not-extended) "
+                         "with an out-of-sample per-period check")
+    ap.add_argument("--rule-max-atr", type=float, default=15.0, help="keep ATR ≤ this (pts)")
+    ap.add_argument("--rule-min-tod", type=float, default=30.0,
+                    help="keep triggers ≥ this many minutes after the 09:15 open")
+    ap.add_argument("--rule-max-ext45", type=float, default=0.25,
+                    help="keep extension-from-45-EMA ≤ this (%% of price)")
+    ap.add_argument("--rule-max-conf", type=float, default=None,
+                    help="keep MTF confidence ≤ this (off by default)")
     ap.add_argument("--sweep-targets", default="20,30,40,50,70",
                     help="comma-separated target distances in points for --level-sweep")
     ap.add_argument("--sweep-stops", default="15,20,30,40,50",
@@ -660,10 +730,17 @@ def main(argv: list[str] | None = None) -> int:
         txt = level_sweep_text(level_sweep(snap, out["triggers"], tgs, sls, LOT_SIZE,
                                            args.lots, cost_pts=cost_pts))
         print("\n" + txt); extra.append(txt)
-    if args.selection:
+    if args.selection or args.sel_rule:
         rows = selection_features(snap, out["triggers"], args.sel_target, args.sel_stop)
-        txt = selection_report(rows, args.sel_target, args.sel_stop, cost_pts=args.cost / LOT_SIZE)
-        print("\n" + txt); extra.append(txt)
+        cpts = args.cost / LOT_SIZE
+        if args.selection:
+            txt = selection_report(rows, args.sel_target, args.sel_stop, cost_pts=cpts)
+            print("\n" + txt); extra.append(txt)
+        if args.sel_rule:
+            txt = rule_report(rows, cost_pts=cpts, max_atr=args.rule_max_atr,
+                              min_tod=args.rule_min_tod, max_ext45=args.rule_max_ext45,
+                              max_conf=args.rule_max_conf)
+            print("\n" + txt); extra.append(txt)
     csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
                                       levels=args.levels, filtered=out["filtered"],
                                       conf_filtered=out["conf_filtered"],
