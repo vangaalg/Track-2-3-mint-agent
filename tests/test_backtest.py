@@ -163,3 +163,24 @@ def test_atr_floor_widens_tightest_stop():
     base_min = min(abs(t["entry"] - t["eng_stop"]) for t in base)
     atr_min = min(abs(t["entry"] - t["eng_stop"]) for t in atrd)
     assert atr_min > base_min
+
+
+def test_min_confidence_filters_to_htf_aligned():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1, min_confidence=3)
+    assert out["conf_filtered"] is not None
+    n_all = out["report"]["overall"]["n"]
+    n_conf = out["conf_filtered"]["overall"]["n"]
+    # the aligned subset is a subset of all triggers, and only keeps confidence>=3
+    assert n_conf <= n_all
+    kept = [t for t in out["triggers"] if (t.get("mtf_confidence") or 0) >= 3]
+    assert n_conf == len(kept)
+    # off by default
+    assert run_backtest(snap, lots=1)["conf_filtered"] is None
+
+
+def test_report_text_renders_confidence_block():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_backtest(snap, lots=1, min_confidence=2)
+    txt = report_text("NIFTY", out["report"], conf_filtered=out["conf_filtered"], min_confidence=2)
+    assert "CONFIDENCE-FILTERED" in txt and "≥2/5" in txt

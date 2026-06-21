@@ -226,6 +226,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       has NO OI/macro (Claude's edge), so it's conservative — Claude's value is live-only OR needs a
       chart-only backtest prompt (TBD from the diagnostics re-run). Tested: min-stop (target+stop driven),
       ATR floor widens stops, Claude error tracking. Suite green (182).
+- [x] **Backtest preflight + `--min-confidence` HTF-trend filter (measurement tool).** Two adds after the
+      first live 30-day NIFTY runs (engine net-negative both floors; 1.0×ATR −308 beats 1.5×ATR −554, so
+      wider stops just enlarge losses; longs PF 0.57–0.64 bleed in a down-trend tape). (1) `scoring.backtest.
+      _preflight(loader)` resolves + TCP-connects the data host (breeze/twelvedata) once with a 5s timeout
+      and exits with a VPN/DNS/firewall checklist instead of hanging for hours on getaddrinfo retries (the
+      user hit a 2-hour silent hang on a DNS drop). (2) `run_backtest(min_confidence=N)` keeps only
+      HTF-aligned triggers (existing `mtf_confidence` 0–5 = price vs the 45-EMA across 15m/30m/1h/daily/
+      weekly ≥ N) and adds a CONFIDENCE-FILTERED report alongside the unfiltered one; CLI `--min-confidence
+      N`. This MEASURES the trader's "trade with the higher-timeframe trend" hypothesis on real data — it
+      does NOT change the live engine (confidence still only sizes; promoting it to a live gate is a deferred
+      STRATEGY call, since the trader earlier confirmed HTF = context, not a veto). Tested: confidence
+      subset/off-by-default + report render; preflight fast-fail path. Suite green (185).
 - [x] **Customizable chart + full-context decision DB (the "save everything" store):**
       Chart now has **1d/1w** timeframes (frames already existed server-side) and a ⚙
       **indicator panel** — per-line colour + show/hide + width (BB/EMA/Supertrend/

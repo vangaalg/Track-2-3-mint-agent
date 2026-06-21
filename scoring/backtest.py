@@ -148,7 +148,8 @@ def clamp_levels(direction: str, entry: float, target, stop,
 
 def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
                  claude_filter=None, min_stop: float = 0.0,
-                 atr_mult: float = 0.0, atr_period: int = 14) -> dict:
+                 atr_mult: float = 0.0, atr_period: int = 14,
+                 min_confidence: int = 0) -> dict:
     """Backtest the trigger over a pre-built snapshot's feats/frames.
 
     Reuses the LIVE resolver (``journal_mtf_config``) so the backtest fires exactly the
@@ -156,8 +157,12 @@ def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
     level model (SL derived from R:R); ``min_stop`` floors the stop distance (points).
     If ``claude_filter`` is given, each trigger is tagged with Claude's take/skip verdict
     and a CLAUDE-FILTERED (ENTER-only) report is added alongside the unfiltered one.
+    ``min_confidence`` (1..5) keeps only HTF-aligned triggers — those whose 45-EMA MTF
+    confidence is ``>= min_confidence`` — and adds a CONFIDENCE-FILTERED report (engine
+    levels, no Claude). This MEASURES the "trade with the higher-timeframe trend" idea;
+    it does NOT change the live engine (which still uses confidence only to size).
 
-    Returns ``{"triggers": [...], "report": {...}, "filtered": {...}|None}``.
+    Returns ``{"triggers": [...], "report": {...}, "filtered": ..., "conf_filtered": ...}``.
     """
     from analysis.triggers import _resolve_intraday
     cfg = cfg or journal_mtf_config()
@@ -187,8 +192,12 @@ def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
             else:                                    # no usable levels -> engine's
                 taken.append(t)
         filtered = aggregate(taken, LOT_SIZE, lots)
+    conf_filtered = None
+    if min_confidence > 0:
+        aligned = [t for t in triggers if (t.get("mtf_confidence") or 0) >= min_confidence]
+        conf_filtered = aggregate(aligned, LOT_SIZE, lots)
     return {"triggers": triggers, "report": aggregate(triggers, LOT_SIZE, lots),
-            "filtered": filtered}
+            "filtered": filtered, "conf_filtered": conf_filtered}
 
 
 # --------------------------------------------------------------------------- #
@@ -263,7 +272,8 @@ def _fmt(s: dict) -> str:
 
 
 def report_text(symbol: str, report: dict, levels: str = "target",
-                filtered: dict | None = None) -> str:
+                filtered: dict | None = None, conf_filtered: dict | None = None,
+                min_confidence: int = 0) -> str:
     o = report["overall"]
     stop_desc = "target-first SL from R:R" if levels == "target" else "session-low stop"
     lines = [f"Backtest — {symbol}  (breakout-pullback, {stop_desc}, R:R≥1.5, "
@@ -279,6 +289,13 @@ def report_text(symbol: str, report: dict, levels: str = "target",
                      f"  {_fmt(filtered['overall'])}")
         lines.append(f"  long   {_fmt(filtered['by_direction']['long'])}")
         lines.append(f"  short  {_fmt(filtered['by_direction']['short'])}")
+    if conf_filtered is not None:
+        lines.append("")
+        lines.append(f"CONFIDENCE-FILTERED (HTF 45-EMA align ≥{min_confidence}/5; "
+                     f"took {conf_filtered['overall']['n']} of {o['n']}):  "
+                     f"{_fmt(conf_filtered['overall'])}")
+        lines.append(f"  long   {_fmt(conf_filtered['by_direction']['long'])}")
+        lines.append(f"  short  {_fmt(conf_filtered['by_direction']['short'])}")
     lines.append("")
     lines.append("Per day:")
     for d in report["by_day"]:
@@ -287,7 +304,8 @@ def report_text(symbol: str, report: dict, levels: str = "target",
 
 
 def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str,
-                  levels: str = "target", filtered: dict | None = None) -> tuple[str, str]:
+                  levels: str = "target", filtered: dict | None = None,
+                  conf_filtered: dict | None = None, min_confidence: int = 0) -> tuple[str, str]:
     from pathlib import Path
     Path(outdir).mkdir(parents=True, exist_ok=True)
     stamp = date.today().isoformat()
@@ -295,8 +313,9 @@ def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str,
     md_path = f"{outdir}/backtest_{symbol}_{stamp}.md"
     pd.DataFrame(triggers).to_csv(csv_path, index=False)
     Path(md_path).write_text(
-        "```\n" + report_text(symbol, report, levels=levels, filtered=filtered) + "\n```\n",
-        encoding="utf-8")
+        "```\n" + report_text(symbol, report, levels=levels, filtered=filtered,
+                              conf_filtered=conf_filtered, min_confidence=min_confidence)
+        + "\n```\n", encoding="utf-8")
     return csv_path, md_path
 
 
@@ -315,6 +334,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--atr-mult", type=float, default=1.0,
                     help="ATR-based stop floor: stop >= atr_mult × ATR (0=off; default 1.0)")
     ap.add_argument("--atr-period", type=int, default=14, help="ATR period (3-min bars)")
+    ap.add_argument("--min-confidence", type=int, default=0, metavar="N",
+                    help="keep only HTF-aligned triggers (45-EMA MTF confidence >= N, 1..5); "
+                         "adds a CONFIDENCE-FILTERED report. Measurement only — live unchanged.")
     ap.add_argument("--claude", action="store_true",
                     help="run Claude take/skip on each trigger (needs ANTHROPIC_API_KEY; slow)")
     ap.add_argument("--out", default="results", help="output dir for the CSV + markdown")
@@ -332,7 +354,8 @@ def main(argv: list[str] | None = None) -> int:
         cfilter = make_claude_filter(args.symbol, base, daily, verbose=True)
     out = run_backtest(snap, lots=args.lots, target_driven=(args.levels == "target"),
                        claude_filter=cfilter, min_stop=args.min_stop,
-                       atr_mult=args.atr_mult, atr_period=args.atr_period)
+                       atr_mult=args.atr_mult, atr_period=args.atr_period,
+                       min_confidence=args.min_confidence)
     if cfilter is not None:                              # diagnostics: errors vs genuine
         st = cfilter.state
         print(f"\nClaude verdicts: {st['enter']} enter / {st['stand_down']} stand_down / "
@@ -341,9 +364,12 @@ def main(argv: list[str] | None = None) -> int:
             print("First error was:\n" + (st["first_error"] or ""), file=sys.stderr)
             print("→ the stand_downs may be masked failures, not real Claude calls.",
                   file=sys.stderr)
-    print(report_text(args.symbol, out["report"], levels=args.levels, filtered=out["filtered"]))
+    print(report_text(args.symbol, out["report"], levels=args.levels, filtered=out["filtered"],
+                      conf_filtered=out["conf_filtered"], min_confidence=args.min_confidence))
     csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"], args.out,
-                                      levels=args.levels, filtered=out["filtered"])
+                                      levels=args.levels, filtered=out["filtered"],
+                                      conf_filtered=out["conf_filtered"],
+                                      min_confidence=args.min_confidence)
     print(f"\nWrote {csv_path}\n      {md_path}", file=sys.stderr)
     return 0
 
