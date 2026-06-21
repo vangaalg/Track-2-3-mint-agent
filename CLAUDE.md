@@ -362,7 +362,28 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       oi_summary series in the cockpit; once enough intraday OI/macro accrues, extend the `--selection` OOS
       analysis with OI/macro (non-price) features — the one untested lever.
 
+- [x] **Recorder deployed as an always-on Railway worker (`web/recorder_service.py` + `deploy/gitsync.py`).**
+      The trader can't keep a terminal open all session and a missed 15-min cycle is unbackfillable, so the
+      recorder runs 24×5 on Railway. ONE web service (uvicorn `web.recorder_service:app`) runs the recorder
+      loop + a git-sync loop in daemon threads. Daily Breeze token (expires, no refresh API) is handled by a
+      **token-update endpoint**: the trader POSTs today's token from their phone (`GET /` mobile form +
+      status, `POST /token` guarded by `RECORDER_TOKEN_SECRET`, `GET /healthz`) → sets `os.environ` →
+      `get_breeze_client` reads env fresh each fetch so it lands on the next cycle (no restart) + a connect
+      probe. Storage = **private git data repo** (Railway disks are ephemeral): `deploy/gitsync.clone_or_pull`
+      restores `data/` on boot, `commit_push` pushes every `SYNC_EVERY_MIN` (default 30) — bounds loss to ≤30
+      min. New `feeds.recorder.run(on_cycle=)` hook feeds live status. Artifacts: Procfile, .python-version,
+      runtime.txt, DEPLOY.md (Railway steps + env vars + daily phone routine + `git pull` the data locally).
+      Decided w/ trader: token-endpoint + git-repo storage; Railway first, then the two subagents. Tested
+      offline: gitsync round-trip vs a local bare repo, token endpoint (bad/good secret, env set, status/form
+      render) with background threads disabled via `RECORDER_NO_BG=1`. Suite green (204; 1 pre-existing
+      unrelated oi_store fail). RISKS: Breeze may block a cloud IP (verify the `connected` probe first);
+      daily token stays manual by design.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
+- [ ] **Two specialist subagents (`.claude/agents/`, advisory personas — confirmed, Railway-first done):**
+      `option-trader` (full option-strategy playbook → risk-defined profitable trades, grounded in the
+      journal method + the backtest cost/edge findings) and `it-architect` (designs/maintains the trading
+      infrastructure, reusing this repo's patterns). Short markdown agent defs; no app modules.
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
       exactly: **data → Claude's read → trader take/skip+target/stop → reveal+compare**.

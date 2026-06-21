@@ -191,8 +191,14 @@ def _build_live(instruments):
     return fetchers, spot_fns, macro_fn
 
 
-def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3) -> None:
-    """Market-hours loop: record each instrument on its cadence, macro each cycle."""
+def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3,
+        on_cycle=None) -> None:
+    """Market-hours loop: record each instrument on its cadence, macro each cycle.
+
+    ``on_cycle(info)`` is called after each recording cycle with
+    ``{ts, saved, macro, errors}`` (used by the deployed service to surface live status
+    + trigger persistence); default None keeps the plain loop.
+    """
     instruments = instruments or select_instruments()
     fetchers, spot_fns, macro_fn = _build_live(instruments)
     last = {}
@@ -215,6 +221,12 @@ def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3)
                 last[n] = now
             print(f"{now:%H:%M} saved={res['saved']} macro={res['macro']}"
                   + (f" ERR={errors}" if errors else ""), file=sys.stderr)
+            if on_cycle is not None:
+                try:
+                    on_cycle({"ts": now.isoformat(), "saved": res["saved"],
+                              "macro": res["macro"], "errors": errors})
+                except Exception:
+                    pass
         time.sleep(poll_s)
 
 
