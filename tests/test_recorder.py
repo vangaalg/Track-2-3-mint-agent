@@ -100,3 +100,17 @@ def test_select_instruments_subset_and_stocks():
     with_stocks = recorder.select_instruments(with_stocks=True)
     assert any(i["klass"] == "stock" for i in with_stocks)
     assert all(i.get("enabled", True) for i in recorder.select_instruments())  # SENSEX off by default
+
+
+def test_build_macro_gift_manual_overrides_auto(tmp_path):
+    from feeds import context_store
+    qf = lambda name: {"price": 1.0, "prev_close": 1.0}
+    man = tmp_path / "man"
+    context_store.save_context(gift_manual="24100", root=man)
+    m = recorder.build_macro(qf, gift_fetch=lambda: {"price": 99.0, "change_pct": 1.0},
+                             context_root=man)
+    assert m["gift_nifty"]["price"] == 24100.0           # manual wins over auto
+    # a root with no manual override → the auto fetch is used
+    m2 = recorder.build_macro(qf, gift_fetch=lambda: {"price": 99.0, "change_pct": 1.0},
+                              context_root=tmp_path / "auto")
+    assert m2["gift_nifty"]["price"] == 99.0

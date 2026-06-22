@@ -82,14 +82,32 @@ def healthz():
     return JSONResponse(STATUS)
 
 
-@app.post("/token")
-def set_token(token: str = Form(...), secret: str = Form(...)):
-    """Update the daily Breeze session token (guarded by RECORDER_TOKEN_SECRET)."""
+def _check(secret: str) -> None:
     want = os.environ.get("RECORDER_TOKEN_SECRET")
     if not want or secret != want:
         raise HTTPException(status_code=403, detail="bad secret")
+
+
+@app.post("/token")
+def set_token(token: str = Form(...), secret: str = Form(...)):
+    """Update the daily Breeze session token (guarded by RECORDER_TOKEN_SECRET)."""
+    _check(secret)
     os.environ["BREEZE_SESSION_TOKEN"] = token.strip()
     return {"ok": True, "breeze": _probe_breeze()}
+
+
+@app.post("/context")
+def set_context(secret: str = Form(...), gift: str = Form(""), events: str = Form("")):
+    """Save the trader's daily overlay: manual GIFT Nifty + the overnight-events note (the text
+    Claude produced from a screenshot). Manual GIFT is the source of truth over the auto-fetch."""
+    _check(secret)
+    from feeds import context_store
+    ctx = context_store.save_context(gift_manual=(gift.strip() or None),
+                                     events_note=(events if events else None))
+    STATUS["context"] = {"gift_manual": ctx.get("gift_manual"),
+                         "events_note": (ctx.get("events_note") or "")[:200],
+                         "set_at": ctx.get("set_at")}
+    return {"ok": True, "context": STATUS["context"]}
 
 
 def _probe_breeze() -> str:
@@ -106,15 +124,26 @@ def _probe_breeze() -> str:
 def home():
     s = STATUS
     err = "<br>".join(s["errors"]) if s["errors"] else "none"
+    ctx = s.get("context") or {}
+    inp = "width:100%;padding:8px"
     return f"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Recorder</title>
 <body style="font-family:system-ui;max-width:480px;margin:24px auto;padding:0 16px">
 <h2>OI/macro recorder</h2>
 <form method=post action=/token>
-  <p><label>Breeze session token<br><input name=token style="width:100%;padding:8px"
+  <p><label>Breeze session token<br><input name=token style="{inp}"
      placeholder="paste today's token"></label></p>
-  <p><label>Secret<br><input name=secret type=password style="width:100%;padding:8px"></label></p>
+  <p><label>Secret<br><input name=secret type=password style="{inp}"></label></p>
   <button style="padding:10px 16px">Update token</button>
+</form>
+<h3>Morning overlay (GIFT + events)</h3>
+<form method=post action=/context>
+  <p><label>GIFT Nifty (manual)<br><input name=gift style="{inp}"
+     placeholder="e.g. 24050 (overrides auto)"></label></p>
+  <p><label>Overnight events note (paste Claude's brief)<br>
+     <textarea name=events rows=4 style="{inp}"></textarea></label></p>
+  <p><label>Secret<br><input name=secret type=password style="{inp}"></label></p>
+  <button style="padding:10px 16px">Save overlay</button>
 </form>
 <hr>
 <pre>started:    {s['started']}
@@ -122,5 +151,7 @@ last cycle: {s['last_cycle']}
 saved:      {s['saved']}
 macro:      {s['macro']}
 last push:  {s['last_push']}
+gift(man):  {ctx.get('gift_manual')}
+events:     {(ctx.get('events_note') or '')[:120]}
 errors:     {err}</pre>
 </body>"""

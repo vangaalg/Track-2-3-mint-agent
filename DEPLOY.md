@@ -37,6 +37,11 @@ and runs the recorder + a git-sync loop in background threads. Data persists by 
 2. Open the Railway service URL → paste the token + your `RECORDER_TOKEN_SECRET` → **Update token**.
 3. The page shows `breeze: connected` if the token is valid. The recorder picks it up on its
    next 15-min cycle — no restart.
+4. **(Optional) Morning overlay** — on the same page, the *GIFT + events* form: enter the manual
+   **GIFT Nifty** level (overrides the best-effort investing.com auto-fetch — it's the source of
+   truth when investing.com blocks the server) and paste the **overnight-events note** (the
+   geopolitical brief Claude gave you from a screenshot). Saved via `POST /context` (same secret);
+   GIFT lands in `data/macro/macro.parquet` as `gift_nifty_*`, the note in `data/context.json`.
 
 ## 4. Verify it's working
 - Service URL status page shows `saved: ['NIFTY', 'BANKNIFTY']`, `macro: true`, a recent

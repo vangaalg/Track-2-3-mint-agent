@@ -389,6 +389,24 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       cost/reliability aware; tools incl. Edit/Write). Confirmed w/ trader: advisory personas (not app
       modules), built right after the Railway deploy. No code/tests (agent defs).
 
+- [x] **Two-read strategy spec + GIFT Nifty / overnight-events overlay.** The trader corrected the
+      framing: the 3-min trigger is only ATTENTION; the edge is a two-part read — **DIRECTION** (OI walls
+      + distance + PCR + max-pain + macro: USD-INR/Dow/Nasdaq/crude/**GIFT**) × **SPEED** (the option-trader
+      agent's upgrades: ATM-straddle expected-move vs distance, IV-vs-realized vol = the buy/write coin,
+      wall-OI build-up-vs-unwind = defended/breaking, VIX/expiry/time-of-day) → pick **strike + buy/write +
+      timing**. Captured as `analysis/STRATEGY_DIRECTION_SPEED.md` (the spec the option-trader logic + the
+      `--selection` OOS rig build toward; no edge claimed). Added the two missing inputs: `feeds/gift.py`
+      (best-effort GIFT Nifty from investing.com — pure `parse_gift` + injectable `fetch_gift`, graceful
+      None on Cloudflare block) and `feeds/context_store.py` (daily overlay → data/context.json:
+      manual GIFT + the overnight-events note = the brief Claude gives from a screenshot, the trader's
+      actual method — NOT a news scraper). `feeds.recorder.build_macro` merges GIFT (manual override wins
+      over auto) into each macro cycle → `gift_nifty_*` columns; `web/recorder_service` gains a GIFT+events
+      form + `POST /context` (same secret) + status. Decided w/ trader: both manual + best-effort auto,
+      GIFT from investing.com, events via the existing screenshot→Claude path. data/*.json gitignored.
+      Tested: gift parser/fetch, context round-trip, /context endpoint, build_macro override-wins. Suite
+      green (211; 1 pre-existing unrelated oi_store fail). NOTE: per-strike IV (BS-inverse) + realized-vol
+      calc are still TODO for the speed model — deferrable via the ATM-straddle proxy; build when data accrues.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

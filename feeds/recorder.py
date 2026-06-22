@@ -187,8 +187,29 @@ def _build_live(instruments):
                                                     exchange=inst["exchange"])
         spot_fns[inst["name"]] = make_spot_fn("BSE" if inst["exchange"] == "BFO" else "NSE")
     qf = make_quote_fn()
-    macro_fn = lambda: fetch_macro(SCORECARD_SYMBOLS, qf)
+    macro_fn = lambda: build_macro(qf)
     return fetchers, spot_fns, macro_fn
+
+
+def build_macro(quote_fn, gift_fetch=None, context_root=None) -> dict:
+    """Assemble one macro snapshot: the TD/Breeze scorecard + GIFT Nifty.
+
+    GIFT = the trader's MANUAL value if set (source of truth), else the best-effort investing.com
+    auto-fetch. Returns the macro dict (``macro_store`` flattens it → gift_nifty_* columns).
+    """
+    from feeds.macro import fetch_macro
+    from feeds.td_macro import SCORECARD_SYMBOLS
+    from feeds.gift import fetch_gift
+    from feeds import context_store
+    macro = fetch_macro(SCORECARD_SYMBOLS, quote_fn) or {}
+    gm = context_store.load_context(context_root).get("gift_manual")
+    if gm is not None:
+        macro["gift_nifty"] = {"price": float(gm), "change_pct": None}
+    else:
+        g = (gift_fetch or fetch_gift)()
+        if g:
+            macro["gift_nifty"] = g
+    return macro
 
 
 def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3,
