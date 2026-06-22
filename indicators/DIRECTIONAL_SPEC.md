@@ -47,6 +47,15 @@ momentum vs mean-reversion" is itself an empirical question):
 | `three_min` | sign of the journal trio (ema5_trigger + bb_vrl + 45-EMA pullback) — net-sign OR, so EMA-5 state alone fires; **over-triggers, experimental only** | — |
 | `breakout_pullback` | **the trader's REAL 3-min entry (default):** a **breakout** is the bar whose **HIGH crosses the band** (`high > bb_upper`, close may be inside) while above the 45-EMA and at/above the 5-EMA. The LONG entry is the **FIRST bar that CLOSES below the 5-EMA** after that breakout (the pullback to the fast EMA) — e.g. Nifty 14:18, Bank Nifty 14:39. **One entry per setup; a fresh breakout re-arms** (Bank Nifty also fires 14:21 from an earlier breakout). A close through the 45-EMA cancels. Mirror for short (low crosses the lower band, below the 45-EMA; fire on the first close ABOVE the 5-EMA). **Stop = the session low so far** (day high for shorts), placed in `analysis.trade1.trade1_levels`. Use `confirm_closes=0`. | — |
 | `bb_reversal` | **SEPARATE squeeze-fade play (not the default):** a squeeze-gated Bollinger breach→**revert** whose close agrees with the EMA-5 side arms a direction, held while the EMA-5 holds, cleared on a flip. Fades the move; needs a prior coil. Pair with `confirm_closes=2`. | — |
+| `cpr_supertrend` | **CPR + Supertrend trend-rider** (a separate mechanical strategy, `cpr_st_trigger_config`): on a **narrow-CPR** day (`cpr_width` low quartile across recent sessions) with price above `cpr_tc` (bull) and Supertrend up, ride the trend — enter on the first **5-EMA pullback** that closes back across the fast EMA while above the 45-EMA. ST flip / 45-EMA break cancels; re-arms per pullback. Mirror for short. | — |
+| `orb_vwap` | **Opening-Range Breakout + VWAP** (`orb_trigger_config`): a 3-min close **above the first-15-min high** while **above VWAP and the 45-EMA** → long (mirror short). One shot per side per day; abstains until the opening range closes (the `or_high`/`or_low` columns are NaN before then → no lookahead). | — |
+| `iron_condor_regime` | **Expiry-day RANGE gate** for the non-directional iron condor (`iron_condor_config`): emits `+1` (gate OPEN) on a Bollinger **squeeze**, price **inside the CPR**, an **expiry day**, **after 11:00 IST**. Read directly by `analysis.condor` — it does NOT flow through the long/short resolver. | — |
+
+The last three are the additional mechanical option strategies shown as their own
+cockpit tabs beside the journal 3-min trigger. Each is `trigger_only` (the 3-min read
+alone; HTF is display context). OI is the trader's **manual** cross-check on these
+three (no auto OI-boost). Validate each on `scoring.backtest --strategy {cpr_st,orb,
+condor}` (OOS, after costs) before trusting it live.
 
 **Confirmation gate.** `confirm_2_close(vote, df, n_closes=2, vol_window=20)`
 wraps any vote with the journal's confirmation rule — keep a vote only where the

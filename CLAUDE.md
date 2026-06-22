@@ -407,6 +407,34 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       green (211; 1 pre-existing unrelated oi_store fail). NOTE: per-strike IV (BS-inverse) + realized-vol
       calc are still TODO for the speed model — deferrable via the ATM-straddle proxy; build when data accrues.
 
+- [x] **Multi-strategy cockpit — 3 NEW mechanical option strategies as tabs (confirmed w/ trader).** The
+      cockpit was single-strategy (only the 3-min breakout-pullback / Trade-1, which alone auto-feeds OI +
+      macro). Added THREE more mechanical chart triggers (entry/SL/target alerts the trader cross-checks
+      with OI **manually** — no auto OI-boost on them), chosen by the option-trader agent as popular +
+      risk-defined (replacing the planned naked strangle / negative-EV OTM-buy): **(1) CPR + Supertrend
+      trend-rider** (`vote_cpr_supertrend` — narrow-CPR day + ST-aligned 5-EMA pullback), **(2) Opening-Range
+      Breakout + VWAP** (`vote_orb_vwap` — first-15-min range break, one shot/side/day, VWAP+45-EMA filter),
+      **(3) Expiry Iron Condor/Fly** (NON-directional, defined-risk; `vote_iron_condor_regime` squeeze+inside-CPR+
+      expiry+after-11:00 gate → `analysis.condor` builds 4 legs/credit/breakevens/max-loss, propose-only).
+      New engine indicators (no-lookahead, session-anchored): `vwap`, `opening_range` (NaN until the window
+      closes), `cpr_width`. Each strategy = a new voter + `*_trigger_config`/`*_mtf_config` (all `trigger_only`)
+      mirroring `journal_*`, so they inherit `trade1_levels`/`list_triggers`/`run_backtest` free. `analysis.trade1.
+      build_directional_proposal` extracted as the shared core (Trade-1 unchanged); `analysis/cpr_st.py`,
+      `analysis/orb.py`, `analysis/condor.py`; `feeds.snapshot.chart_read_for` (per-strategy read off one shared
+      snapshot). `web.server`: `STRATEGIES` registry → 4 proposals in `_refresh` (`_state["props"]`),
+      `/api/snapshot` adds a `proposals` map + `strategies` list (singular `proposal`=trade1 kept for
+      back-compat), `/api/triggers?strategy=<id>`. Tabbed frontend (`index.html`/`app.js`: 3-min | CPR-ST | ORB
+      | Expiry over the shared chart; condor pane renders legs/credit/breakevens; Claude/decision stays Trade-1
+      only). `scoring.backtest --strategy {trade1,cpr_st,orb,condor}` (+ `run_condor_backtest`). GUARDRAIL: each
+      new stream is display/replay-only until it clears the `--selection` OOS gate after ₹150 costs. Tested in
+      tests/test_new_strategies.py (voters/proposers/condor) + extended engine/web/backtest tests; suite green
+      (227 pass; 1 pre-existing unrelated oi_store fail). NOTE: condor backtest is a REGIME-selection proxy
+      (no historical intraday option prices — ATR-scaled expected move + parametric credit); the LIVE proposal
+      prices real legs off the chain. Levels held to the shared structural model across strategies on purpose
+      (the backtest measures TRIGGER selection on equal footing). Per-strategy ST-"flat" folded into squeeze+
+      inside-CPR. PENDING: Trade 2/3 (strangle/expiry-OTM) deliberately NOT built; backtest-validate the 3 new
+      streams live before trusting them.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

@@ -21,7 +21,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from loaders import get_loader
-from indicators.directional import journal_mtf_config
+from indicators.directional import (
+    journal_mtf_config, cpr_st_mtf_config, orb_mtf_config)
 from feeds.snapshot import build_snapshot, build_snapshot_at
 from feeds.breeze_oi import make_chain_fetcher
 from feeds.oi import chain_table, summarise_chain
@@ -29,6 +30,9 @@ from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store
 from analysis.trade1 import propose_trade1, apply_strike, apply_oi_boost, LOT_SIZE
+from analysis.cpr_st import propose_cpr_st
+from analysis.orb import propose_orb
+from analysis.condor import propose_condor, list_condor_triggers
 from analysis.strike import select_strike
 from analysis.triggers import replay_today, list_triggers, simulate_intraday
 from analysis.proposal import Recommendation
@@ -51,6 +55,16 @@ DEFAULT_SIZE = 75
 # THE active resolver: the trader's journal 3-min strategy (trio + 2-close confirm,
 # trigger-only — HTF is trend context, not a gate). Live cockpit + training both use it.
 RESOLVER_CFG = journal_mtf_config()
+# Multi-strategy registry — the 4 alert streams on the cockpit. Trade-1 (the 3-min) is
+# OI-automated; the other three are mechanical chart triggers the trader cross-checks
+# with OI MANUALLY (no auto OI-boost). The condor is non-directional / propose-only.
+STRATEGIES = [
+    {"id": "trade1", "label": "3-min", "cfg": RESOLVER_CFG, "kind": "directional"},
+    {"id": "cpr_st", "label": "CPR-ST", "cfg": cpr_st_mtf_config(), "kind": "directional"},
+    {"id": "orb", "label": "ORB", "cfg": orb_mtf_config(), "kind": "directional"},
+    {"id": "condor", "label": "Expiry", "cfg": None, "kind": "nondirectional"},
+]
+_STRAT = {s["id"]: s for s in STRATEGIES}
 JOURNAL_DB = store.DB_PATH   # full-context SQLite store (overridden in tests)
 _STATIC = Path(__file__).parent / "static"
 
@@ -134,13 +148,24 @@ def _refresh(symbol: str, size: int) -> None:
         if snap.oi is None and _state.get("chain_err"):
             snap.notes.append(f"oi: {_state['chain_err']}")
         _state["snap"] = snap
-        prop = propose_trade1(snap, size)
-        # LIVE strike agent: pick the ITM vehicle off the live chain (least theta).
-        if chain is not None and not chain.empty and prop.direction in ("long", "short"):
-            pick = select_strike(chain_table(chain, snap.spot, window=VIZ_POINTS),
-                                 snap.spot, prop.direction)
-            apply_strike(prop, pick)
-        _state["prop"] = prop
+        table = (chain_table(chain, snap.spot, window=VIZ_POINTS)
+                 if chain is not None and not chain.empty else None)
+
+        def _strike(p):
+            """LIVE strike agent: pick the ITM vehicle off the live chain (least theta)."""
+            if table is not None and p.direction in ("long", "short"):
+                apply_strike(p, select_strike(table, snap.spot, p.direction))
+            return p
+
+        prop = _strike(propose_trade1(snap, size))     # Trade-1: OI-automated (boost in _run_read)
+        props = {
+            "trade1": prop,
+            "cpr_st": _strike(propose_cpr_st(snap, size_lots=size)),   # OI manual: strike only
+            "orb": _strike(propose_orb(snap, size_lots=size)),
+            "condor": propose_condor(snap, table, expiry_weekday=EXPIRY_WEEKDAY),
+        }
+        _state["prop"] = prop          # back-compat: analyse/decision/chat act on Trade-1
+        _state["props"] = props
         _state["snap_at"] = now
         # log the chain snapshot (the OI flywheel) once per fresh OI bucket
         if LOG_OI and chain is not None and not chain.empty \
@@ -154,6 +179,7 @@ def _refresh(symbol: str, size: int) -> None:
 
 def _payload(symbol: str) -> dict:
     snap, prop, chain = _state["snap"], _state["prop"], _state["chain"]
+    props = _state.get("props") or {"trade1": prop}
     rows = []
     if chain is not None and not chain.empty:
         t = chain_table(chain, snap.spot, window=VIZ_POINTS)
@@ -166,7 +192,11 @@ def _payload(symbol: str) -> dict:
                   "mtf_confidence_breakdown": read.get("mtf_confidence_breakdown", {}),
                   "numbers": read.get("numbers", {}), "levels": read.get("levels", {})},
         "oi": snap.oi, "macro": snap.macro, "notes": snap.notes,
-        "chain": rows, "proposal": prop.as_dict(),
+        "chain": rows,
+        "proposal": prop.as_dict(),                                  # back-compat (Trade-1)
+        "proposals": {sid: p.as_dict() for sid, p in props.items()},  # all 4 strategy streams
+        "strategies": [{"id": s["id"], "label": s["label"], "kind": s["kind"]}
+                       for s in STRATEGIES],
     }
 
 
@@ -358,12 +388,32 @@ def record():
                         "outcome": r.get("outcome")} for r in recent]}
 
 
+def _condor_today(snap, size: int) -> dict:
+    """Today's expiry-day condor setups in a replay_today-compatible shape."""
+    trigs = list_condor_triggers(snap.feats.get("3min"), snap.frames.get("3min"),
+                                 expiry_weekday=EXPIRY_WEEKDAY, size_lots=size, lot_size=LOT_SIZE)
+    today = str(snap.frames["3min"].index[-1].date()) if "3min" in snap.frames else None
+    trigs = [t for t in trigs if t["date"] == today]
+    wins = sum(1 for t in trigs if t["outcome"] == "win")
+    losses = sum(1 for t in trigs if t["outcome"] == "loss")
+    net = round(sum(t["points"] for t in trigs), 2)
+    return {"session": today, "triggers": trigs, "last": trigs[-1] if trigs else None,
+            "summary": {"n": len(trigs), "wins": wins, "losses": losses, "open": 0,
+                        "net_points": net, "net_rupees": round(net * LOT_SIZE * size, 0),
+                        "hit_rate": round(wins / (wins + losses), 2) if (wins + losses) else None}}
+
+
 @app.get("/api/triggers")
-def triggers(size: int = DEFAULT_SIZE):
+def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1"):
     if _state["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
     snap = _state["snap"]
-    return replay_today(snap.feats, snap.frames, cfg=RESOLVER_CFG, size_lots=size)
+    meta = _STRAT.get(strategy)
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
+    if meta["kind"] == "nondirectional":
+        return _condor_today(snap, size)
+    return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size)
 
 
 @app.post("/api/analyse")

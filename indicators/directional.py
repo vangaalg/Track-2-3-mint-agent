@@ -259,6 +259,138 @@ def vote_breakout_pullback(df: pd.DataFrame) -> pd.Series:
     return pd.Series(out, index=df.index, dtype="int8").rename("vote_breakout_pullback")
 
 
+# --------------------------------------------------------------------------- #
+# New mechanical option strategies (each a single-TF trigger voter)
+# --------------------------------------------------------------------------- #
+def _narrow_cpr(df: pd.DataFrame, window_days: int = 20, pct: float = 0.4) -> pd.Series:
+    """Boolean per-bar: is today's CPR width in the NARROW (low) part of recent days?
+
+    ``cpr_width`` is constant within a session, so the classification is done on the
+    per-DAY series (today's width vs the trailing ``window_days`` distribution,
+    inclusive — today's CPR is known at the open, no lookahead) and broadcast back
+    onto every bar. Below the ``pct`` quantile ⇒ narrow ⇒ a trend/expansion day."""
+    if "cpr_width" not in df.columns:
+        return pd.Series(False, index=df.index)
+    sess = df.index.normalize()
+    daily = df["cpr_width"].groupby(sess).first()
+    thresh = daily.rolling(window_days, min_periods=3).quantile(pct)
+    narrow = (daily <= thresh).fillna(False)
+    return narrow.reindex(sess).set_axis(df.index).astype(bool)
+
+
+def vote_cpr_supertrend(
+    df: pd.DataFrame, window_days: int = 20, narrow_pct: float = 0.4
+) -> pd.Series:
+    """CPR + Supertrend trend-rider: a Supertrend-aligned 5-EMA pullback on a narrow-CPR
+    (trend-day) tape.
+
+    Pre-gate (bull): narrow CPR width + price above ``cpr_tc`` + Supertrend up
+    (``st_dir==+1``) + above the 45-EMA → a qualifying uptrend. The entry is the
+    first bar that pulls back below the 5-EMA and then CLOSES back above it (mirror for
+    a short: narrow CPR + below ``cpr_bc`` + Supertrend down + below the 45-EMA → first
+    pull-up close back below the 5-EMA). A Supertrend flip or a close through the 45-EMA
+    cancels. Re-arms on each fresh pullback while the trend holds, emitting an isolated
+    +1/-1 per entry so flip-detection yields one trigger per pullback.
+    Needs ``cpr_width``, ``cpr_tc``, ``cpr_bc``, ``st_dir``, ``ema_5``, ``ema_45``."""
+    narrow = _narrow_cpr(df, window_days, narrow_pct).to_numpy()
+    close = df["close"].to_numpy(dtype=float)
+    ema5 = df["ema_5"].to_numpy(dtype=float)
+    ema45 = df["ema_45"].to_numpy(dtype=float)
+    st = df["st_dir"].to_numpy(dtype=float)
+    ctc = df["cpr_tc"].to_numpy(dtype=float)
+    cbc = df["cpr_bc"].to_numpy(dtype=float)
+
+    out = np.zeros(len(df), dtype="int8")
+    FLAT, UP_TREND, UP_PULL, DN_TREND, DN_PULL = 0, 1, 2, -1, -2
+    state = FLAT
+    for i in range(len(df)):
+        if np.isnan(ema5[i]) or np.isnan(ema45[i]) or np.isnan(ctc[i]):
+            state = FLAT
+            continue
+        up_ok = narrow[i] and st[i] > 0 and close[i] > ctc[i] and close[i] > ema45[i]
+        dn_ok = narrow[i] and st[i] < 0 and close[i] < cbc[i] and close[i] < ema45[i]
+        if state in (UP_TREND, UP_PULL):
+            if st[i] < 0 or close[i] < ema45[i]:
+                state = dn_ok and DN_TREND or FLAT
+            elif state == UP_TREND and close[i] < ema5[i]:
+                state = UP_PULL                       # pulled back to the fast EMA
+            elif state == UP_PULL and close[i] > ema5[i]:
+                out[i] = 1                            # reclaimed the 5-EMA → enter long
+                state = UP_TREND
+        elif state in (DN_TREND, DN_PULL):
+            if st[i] > 0 or close[i] > ema45[i]:
+                state = up_ok and UP_TREND or FLAT
+            elif state == DN_TREND and close[i] > ema5[i]:
+                state = DN_PULL
+            elif state == DN_PULL and close[i] < ema5[i]:
+                out[i] = -1                           # reclaimed the 5-EMA → enter short
+                state = DN_TREND
+        else:  # FLAT
+            state = UP_TREND if up_ok else (DN_TREND if dn_ok else FLAT)
+    return pd.Series(out, index=df.index, dtype="int8").rename("vote_cpr_supertrend")
+
+
+def vote_orb_vwap(df: pd.DataFrame) -> pd.Series:
+    """Opening-Range Breakout filtered by VWAP — one shot per side per day.
+
+    Long = a close ABOVE the opening-range high while ABOVE VWAP and ABOVE the 45-EMA
+    (mirror short: below the OR low, below VWAP, below the 45-EMA). The opening-range
+    columns are NaN until the range window has closed, so the voter naturally abstains
+    in the opening minutes (no-lookahead). Fires at most ONCE per direction per session
+    (a fresh session re-arms), emitting an isolated +1/-1 so flip-detection counts it
+    once. Needs ``or_high``, ``or_low``, ``vwap``, ``ema_45``."""
+    close = df["close"].to_numpy(dtype=float)
+    orh = df["or_high"].to_numpy(dtype=float)
+    orl = df["or_low"].to_numpy(dtype=float)
+    vw = df["vwap"].to_numpy(dtype=float)
+    ema45 = df["ema_45"].to_numpy(dtype=float)
+    sess = df.index.normalize()
+    day = sess.to_numpy()
+
+    out = np.zeros(len(df), dtype="int8")
+    cur_day = None
+    fired_long = fired_short = False
+    for i in range(len(df)):
+        if day[i] != cur_day:
+            cur_day, fired_long, fired_short = day[i], False, False
+        if np.isnan(vw[i]) or np.isnan(ema45[i]):
+            continue
+        if not fired_long and not np.isnan(orh[i]) \
+                and close[i] > orh[i] and close[i] > vw[i] and close[i] > ema45[i]:
+            out[i] = 1
+            fired_long = True
+        elif not fired_short and not np.isnan(orl[i]) \
+                and close[i] < orl[i] and close[i] < vw[i] and close[i] < ema45[i]:
+            out[i] = -1
+            fired_short = True
+    return pd.Series(out, index=df.index, dtype="int8").rename("vote_orb_vwap")
+
+
+def vote_iron_condor_regime(
+    df: pd.DataFrame, expiry_weekday: int = 1, after_hour: int = 11,
+    squeeze_window: int = 50, squeeze_pct: float = 0.4,
+) -> pd.Series:
+    """Expiry-day RANGE gate for the iron condor (NON-directional flag).
+
+    Emits ``+1`` (gate OPEN) only on bars where ALL hold: a Bollinger **squeeze**
+    (``bb_width`` in its low ``squeeze_pct`` quantile of the trailing window), price
+    **inside the central pivot range** (``cpr_bc ≤ close ≤ cpr_tc``), it is an
+    **expiry day** (``weekday == expiry_weekday``, Tuesday=1 for NIFTY) and the time is
+    **at/after ``after_hour``:00 IST** (the morning move is done, theta accelerates).
+    Everything else ⇒ 0. The non-directional condor reads this gate directly (it does
+    NOT flow through the long/short flip resolver). The squeeze + inside-CPR pair stands
+    in for "Supertrend flat" — a true ST-flat state doesn't exist. Needs ``bb_width``,
+    ``cpr_bc``, ``cpr_tc``."""
+    if "bb_width" not in df.columns or "cpr_bc" not in df.columns:
+        return pd.Series(0, index=df.index, dtype="int8")
+    width = df["bb_width"]
+    sq_thresh = width.rolling(squeeze_window, min_periods=5).quantile(squeeze_pct)
+    squeezed = width <= sq_thresh
+    inside = (df["close"] >= df["cpr_bc"]) & (df["close"] <= df["cpr_tc"])
+    is_expiry = pd.Series(df.index.weekday == expiry_weekday, index=df.index)
+    after = pd.Series(df.index.hour >= after_hour, index=df.index)
+    gate = (squeezed & inside & is_expiry & after).fillna(False)
+    return gate.astype("int8").rename("vote_iron_condor_regime")
 
 
 
@@ -312,6 +444,9 @@ VOTERS = {
     "three_min": vote_three_min,
     "bb_reversal": vote_bb_reversal,
     "breakout_pullback": vote_breakout_pullback,
+    "cpr_supertrend": vote_cpr_supertrend,
+    "orb_vwap": vote_orb_vwap,
+    "iron_condor_regime": vote_iron_condor_regime,
 }
 
 
@@ -667,6 +802,44 @@ def journal_mtf_config() -> MTFDirectionalConfig:
         base=journal_trigger_config(), trigger_tf="3min",
         bias_tfs=["15min", "60min", "1day", "1week"],
         mtf_method="trigger_only", bias_quorum=2, veto=True)
+
+
+# --------------------------------------------------------------------------- #
+# Presets: the additional mechanical option strategies (each TRIGGER-ONLY on 3-min;
+# higher TFs stay trend context only, same as the journal strategy). These plug into
+# list_triggers / replay_today / run_backtest exactly like journal_mtf_config.
+# --------------------------------------------------------------------------- #
+def cpr_st_trigger_config() -> DirectionalConfig:
+    """CPR + Supertrend trend-rider — the single 3-min voter (``cpr_supertrend``)."""
+    return DirectionalConfig(
+        method="confluence", voters=["cpr_supertrend"], min_agree=1, confirm_closes=0)
+
+
+def cpr_st_mtf_config() -> MTFDirectionalConfig:
+    return MTFDirectionalConfig(
+        base=cpr_st_trigger_config(), trigger_tf="3min",
+        bias_tfs=["15min", "60min", "1day", "1week"],
+        mtf_method="trigger_only", bias_quorum=2, veto=True)
+
+
+def orb_trigger_config() -> DirectionalConfig:
+    """Opening-Range Breakout + VWAP — the single 3-min voter (``orb_vwap``)."""
+    return DirectionalConfig(
+        method="confluence", voters=["orb_vwap"], min_agree=1, confirm_closes=0)
+
+
+def orb_mtf_config() -> MTFDirectionalConfig:
+    return MTFDirectionalConfig(
+        base=orb_trigger_config(), trigger_tf="3min",
+        bias_tfs=["15min", "60min", "1day", "1week"],
+        mtf_method="trigger_only", bias_quorum=2, veto=True)
+
+
+def iron_condor_config() -> DirectionalConfig:
+    """Expiry-day range gate for the iron condor (``iron_condor_regime``). Used by the
+    NON-directional condor proposer directly, not through the long/short resolver."""
+    return DirectionalConfig(
+        method="confluence", voters=["iron_condor_regime"], min_agree=1, confirm_closes=0)
 
 
 # --------------------------------------------------------------------------- #

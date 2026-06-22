@@ -4,22 +4,46 @@ const $ = (id) => document.getElementById(id);
 const n = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? "—" : Number(x).toFixed(d);
 const lakh = (x) => (x === null || x === undefined) ? "—" : (x / 1e5).toFixed(2);
 
-let lastBar = null, analysing = false;
+let lastBar = null, analysing = false, lastPayload = null, currentStrat = "trade1";
+const STRAT_LABEL = { trade1: "3-min", cpr_st: "CPR-ST", orb: "ORB", condor: "Expiry condor" };
 
 async function poll() {
   try {
     const r = await fetch(`/api/snapshot?symbol=${SYMBOL}&size=${SIZE}`);
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const d = await r.json();
+    lastPayload = d;
     $("dot").className = "dot live";
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
-    renderChart(d); renderOI(d); renderProposal(d.proposal);
-    fetchChart(); fetchTriggers(); fetchRecord();
-    // auto-analyse once per new ENTER bar
+    renderChart(d); renderOI(d); renderStrategy();
+    fetchChart(); fetchRecord();
+    // auto-analyse once per new ENTER bar (Trade-1 only — the OI-automated stream)
     if (d.auto_trigger && d.ts !== lastBar && !analysing) { lastBar = d.ts; analyse(); }
   } catch (e) {
     $("dot").className = "dot err"; $("meta").textContent = "error: " + e.message;
   }
+}
+
+// Render whichever strategy tab is active off the last snapshot payload.
+function renderStrategy() {
+  const d = lastPayload;
+  if (!d || !d.proposals) return;
+  const isT1 = currentStrat === "trade1";
+  // Claude/decision controls act on the OI-automated Trade-1 stream only.
+  $("claudeBlock").style.display = isT1 ? "" : "none";
+  $("stratNote").hidden = isT1;
+  if (!isT1) $("stratNote").textContent =
+    "Mechanical chart trigger — cross-check OI manually. Propose-only (no auto Claude/execute).";
+  $("trigTitle").textContent = `📛 ${STRAT_LABEL[currentStrat]} — today's triggers`;
+  renderProposal(d.proposals[currentStrat] || d.proposal);
+  fetchTriggers(currentStrat);
+}
+
+function setStrat(strat) {
+  currentStrat = strat;
+  document.querySelectorAll("#stratTabs button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.strat === strat));
+  renderStrategy();
 }
 
 function renderChart(d) {
@@ -84,6 +108,8 @@ function renderOI(d) {
 
 function renderProposal(p) {
   const box = $("propBox"), dec = $("decision");
+  if (!p) { box.className = "propbox"; box.textContent = "—"; return; }
+  if (p.trade_type === "trade_condor") return renderCondor(p);
   if (p.recommendation === "enter") {
     box.className = "propbox enter";
     const conv = p.final_confidence != null ? p.final_confidence : p.mtf_confidence;
@@ -101,6 +127,24 @@ function renderProposal(p) {
   }
 }
 
+// Non-directional defined-risk iron condor (propose-only — manual multi-leg entry).
+function renderCondor(p) {
+  const box = $("propBox");
+  if (p.recommendation === "enter") {
+    const L = (p.context && p.context.legs) || {};
+    box.className = "propbox enter";
+    box.innerHTML = `IRON ${L.mode === "fly" ? "FLY" : "CONDOR"} · <b>net credit ${n(p.entry)}</b>`
+      + `<br>Sell ${L.short_put}PE / ${L.short_call}CE · wings ${L.long_put}PE / ${L.long_call}CE`
+      + `<br>Breakevens ${n(L.be_low, 0)} / ${n(L.be_high, 0)} · max-loss ${n(L.max_loss)} pts/lot`
+      + `<br>Exit ≥ ${n(p.stop)} premium · bank ≤ ${n(p.target)} <span class="muted">(${p.size_lots} lots, defined risk)</span>`
+      + `<br><span class="small muted">Propose-only — place the 4 legs manually, confirm against OI walls.</span>`;
+  } else {
+    box.className = "propbox stand";
+    box.innerHTML = "STAND DOWN — no expiry-day range setup "
+      + "<span class='muted'>(needs squeeze + inside CPR, after 11:00 IST on expiry)</span>";
+  }
+}
+
 function renderRead(rd) {
   const v = rd.recommendation === "enter";
   $("readBox").innerHTML =
@@ -111,23 +155,26 @@ function renderRead(rd) {
     + `<p><b>⚔️ Challenge:</b> ${rd.challenge}</p><p><b>⚠️ Risk:</b> ${rd.key_risk}</p>`;
 }
 
-async function fetchTriggers() {
+async function fetchTriggers(strat) {
   try {
-    const d = await (await fetch(`/api/triggers?size=${SIZE}`)).json();
-    renderTriggers(d);
+    const d = await (await fetch(`/api/triggers?size=${SIZE}&strategy=${strat || currentStrat}`)).json();
+    renderTriggers(d, strat || currentStrat);
   } catch (e) { /* keep last */ }
 }
 
-function renderTriggers(d) {
-  _triggers = d.triggers || [];
+function renderTriggers(d, strat) {
+  _triggers = (strat === currentStrat || !strat) ? (d.triggers || []) : _triggers;
+  const condor = strat === "condor";
   const s = d.summary || {}, last = d.last;
   if (last) {
-    const dir = last.direction.toUpperCase(), oc = last.outcome;
-    const t = last.ts.slice(11, 16);
+    const oc = last.outcome, t = last.ts.slice(11, 16);
     $("trigLast").className = "trig-last " + oc;
-    $("trigLast").innerHTML = `Last trigger ${t} · <b>${dir}</b> @ ${last.entry} `
-      + `→ stop ${last.stop} / target ${last.target} · <b>${oc.toUpperCase()}</b> `
-      + `${last.points >= 0 ? "+" : ""}${last.points} pts (${last.rupees >= 0 ? "+" : ""}₹${last.rupees})`;
+    $("trigLast").innerHTML = condor
+      ? `Last setup ${t} · <b>CONDOR</b> shorts ${last.short_put}/${last.short_call} `
+        + `· <b>${oc.toUpperCase()}</b> ${last.points >= 0 ? "+" : ""}${last.points} pts`
+      : `Last trigger ${t} · <b>${last.direction.toUpperCase()}</b> @ ${last.entry} `
+        + `→ stop ${last.stop} / target ${last.target} · <b>${oc.toUpperCase()}</b> `
+        + `${last.points >= 0 ? "+" : ""}${last.points} pts (${last.rupees >= 0 ? "+" : ""}₹${last.rupees})`;
   } else {
     $("trigLast").className = "trig-last";
     $("trigLast").textContent = `No triggers yet today (${d.session || "—"}).`;
@@ -136,13 +183,17 @@ function renderTriggers(d) {
     + ` · net <b class="${s.net_points >= 0 ? "win-txt" : "loss-txt"}">${s.net_points >= 0 ? "+" : ""}${s.net_points || 0} pts `
     + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees || 0})</b> if all taken`
     + (s.hit_rate != null ? ` · hit-rate ${(s.hit_rate * 100).toFixed(0)}%` : "");
-  let h = "<thead><tr><th>Time</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th>"
-    + "<th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>";
+  let h = condor
+    ? "<thead><tr><th>Time</th><th>Short PE</th><th>Short CE</th><th>Credit</th><th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>"
+    : "<thead><tr><th>Time</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>";
   for (const t of (d.triggers || [])) {
-    h += `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.direction}</td><td>${t.entry}</td>`
-      + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>`
-      + `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`
-      + `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td></tr>`;
+    const pts = `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`;
+    const rs = `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td>`;
+    h += condor
+      ? `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.short_put}</td><td>${t.short_call}</td>`
+        + `<td>${t.credit}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`
+      : `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.direction}</td><td>${t.entry}</td>`
+        + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`;
   }
   $("trigTbl").innerHTML = h + "</tbody>";
 }
@@ -238,5 +289,7 @@ $("analyseBtn").onclick = analyse;
 $("approveBtn").onclick = () => decide("approve");
 $("rejectBtn").onclick = () => decide("reject");
 $("chatForm").onsubmit = sendChat;
+document.querySelectorAll("#stratTabs button").forEach((b) =>
+  b.addEventListener("click", () => setStrat(b.dataset.strat)));
 wireChartUI(fetchChart);          // timeframe buttons + ⚙ indicator panel (chart.js)
 poll(); setInterval(poll, POLL_MS);

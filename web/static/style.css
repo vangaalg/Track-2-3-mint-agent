@@ -70,6 +70,11 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .tfbar button { background:var(--tile); border:1px solid var(--line); border-radius:6px;
   padding:3px 9px; margin-left:4px; cursor:pointer; font-size:12px; color:var(--txt); }
 .tfbar button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+.strattabs { display:flex; gap:4px; margin-bottom:8px; flex-wrap:wrap; }
+.strattabs button { background:var(--tile); border:1px solid var(--line); border-radius:6px;
+  padding:4px 12px; cursor:pointer; font-size:12px; font-weight:600; color:var(--txt); }
+.strattabs button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+.strattabs button:hover { border-color:var(--blue); }
 .gear { background:var(--tile); border:1px solid var(--line); border-radius:6px;
   padding:3px 8px; margin-left:8px; cursor:pointer; font-size:13px; color:var(--txt); }
 .gear:hover { border-color:var(--blue); }

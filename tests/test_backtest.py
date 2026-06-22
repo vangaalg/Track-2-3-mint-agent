@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 
 from scoring.backtest import (aggregate, run_backtest, report_text, make_claude_filter,
-                              clamp_levels)
+                              clamp_levels, strategy_cfg, run_condor_backtest)
 from feeds.snapshot import build_snapshot
-from indicators.directional import journal_mtf_config
+from indicators.directional import (
+    journal_mtf_config, cpr_st_mtf_config, orb_mtf_config)
 from agent.read import ClaudeRead
 
 
@@ -72,6 +73,25 @@ def test_run_backtest_shape_and_consistency():
         assert t["outcome"] in ("win", "loss", "eod") and "points" in t and "date" in t
         assert "exit_ts" in t and "exit" in t
     assert "OVERALL" in report_text("NIFTY", rep)        # renders without error
+
+
+def test_run_backtest_accepts_new_strategy_configs():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    for name, cfg in (("cpr_st", cpr_st_mtf_config()), ("orb", orb_mtf_config())):
+        out = run_backtest(snap, lots=1, cfg=cfg)
+        assert out["report"]["overall"]["n"] == len(out["triggers"])
+        for t in out["triggers"]:
+            assert t["outcome"] in ("win", "loss", "eod")
+        assert strategy_cfg(name).base.voters == cfg.base.voters
+
+
+def test_run_condor_backtest_shape():
+    snap = build_snapshot("NIFTY", _synth_1m(3), _synth_daily(), mtf_cfg=journal_mtf_config())
+    out = run_condor_backtest(snap, lots=1)
+    assert out["report"]["overall"]["n"] == len(out["triggers"])
+    for t in out["triggers"]:
+        assert t["direction"] == "flat" and t["outcome"] in ("win", "loss")
+    assert "OVERALL" in report_text("NIFTY", out["report"])
 
 
 def _stub_read(rec):

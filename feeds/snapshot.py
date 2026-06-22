@@ -97,6 +97,13 @@ def _chart_read(feats: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig) -> di
     }
 
 
+def chart_read_for(feats: dict[str, pd.DataFrame], cfg: MTFDirectionalConfig) -> dict:
+    """Public wrapper: the last-bar chart read resolved with an ARBITRARY resolver
+    config. Lets the cockpit build a per-strategy read off one shared snapshot's
+    feats (each strategy = its own MTF config) without rebuilding the ladder."""
+    return _chart_read(feats, cfg)
+
+
 def _sign(x: float) -> int:
     return 1 if x > 0 else (-1 if x < 0 else 0)
 

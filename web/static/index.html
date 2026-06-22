@@ -10,7 +10,7 @@
 </head>
 <body>
   <header>
-    <h1>Nifty Agent <span class="muted">— Trade 1 (propose-only)</span></h1>
+    <h1>Nifty Agent <span class="muted">— 4 strategies (propose-only)</span></h1>
     <div class="status">
       <a class="navlink" href="/train">🎮 Training</a>
       <span id="dot" class="dot"></span>
@@ -77,24 +77,33 @@
 
     <!-- Proposal + Claude -->
     <section class="card" id="callCard">
-      <div id="propBox" class="propbox">—</div>
-      <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>
-      <div id="readBox" class="readbox"><span class="muted">No Claude read yet — fires on an ENTER, or press Analyse.</span></div>
-      <div id="decision" class="decision" hidden>
-        <div class="labelrow">Trigger:
-          <label><input type="radio" name="liveLabel" value="genuine" /> 👍 genuine</label>
-          <label><input type="radio" name="liveLabel" value="false" /> 👎 false</label>
-        </div>
-        <button id="approveBtn" class="btn ok">✅ Approve</button>
-        <button id="rejectBtn" class="btn no">❌ Reject</button>
+      <div class="tabbar strattabs" id="stratTabs">
+        <button data-strat="trade1" class="on">3-min</button>
+        <button data-strat="cpr_st">CPR-ST</button>
+        <button data-strat="orb">ORB</button>
+        <button data-strat="condor">Expiry</button>
       </div>
-      <div id="decisionMsg" class="muted small"></div>
+      <div id="stratNote" class="row small muted" hidden></div>
+      <div id="propBox" class="propbox">—</div>
+      <div id="claudeBlock">
+        <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>
+        <div id="readBox" class="readbox"><span class="muted">No Claude read yet — fires on an ENTER, or press Analyse.</span></div>
+        <div id="decision" class="decision" hidden>
+          <div class="labelrow">Trigger:
+            <label><input type="radio" name="liveLabel" value="genuine" /> 👍 genuine</label>
+            <label><input type="radio" name="liveLabel" value="false" /> 👎 false</label>
+          </div>
+          <button id="approveBtn" class="btn ok">✅ Approve</button>
+          <button id="rejectBtn" class="btn no">❌ Reject</button>
+        </div>
+        <div id="decisionMsg" class="muted small"></div>
+      </div>
     </section>
   </main>
 
   <!-- Today's triggers (intraday replay) -->
   <section class="card triggers" id="trigCard">
-    <h2>📛 Today's triggers — if you'd traded each</h2>
+    <h2 id="trigTitle">📛 Today's triggers — if you'd traded each</h2>
     <div id="trigLast" class="trig-last">—</div>
     <div id="trigSummary" class="row small muted">—</div>
     <div class="tablewrap"><table id="trigTbl"></table></div>

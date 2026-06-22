@@ -161,13 +161,27 @@ def trade1_levels(direction: str, entry: float, levels: dict, oi: dict | None = 
     return stop, target, rr
 
 
-def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposal:
-    """Build a Trade-1 proposal from a ``feeds.snapshot.Snapshot``."""
-    read = snapshot.chart_read
+_EDGE = {
+    "trade1": "MTF stack (45-EMA regime + 3m trigger)",
+    "cpr_st": "CPR + Supertrend trend-rider (narrow-CPR day, 5-EMA pullback)",
+    "orb": "Opening-Range Breakout confirmed by VWAP",
+}
+
+
+def build_directional_proposal(
+    *, instrument: str, ts: str, spot: float, read: dict, oi: dict | None,
+    macro: dict | None, notes, trade_type: str = "trade1",
+    size_lots: int = DEFAULT_SIZE_LOTS, oi_levels: dict | None = None,
+) -> TradeProposal:
+    """Shared directional proposal builder (Trade-1 + the new chart strategies).
+
+    ``read`` is a chart-read dict (``mtf_call`` + ``levels`` + ``mtf_confidence``) as
+    produced by ``feeds.snapshot._chart_read`` for the strategy's resolver config.
+    ``oi`` is carried for context/explanation; ``oi_levels`` (Trade-1 only) feeds the
+    OI walls into level placement — the new strategies pass ``None`` (OI is evaluated
+    MANUALLY by the trader, so it never auto-shapes their mechanical levels)."""
     direction = read["mtf_call"]
-    spot = snapshot.spot
     lv = read["levels"]
-    oi = snapshot.oi or {}
 
     # MTF 45-EMA conviction scales the size across the journal band (65-130 lots).
     mtf_conf = read.get("mtf_confidence")
@@ -175,10 +189,9 @@ def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposa
         size_lots = size_for_confidence(mtf_conf)
 
     base = dict(
-        instrument=snapshot.instrument, trade_type="trade1", ts=snapshot.ts,
+        instrument=instrument, trade_type=trade_type, ts=ts,
         direction=direction, spot=spot, mtf_confidence=int(mtf_conf or 0),
-        context={"chart_read": read, "oi": snapshot.oi, "macro": snapshot.macro,
-                 "notes": snapshot.notes},
+        context={"chart_read": read, "oi": oi, "macro": macro, "notes": notes},
     )
 
     # Flat/conflicted read → STAND_DOWN immediately (no levels to place).
@@ -188,17 +201,17 @@ def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposa
 
     long = direction == "long"
     entry = spot
-    stop, target, rr = trade1_levels(direction, entry, lv, oi)
+    stop, target, rr = trade1_levels(direction, entry, lv, oi_levels)
 
     risk_pts = abs(entry - stop) if stop is not None else None
     rupee_risk = round(risk_pts * LOT_SIZE * size_lots, 2) if risk_pts else None
 
     right = "CE" if long else "PE"
     strike = _round_strike(spot - ITM_OFFSET) if long else _round_strike(spot + ITM_OFFSET)
-    vehicle = f"{snapshot.instrument} {strike} {right} (deep-ITM, ~0.8-1.0 delta)"
+    vehicle = f"{instrument} {strike} {right} (deep-ITM, ~0.8-1.0 delta)"
 
     checklist = {
-        "edge": f"{direction} read confirmed by MTF stack (45-EMA regime + 3m trigger)",
+        "edge": f"{direction} read confirmed by {_EDGE.get(trade_type, 'the chart stack')}",
         "stop": f"{stop:.2f} (structure)" if stop is not None else "",
         "size": (f"{size_lots} lots (MTF conf {int(mtf_conf or 0)}/5, band "
                  f"{SIZE_BAND[0]}-{SIZE_BAND[1]})" if mtf_conf is not None
@@ -212,7 +225,7 @@ def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposa
     }
 
     rec, reasons = discipline.evaluate(checklist, direction, size_lots)
-    reasons = _explain(read, oi) + reasons
+    reasons = _explain(read, oi_levels or {}) + reasons
 
     return TradeProposal(
         entry=round(entry, 2),
@@ -220,6 +233,16 @@ def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposa
         target=round(target, 2) if target is not None else None,
         size_lots=size_lots, vehicle=vehicle, rupee_risk=rupee_risk, rr_ratio=rr,
         recommendation=rec, checklist=checklist, reasons=reasons, **base,
+    )
+
+
+def propose_trade1(snapshot, size_lots: int = DEFAULT_SIZE_LOTS) -> TradeProposal:
+    """Build a Trade-1 proposal from a ``feeds.snapshot.Snapshot`` (OI feeds levels)."""
+    return build_directional_proposal(
+        instrument=snapshot.instrument, ts=snapshot.ts, spot=snapshot.spot,
+        read=snapshot.chart_read, oi=snapshot.oi, macro=snapshot.macro,
+        notes=snapshot.notes, trade_type="trade1", size_lots=size_lots,
+        oi_levels=snapshot.oi,
     )
 
 

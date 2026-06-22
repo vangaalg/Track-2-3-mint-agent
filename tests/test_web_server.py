@@ -84,6 +84,33 @@ def test_snapshot_returns_chart_oi_chain_proposal(client):
         assert p["selected_strike"] is not None and p["vehicle_extrinsic"] is not None
 
 
+def test_snapshot_exposes_all_four_strategy_proposals(client):
+    d = client.get("/api/snapshot").json()
+    # back-compat: the singular proposal is still Trade-1.
+    assert d["proposal"] == d["proposals"]["trade1"]
+    # all four strategy streams are present.
+    assert set(d["proposals"]) == {"trade1", "cpr_st", "orb", "condor"}
+    assert [s["id"] for s in d["strategies"]] == ["trade1", "cpr_st", "orb", "condor"]
+    for sid in ("trade1", "cpr_st", "orb"):
+        assert d["proposals"][sid]["trade_type"] == sid
+        assert d["proposals"][sid]["recommendation"] in ("enter", "stand_down")
+    # the condor is non-directional / propose-only.
+    assert d["proposals"]["condor"]["trade_type"] == "trade_condor"
+    assert d["proposals"]["condor"]["direction"] == "flat"
+    # OI-boost fields stay unique to Trade-1 (the others are OI-manual → no auto bias).
+    assert d["proposals"]["cpr_st"]["oi_bias"] is None
+
+
+def test_triggers_per_strategy(client):
+    client.get("/api/snapshot")
+    for sid in ("trade1", "cpr_st", "orb"):
+        r = client.get(f"/api/triggers?strategy={sid}").json()
+        assert "summary" in r and "triggers" in r
+    cond = client.get("/api/triggers?strategy=condor").json()
+    assert "summary" in cond and isinstance(cond["triggers"], list)
+    assert client.get("/api/triggers?strategy=bogus").status_code == 404
+
+
 def test_analyse_returns_four_part_read(client):
     client.get("/api/snapshot")
     rd = client.post("/api/analyse").json()

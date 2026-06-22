@@ -9,8 +9,43 @@ import pandas as pd
 
 from indicators.engine import (
     atr, supertrend, cpr, compute_indicators,
-    ema5_trigger, bollinger_vrl_breakout,
+    ema5_trigger, bollinger_vrl_breakout, vwap, opening_range,
 )
+
+
+def _intraday(values, day="2026-06-16") -> pd.DataFrame:
+    """A single-session 3-min OHLCV frame whose close follows ``values``."""
+    idx = pd.date_range(f"{day} 09:15", periods=len(values), freq="3min")
+    close = np.asarray(values, dtype=float)
+    return pd.DataFrame(
+        {"open": close, "high": close + 1.0, "low": close - 1.0, "close": close,
+         "volume": np.full(len(close), 100.0)},
+        index=idx,
+    )
+
+
+def test_vwap_within_session_range_and_zero_volume_fallback():
+    df = _intraday(100 + np.cumsum(np.random.default_rng(7).standard_normal(40)))
+    v = vwap(df)
+    assert len(v) == len(df) and not v.isna().any()
+    assert (v >= df["low"].min() - 1e-6).all() and (v <= df["high"].max() + 1e-6).all()
+    # zero-volume fallback: VWAP degrades to the cumulative typical-price mean, never NaN.
+    df0 = df.assign(volume=0.0)
+    v0 = vwap(df0)
+    assert not v0.isna().any()
+    tp = (df0["high"] + df0["low"] + df0["close"]) / 3.0
+    assert abs(v0.iloc[-1] - tp.mean()) < 1e-6
+
+
+def test_opening_range_no_lookahead():
+    # 8 bars × 3min; the first 15 minutes = the first 5 bars (09:15..09:27).
+    df = _intraday([10, 12, 9, 11, 13, 20, 8, 15])
+    orng = opening_range(df, minutes=15)
+    # Inside/at the opening window the level is hidden (no lookahead).
+    assert orng["or_high"].iloc[:5].isna().all()
+    # After the window it is the first-15-min high/low, constant for the rest.
+    assert (orng["or_high"].iloc[5:] == 13.0 + 1.0).all()   # high = close+1 over bars 0..4
+    assert (orng["or_low"].iloc[5:] == 9.0 - 1.0).all()
 
 
 def _ramp(values) -> pd.DataFrame:
@@ -56,7 +91,7 @@ def test_supertrend_direction_flips_on_trend_reversal():
 def test_cpr_ordering_and_prior_bar_source():
     df = _ramp([10, 20, 30, 40])
     c = cpr(df)
-    assert list(c.columns) == ["cpr_pivot", "cpr_tc", "cpr_bc", "cpr_r1", "cpr_s1"]
+    assert list(c.columns) == ["cpr_pivot", "cpr_tc", "cpr_bc", "cpr_r1", "cpr_s1", "cpr_width"]
     # First row has no prior bar -> NaN; the rest are ordered bc <= pivot <= tc.
     assert c.iloc[0].isna().all()
     body = c.iloc[1:]
@@ -64,6 +99,8 @@ def test_cpr_ordering_and_prior_bar_source():
     assert (body["cpr_pivot"] <= body["cpr_tc"] + 1e-9).all()
     # Row 1's pivot is built from row 0's H/L/C (10.5, 9.5, 10) -> 10.0.
     assert c["cpr_pivot"].iloc[1] == np.float64(10.0)
+    # cpr_width is the normalised range (tc-bc)/pivot, non-negative once warmed.
+    assert (body["cpr_width"] >= -1e-9).all()
 
 
 def test_compute_indicators_emits_full_stack():

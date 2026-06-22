@@ -205,6 +205,25 @@ def run_backtest(snap, lots: int = 1, cfg=None, target_driven: bool = True,
             "filtered": filtered, "conf_filtered": conf_filtered}
 
 
+# Strategy registry for the CLI: name -> the MTF resolver config it backtests with.
+def strategy_cfg(name: str):
+    """Resolve a ``--strategy`` name to its MTF config (directional strategies only)."""
+    from indicators.directional import (
+        journal_mtf_config, cpr_st_mtf_config, orb_mtf_config)
+    return {"trade1": journal_mtf_config, "cpr_st": cpr_st_mtf_config,
+            "orb": orb_mtf_config}[name]()
+
+
+def run_condor_backtest(snap, lots: int = 1, **kw) -> dict:
+    """Backtest the expiry-day iron-condor REGIME (a staying-in-range proxy — no
+    historical option prices). Returns the same ``{triggers, report, ...}`` shape."""
+    from analysis.condor import list_condor_triggers
+    trigs = list_condor_triggers(snap.feats["3min"], snap.frames["3min"],
+                                 size_lots=lots, lot_size=LOT_SIZE, **kw)
+    return {"triggers": trigs, "report": aggregate(trigs, LOT_SIZE, lots),
+            "filtered": None, "conf_filtered": None}
+
+
 # --------------------------------------------------------------------------- #
 # CLI — pull + report
 # --------------------------------------------------------------------------- #
@@ -632,6 +651,9 @@ def write_outputs(symbol: str, triggers: list[dict], report: dict, outdir: str,
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--symbol", default="NIFTY")
+    ap.add_argument("--strategy", default="trade1",
+                    choices=["trade1", "cpr_st", "orb", "condor"],
+                    help="which strategy's triggers to backtest (default trade1, the 3-min)")
     ap.add_argument("--days", type=int, default=30, help="lookback window (~1 month default)")
     ap.add_argument("--loader", default="breeze", help="loaders.get_loader name (breeze/twelvedata)")
     ap.add_argument("--lots", type=int, default=1, help="position size for the ₹ column")
@@ -700,12 +722,20 @@ def main(argv: list[str] | None = None) -> int:
     base, daily = _pull(args.symbol, args.days, args.loader, args.chunk_days,
                         offline=args.offline, refresh=args.refresh)
     snap = build_snapshot(args.symbol, base, daily, mtf_cfg=journal_mtf_config())
+    if args.strategy == "condor":
+        out = run_condor_backtest(snap, lots=args.lots)
+        print(report_text(args.symbol, out["report"], levels=args.levels))
+        csv_path, md_path = write_outputs(args.symbol, out["triggers"], out["report"],
+                                          args.out, levels=args.levels)
+        print(f"\nWrote {csv_path}\n      {md_path}", file=sys.stderr)
+        return 0
+    cfg = strategy_cfg(args.strategy)
     cfilter = None
     if args.claude:
         print("Running Claude take/skip per trigger (this is slow; verdicts below)…",
               file=sys.stderr)
-        cfilter = make_claude_filter(args.symbol, base, daily, verbose=True)
-    out = run_backtest(snap, lots=args.lots, target_driven=(args.levels == "target"),
+        cfilter = make_claude_filter(args.symbol, base, daily, cfg=cfg, verbose=True)
+    out = run_backtest(snap, lots=args.lots, cfg=cfg, target_driven=(args.levels == "target"),
                        claude_filter=cfilter, min_stop=args.min_stop,
                        atr_mult=args.atr_mult, atr_period=args.atr_period,
                        min_confidence=args.min_confidence, skip_open_min=args.skip_open_min)

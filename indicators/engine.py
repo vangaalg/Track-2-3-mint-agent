@@ -248,8 +248,67 @@ def cpr(df: pd.DataFrame) -> pd.DataFrame:
             "cpr_s1": 2.0 * pivot - prior["high"],
         }
     )
+    # Normalised CPR width (TC-BC over the pivot) — a NARROW range flags a likely
+    # trend/expansion day, a WIDE one a range day (used by the CPR-Supertrend voter).
+    levels["cpr_width"] = (levels["cpr_tc"] - levels["cpr_bc"]) / levels["cpr_pivot"]
     # Broadcast each session's levels back onto all of that session's bars.
     return levels.reindex(sess).set_axis(df.index)
+
+
+# --------------------------------------------------------------------------- #
+# VWAP — session-anchored Volume-Weighted Average Price (causal)
+# --------------------------------------------------------------------------- #
+def vwap(df: pd.DataFrame) -> pd.Series:
+    """Session-anchored VWAP — cumulative ``Σ(typical_price·volume) / Σvolume``.
+
+    Resets each trading session (``index.normalize()``) and is a *causal* running
+    cumulative — bar ``i``'s value uses only bars ``≤ i`` of that session, so it is
+    no-lookahead by construction. Zero-volume sessions (indices sometimes fill
+    ``volume`` 0 — the same degeneracy ``confirm_2_close`` handles) fall back to the
+    cumulative mean of the typical price so the line is never all-NaN.
+    """
+    _require_columns(df, ["high", "low", "close"])
+    sess = df.index.normalize()
+    tp = (df["high"] + df["low"] + df["close"]) / 3.0
+    vol = (df["volume"] if "volume" in df.columns else pd.Series(0.0, index=df.index)).astype(float)
+    cum_tpv = (tp * vol).groupby(sess).cumsum()
+    cum_v = vol.groupby(sess).cumsum()
+    out = cum_tpv / cum_v
+    # zero-volume fallback: cumulative average of the typical price within the session
+    cum_tp = tp.groupby(sess).cumsum()
+    cnt = pd.Series(1.0, index=df.index).groupby(sess).cumsum()
+    return out.where(cum_v > 0, cum_tp / cnt).rename("vwap")
+
+
+# --------------------------------------------------------------------------- #
+# Opening range — first-N-minute high/low of each session (no-lookahead)
+# --------------------------------------------------------------------------- #
+def opening_range(df: pd.DataFrame, minutes: int = 15) -> pd.DataFrame:
+    """First-``minutes`` high/low of each session, broadcast onto the LATER bars only.
+
+    The opening range is the high/low set in the first ``minutes`` after each
+    session's first bar. It is **NaN on bars inside the opening window** (and on the
+    window bars themselves) — the level only becomes visible once the window has
+    closed — so a breakout voter can never see the completed range early (no
+    lookahead). On a daily/weekly frame each session is a single bar, so the whole
+    column is NaN (the opening-range play is intraday-only and the voter abstains).
+
+    Columns: ``or_high``, ``or_low``.
+    """
+    _require_columns(df, ["high", "low"])
+    sess = df.index.normalize()
+    or_high = pd.Series(np.nan, index=df.index)
+    or_low = pd.Series(np.nan, index=df.index)
+    for _, idx in df.groupby(sess).groups.items():
+        day = df.loc[idx]
+        window_end = day.index[0] + pd.Timedelta(minutes=minutes)
+        in_window = day.index < window_end
+        after = day.index >= window_end
+        if not in_window.any() or not after.any():
+            continue
+        or_high.loc[day.index[after]] = float(day.loc[in_window, "high"].max())
+        or_low.loc[day.index[after]] = float(day.loc[in_window, "low"].min())
+    return pd.DataFrame({"or_high": or_high, "or_low": or_low})
 
 
 # --------------------------------------------------------------------------- #
@@ -393,6 +452,8 @@ def compute_indicators(
     out = out.join(macd(df, **p.get("macd", {})))
     out = out.join(supertrend(df, **p.get("supertrend", {})))
     out = out.join(cpr(df))
+    out["vwap"] = vwap(df)
+    out = out.join(opening_range(df, p.get("opening_range_min", 15)))
 
     # 3-min strategy component signals (journal trio + the kept meanrev experiment)
     out["sig_ema5_trigger"] = ema5_trigger(df)
