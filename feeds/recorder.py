@@ -49,13 +49,15 @@ NIFTY50_STOCKS = [
 ]
 
 # Default scope: indices first. weekday = expiry weekday (verify live; NSE NIFTY = Tue=1).
+# ``monthly`` = no weekly options → expire on the month's last expiry-weekday (NSE pulled
+# Bank Nifty weeklies in Nov-2024; it's the last Tuesday now).
 DEFAULT_INSTRUMENTS = [
     {"name": "NIFTY", "symbol": "NIFTY", "exchange": "NFO", "klass": "index",
      "weekday": 1, "band": [37.0, 72.0]},
     {"name": "BANKNIFTY", "symbol": "CNXBAN", "exchange": "NFO", "klass": "index",
-     "weekday": 1, "band": "scale"},
+     "weekday": 1, "monthly": True, "band": "scale"},       # last-Tuesday monthly expiry
     {"name": "SENSEX", "symbol": "SENSEX", "exchange": "BFO", "klass": "index",
-     "weekday": 4, "band": "scale", "enabled": False},      # BSE — verify before enabling
+     "weekday": 1, "monthly": True, "band": "scale", "enabled": False},   # BSE — verify before enabling
 ]
 
 
@@ -184,7 +186,8 @@ def _build_live(instruments):
     fetchers, spot_fns = {}, {}
     for inst in instruments:
         fetchers[inst["name"]] = make_chain_fetcher(weekday=inst["weekday"],
-                                                    exchange=inst["exchange"])
+                                                    exchange=inst["exchange"],
+                                                    monthly=inst.get("monthly", False))
         spot_fns[inst["name"]] = make_spot_fn("BSE" if inst["exchange"] == "BFO" else "NSE")
     qf = make_quote_fn()
     macro_fn = lambda: build_macro(qf)

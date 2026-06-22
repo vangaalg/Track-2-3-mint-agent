@@ -59,11 +59,39 @@ def nearest_weekly(weekday: int = 3, today: date | None = None) -> date:
     return today + timedelta(days=(weekday - today.weekday()) % 7)
 
 
-def _expiry_iso(expiry, weekday: int) -> str:
-    """Breeze expiry ISO ``YYYY-MM-DDT06:00:00.000Z`` from a date/str/None."""
+def _last_weekday_of_month(weekday: int, year: int, month: int) -> date:
+    """The last date in ``year``/``month`` that falls on ``weekday`` (Mon=0..Sun=6)."""
+    nxt = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    last = nxt - timedelta(days=1)
+    return last - timedelta(days=(last.weekday() - weekday) % 7)
+
+
+def nearest_monthly(weekday: int = 1, today: date | None = None) -> date:
+    """The nearest MONTHLY expiry on/after ``today`` = the last ``weekday`` of the
+    month (rolling to next month once this month's has passed).
+
+    NSE removed weekly options for Bank Nifty (and most non-Nifty underlyings) — they
+    expire only on the month's last expiry-weekday. ``weekday`` is config because NSE
+    has shifted it (Bank Nifty = last Tuesday currently)."""
+    today = today or date.today()
+    cand = _last_weekday_of_month(weekday, today.year, today.month)
+    if cand < today:                       # this month's expiry already passed
+        y, m = (today.year + (today.month == 12)), (today.month % 12 + 1)
+        cand = _last_weekday_of_month(weekday, y, m)
+    return cand
+
+
+def _expiry_iso(expiry, weekday: int, monthly: bool = False) -> str:
+    """Breeze expiry ISO ``YYYY-MM-DDT06:00:00.000Z`` from a date/str/None.
+
+    ``monthly=True`` resolves to the month's last expiry-weekday (for underlyings with
+    no weekly options, e.g. Bank Nifty); otherwise the next weekly ``weekday``."""
     if isinstance(expiry, str):
         return expiry
-    d = expiry if isinstance(expiry, date) else nearest_weekly(weekday)
+    if isinstance(expiry, date):
+        d = expiry
+    else:
+        d = nearest_monthly(weekday) if monthly else nearest_weekly(weekday)
     return datetime(d.year, d.month, d.day, 6, 0, 0).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
@@ -74,16 +102,20 @@ def _rows(resp: dict) -> list[dict]:
 
 
 def make_chain_fetcher(
-    expiry=None, weekday: int = 3, exchange: str = "NFO", client_factory=None
+    expiry=None, weekday: int = 3, exchange: str = "NFO", client_factory=None,
+    monthly: bool = False,
 ):
     """Return ``fetch(instrument) -> chain DataFrame`` for ``feeds.oi.fetch_oi``.
 
-    Pulls calls and puts for the (config-driven) expiry and merges them. Any
-    failure propagates to ``fetch_oi``, which degrades the OI panel to None.
+    Pulls calls and puts for the (config-driven) expiry and merges them. Set
+    ``monthly=True`` for underlyings with NO weekly options (Bank Nifty, Sensex,
+    single stocks) so the expiry resolves to the month's last expiry-weekday instead
+    of the next weekly one (a weekly date returns "No Data Found"). Any failure
+    propagates to ``fetch_oi``, which degrades the OI panel to None.
     """
     def fetch(instrument: str) -> pd.DataFrame:
         client = (client_factory or get_breeze_client)()
-        exp = _expiry_iso(expiry, weekday)
+        exp = _expiry_iso(expiry, weekday, monthly)
         kw = dict(stock_code=instrument, exchange_code=exchange,
                   product_type="options", expiry_date=exp)
         calls = client.get_option_chain_quotes(right="call", **kw)

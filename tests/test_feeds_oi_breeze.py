@@ -7,7 +7,8 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from feeds.breeze_oi import merge_chain, nearest_weekly, make_chain_fetcher
+from feeds.breeze_oi import (
+    merge_chain, nearest_weekly, nearest_monthly, make_chain_fetcher)
 from feeds.oi import summarise_chain, chain_table
 
 
@@ -76,6 +77,38 @@ def test_nearest_weekly_thursday():
     assert nearest_weekly(3, today=date(2026, 6, 16)) == date(2026, 6, 18)
     # On the weekday itself -> same day.
     assert nearest_weekly(3, today=date(2026, 6, 18)) == date(2026, 6, 18)
+
+
+def test_nearest_monthly_last_tuesday():
+    # June 2026: the last Tuesday is the 30th. Mid-month resolves to it.
+    assert nearest_monthly(1, today=date(2026, 6, 16)) == date(2026, 6, 30)
+    # On the expiry day itself -> same day.
+    assert nearest_monthly(1, today=date(2026, 6, 30)) == date(2026, 6, 30)
+    # The day AFTER this month's expiry rolls to next month's last Tuesday (28 Jul 2026).
+    assert nearest_monthly(1, today=date(2026, 7, 1)) == date(2026, 7, 28)
+    # December rolls into next year correctly (last Tuesday of Dec 2026 = the 29th).
+    assert nearest_monthly(1, today=date(2026, 12, 1)) == date(2026, 12, 29)
+
+
+def test_monthly_fetcher_requests_month_end_expiry():
+    """A monthly underlying (Bank Nifty) must request the month's last expiry-weekday,
+    NOT the next weekly date (which Breeze answers 'No Data Found')."""
+    seen = []
+
+    class FakeClient:
+        def get_option_chain_quotes(self, right=None, **kw):
+            seen.append(kw["expiry_date"])
+            return {"Success": [{"strike_price": "52000", "open_interest": "10"}], "Error": None}
+
+    make_chain_fetcher(weekday=1, monthly=True, client_factory=FakeClient)("CNXBAN")
+    # the requested expiry is a month-end Tuesday, not the next weekly Tuesday
+    exp = seen[0]
+    assert exp.endswith("T06:00:00.000Z")
+    y, m, d = exp[:10].split("-")
+    from datetime import date as _date
+    requested = _date(int(y), int(m), int(d))
+    assert requested.weekday() == 1                       # Tuesday
+    assert requested == nearest_monthly(1, today=date.today())
 
 
 def test_make_chain_fetcher_pulls_both_rights():
