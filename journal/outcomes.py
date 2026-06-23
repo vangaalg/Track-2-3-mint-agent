@@ -189,3 +189,48 @@ def matrix_summary(decisions: list[dict]) -> dict:
     net_rs = round(sum(o.get("rupees", 0) for o in settled), 0)
     return {"cells": dict(cells), "n_settled": len(settled),
             "net_points": net_pts, "net_rupees": net_rs}
+
+
+def _conviction_of(d: dict):
+    """The engine conviction (0-5) for a record — the queryable column, falling back to
+    the proposal blob for rows saved before the column existed."""
+    conv = d.get("final_confidence")
+    if conv is None:
+        p = d.get("proposal") or {}
+        conv = p.get("final_confidence")
+        if conv is None:
+            conv = p.get("mtf_confidence")
+    return conv
+
+
+def conviction_breakdown(decisions: list[dict]) -> list[dict]:
+    """Win-rate + expectancy of SETTLED trades grouped by engine conviction (0-5).
+
+    The answer to "does higher conviction actually win more?" — one row per conviction
+    level (ordered low→high, an "—" bucket for un-scored rows), each with n / W-L /
+    hit-rate / net points / expectancy (net points per trade). Only win/loss trades count.
+    """
+    from collections import defaultdict
+    buckets: dict = defaultdict(lambda: {"n": 0, "wins": 0, "losses": 0, "net_points": 0.0})
+    for d in decisions:
+        o = d.get("outcome") or {}
+        status = o.get("status")
+        if status not in ("win", "loss"):
+            continue
+        conv = _conviction_of(d)
+        b = buckets["—" if conv is None else int(conv)]
+        b["n"] += 1
+        b["wins"] += status == "win"
+        b["losses"] += status == "loss"
+        b["net_points"] += o.get("points", 0) or 0
+    out = []
+    for k in sorted(buckets, key=lambda x: (x == "—", x)):
+        b = buckets[k]
+        decided = b["wins"] + b["losses"]
+        out.append({
+            "conviction": k, "n": b["n"], "wins": b["wins"], "losses": b["losses"],
+            "hit_rate": round(b["wins"] / decided, 2) if decided else None,
+            "net_points": round(b["net_points"], 2),
+            "expectancy": round(b["net_points"] / b["n"], 2) if b["n"] else None,
+        })
+    return out

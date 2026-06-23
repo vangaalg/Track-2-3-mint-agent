@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 
 from journal.outcomes import (
-    grade_process, settle, settle_log, matrix_summary, manual_exit_outcome)
+    grade_process, settle, settle_log, matrix_summary, conviction_breakdown,
+    manual_exit_outcome)
 from agent.memory import distill_memory
 
 
@@ -120,6 +121,24 @@ def test_settle_log_persists_and_summary(tmp_path):
     assert "outcome" in path.read_text()                 # persisted
     s = matrix_summary(out)
     assert s["cells"]["deserved"] == 1 and s["n_settled"] == 1
+
+
+def test_conviction_breakdown_groups_win_rate_by_conviction():
+    decisions = [
+        {"final_confidence": 5, "outcome": {"status": "win", "points": 40}},
+        {"final_confidence": 5, "outcome": {"status": "win", "points": 20}},
+        {"final_confidence": 2, "outcome": {"status": "loss", "points": -30}},
+        {"final_confidence": 2, "outcome": {"status": "win", "points": 10}},
+        {"final_confidence": 5, "outcome": {"status": "open"}},          # ignored (unsettled)
+        {"proposal": {"mtf_confidence": 3}, "outcome": {"status": "loss", "points": -15}},  # blob fallback
+    ]
+    rows = conviction_breakdown(decisions)
+    by = {r["conviction"]: r for r in rows}
+    assert by[5]["n"] == 2 and by[5]["wins"] == 2 and by[5]["hit_rate"] == 1.0
+    assert by[5]["net_points"] == 60 and by[5]["expectancy"] == 30
+    assert by[2]["n"] == 2 and by[2]["hit_rate"] == 0.5 and by[2]["expectancy"] == -10
+    assert by[3]["n"] == 1 and by[3]["losses"] == 1          # fell back to the proposal blob
+    assert [r["conviction"] for r in rows] == [2, 3, 5]      # ordered low→high
 
 
 def test_memory_warns_on_dangerous_win():

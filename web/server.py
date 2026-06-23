@@ -45,7 +45,7 @@ from agent.chat import spar_turn
 from execution import breeze_exec
 from journal.log import log_decision, DEFAULT_LOG
 from journal.outcomes import (
-    settle_log, settle_store, matrix_summary, grade_training,
+    settle_log, settle_store, matrix_summary, conviction_breakdown, grade_training,
     manual_exit_outcome, _matrix)
 from journal import store
 
@@ -575,7 +575,9 @@ def record():
                               "outcome": r.get("outcome_status"), "reason_why": r.get("reason_why")})
     except Exception:
         pass
-    return {"summary": matrix_summary(settled), "posts": posts[-8:],
+    return {"summary": matrix_summary(settled),
+            "by_conviction": conviction_breakdown(settled),   # win-rate by conviction bucket
+            "posts": posts[-8:],
             "recent": [{"decision": r.get("decision"), "process": r.get("process_grade"),
                         "matrix": r.get("matrix"), "ts": r.get("ts"),
                         "direction": r.get("direction"),

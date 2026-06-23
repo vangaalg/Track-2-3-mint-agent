@@ -350,6 +350,20 @@ function renderRecord(d) {
   $("recSummary").innerHTML = `${s.n_settled || 0} settled · net `
     + `<b class="${s.net_points >= 0 ? "win-txt" : "loss-txt"}">${s.net_points >= 0 ? "+" : ""}${s.net_points || 0} pts `
     + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees || 0})</b> · graded by process, not P&L`;
+  // Win-rate by conviction bucket — the "does higher conviction win more?" table.
+  const conv = d.by_conviction || [];
+  $("recConvWrap").hidden = conv.length === 0;
+  if (conv.length) {
+    let ch = "<thead><tr><th>Conviction</th><th>n</th><th>W/L</th><th>Hit-rate</th><th>Net pts</th><th>Exp/trade</th></tr></thead><tbody>";
+    for (const b of conv) {
+      const exp = b.expectancy;
+      ch += `<tr><td class="conf">${b.conviction === "—" ? "—" : b.conviction + "/5"}</td><td>${b.n}</td>`
+        + `<td>${b.wins}/${b.losses}</td><td>${b.hit_rate != null ? (b.hit_rate * 100).toFixed(0) + "%" : "—"}</td>`
+        + `<td class="${b.net_points >= 0 ? "win" : "loss"}">${b.net_points >= 0 ? "+" : ""}${b.net_points}</td>`
+        + `<td class="${(exp || 0) >= 0 ? "win" : "loss"}">${exp != null ? (exp >= 0 ? "+" : "") + exp : "—"}</td></tr>`;
+    }
+    $("recConv").innerHTML = ch + "</tbody>";
+  }
   let h = "<thead><tr><th>Time</th><th>Decision</th><th>Conf</th><th>Process</th><th>Outcome</th><th>Pts</th><th>Cell</th></tr></thead><tbody>";
   for (const r of (d.recent || []).slice().reverse()) {
     const o = r.outcome || {}, t = r.ts ? r.ts.slice(11, 16) : "—";

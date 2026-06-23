@@ -438,6 +438,9 @@ def test_record_endpoint_summarises_from_store(client, tmp_path, monkeypatch):
     assert d["recent"][0]["outcome"]["status"] == "win"
     # both confidence numbers surface for analysis: engine conviction + Claude's
     assert d["recent"][0]["conviction"] == 4 and d["recent"][0]["confidence"] == 5
+    # win-rate-by-conviction aggregate: this win lands in the conviction-4 bucket
+    b4 = next(b for b in d["by_conviction"] if b["conviction"] == 4)
+    assert b4["n"] == 1 and b4["wins"] == 1 and b4["net_points"] == 60.0
 
 
 def test_decision_persists_full_context(client, tmp_path, monkeypatch):
