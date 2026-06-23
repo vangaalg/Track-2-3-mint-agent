@@ -379,6 +379,21 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       unrelated oi_store fail). RISKS: Breeze may block a cloud IP (verify the `connected` probe first);
       daily token stays manual by design.
 
+- [x] **In-cockpit Breeze token entry — one entry point (confirmed w/ trader).** The daily token used to be
+      POSTed only on the *recorder's* phone page; the cockpit inherited it via the shared data repo. Trader
+      wanted to refresh it inside the cockpit instead. New `POST /api/breeze-token` on the OUTER
+      `web/cockpit_service` app (registered before the `app.mount`, so it wins over the mounted cockpit;
+      Basic-auth-gated → **no secret param**, login is enough): sets `BREEZE_SESSION_TOKEN` + `save_token_file`,
+      `_breeze_status(force=True)` (cached probe so polls can't hammer the handshake), AND **forwards** the
+      token to the recorder via `_forward_token` (stdlib urllib POST to `RECORDER_URL/token` with the shared
+      `RECORDER_TOKEN_SECRET`) — because the two Railway services never sync mid-session (recorder only
+      pushes), a cockpit-only token would starve OI accumulation. Frontend: header **🔑 Token** button + an
+      auto-revealing banner (`web/static/index.html`/`app.js`/`style.css`) that opens (amber) when the poll
+      fails or `notes` mention a breeze/token/oi problem; the response shows `cockpit: … · recorder: …`. New
+      cockpit env var `RECORDER_URL`; one PAT can serve both `DATA_REPO_URL` + `JOURNAL_REPO_URL`. DEPLOY.md
+      updated. Tested in tests/test_cockpit_service.py (no-secret set+forward, RECORDER_URL unset, auth
+      required); `web.server` untouched. Suite green.
+
 - [x] **Two specialist subagents (`.claude/agents/`, advisory personas).** `option-trader.md` (full
       option-strategy playbook → risk-defined, cost-aware, intraday-flat trades; grounded in the journal
       method — OI-wall S/R + ±37/72 bands, PCR/max-pain, macro — and the hard backtest truths: the 3-min

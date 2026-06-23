@@ -13,10 +13,19 @@
     <h1>Nifty Agent <span class="muted">— 4 strategies (propose-only)</span></h1>
     <div class="status">
       <a class="navlink" href="/train">🎮 Training</a>
+      <button id="tokenBtn" type="button" title="Set today's Breeze session token">🔑 Token</button>
       <span id="dot" class="dot"></span>
       <span id="meta" class="muted">connecting…</span>
     </div>
   </header>
+
+  <!-- Daily Breeze token entry (auto-reveals when the feed needs a fresh token) -->
+  <div id="tokenForm" class="token-banner" hidden>
+    <label for="tokenInput">Breeze session token</label>
+    <input id="tokenInput" type="text" placeholder="paste today's Breeze token" autocomplete="off" />
+    <button id="tokenSave" type="button">Save</button>
+    <span id="tokenMsg" class="muted"></span>
+  </div>
 
   <!-- Price candlestick + indicators (TradingView Lightweight Charts) -->
   <section class="card price">

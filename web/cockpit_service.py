@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -72,6 +74,37 @@ def _probe_breeze() -> str:
         return f"token set, but probe failed: {exc}"
 
 
+_BREEZE_CACHE: dict = {"ts": 0.0, "result": ""}
+
+
+def _breeze_status(ttl: int = 60, force: bool = False) -> str:
+    """Cached `_probe_breeze` — the Breeze handshake is real network, so don't repeat it
+    on every poll. `force=True` (after a token update) refreshes immediately."""
+    now = time.time()
+    if force or not _BREEZE_CACHE["result"] or now - _BREEZE_CACHE["ts"] > ttl:
+        _BREEZE_CACHE.update(ts=now, result=_probe_breeze())
+    return _BREEZE_CACHE["result"]
+
+
+def _forward_token(token: str) -> str:
+    """Best-effort: hand today's token to the SEPARATE recorder service so OI accumulation
+    keeps running from a single entry point. The cockpit can't reach the recorder via the
+    shared data repo mid-session (the recorder only pushes, never re-pulls), so forward over
+    HTTP to its `POST /token` (guarded by the shared RECORDER_TOKEN_SECRET). No-op + a clear
+    message when RECORDER_URL is unset; never raises."""
+    base = (os.environ.get("RECORDER_URL") or "").strip().rstrip("/")
+    if not base:
+        return "not configured — set RECORDER_URL"
+    secret = os.environ.get("RECORDER_TOKEN_SECRET", "")
+    try:
+        body = urllib.parse.urlencode({"token": token, "secret": secret}).encode()
+        req = urllib.request.Request(f"{base}/token", data=body, method="POST")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return "ok" if resp.status == 200 else f"recorder HTTP {resp.status}"
+    except Exception as exc:
+        return f"forward failed: {exc}"
+
+
 @app.post("/token")
 def set_token(token: str = Form(...), secret: str = Form(...)):
     """Manual fallback to set today's Breeze token (the cockpit normally inherits it from
@@ -79,7 +112,20 @@ def set_token(token: str = Form(...), secret: str = Form(...)):
     _check(secret)
     os.environ["BREEZE_SESSION_TOKEN"] = token.strip()
     control.save_token_file(token)
-    return {"ok": True, "breeze": _probe_breeze()}
+    return {"ok": True, "breeze": _breeze_status(force=True)}
+
+
+@app.post("/api/breeze-token")
+def set_breeze_token(token: str = Form(...)):
+    """In-cockpit token entry (the header 🔑 button) — the one place to refresh the daily
+    Breeze token. No secret param: the cockpit is already behind HTTP Basic, so a logged-in
+    user is trusted. Applies the token here AND forwards it to the recorder so a single
+    entry point feeds both services."""
+    token = token.strip()
+    os.environ["BREEZE_SESSION_TOKEN"] = token
+    control.save_token_file(token)
+    return {"ok": True, "cockpit": _breeze_status(force=True),
+            "recorder": _forward_token(token)}
 
 
 @app.get("/healthz")

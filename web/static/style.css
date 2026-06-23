@@ -140,3 +140,18 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .reveal-cell.deserved { border-color:var(--green); } .reveal-cell.avoided { border-color:var(--green); }
 .reveal-cell.missed { border-color:var(--amber); } .reveal-cell.accept { border-color:var(--line); }
 @media (max-width:1100px){ .grid{ grid-template-columns:1fr; } }
+
+/* Breeze daily-token entry (header button + auto-revealing banner) */
+#tokenBtn { color:var(--txt); background:var(--card); border:1px solid var(--line);
+  border-radius:7px; padding:5px 10px; font-weight:600; font-size:13px; cursor:pointer; }
+#tokenBtn:hover { background:var(--tile); }
+#tokenBtn.warn { color:#fff; background:var(--amber); border-color:var(--amber); }
+.token-banner { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  margin:10px 16px 0; padding:10px 12px; background:rgba(217,154,0,.12);
+  border:1px solid var(--amber); border-radius:10px; }
+.token-banner label { font-weight:600; font-size:13px; }
+.token-banner input { flex:1; min-width:200px; padding:7px 9px; border:1px solid var(--line);
+  border-radius:7px; background:var(--tile); color:var(--txt); }
+.token-banner button { background:var(--green); color:#fff; border:none; border-radius:7px;
+  padding:7px 14px; font-weight:600; cursor:pointer; }
+.token-banner #tokenMsg { flex-basis:100%; font-size:12px; }

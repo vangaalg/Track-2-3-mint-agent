@@ -55,6 +55,58 @@ def test_token_endpoint_sets_env_and_persists(monkeypatch, tmp_path):
     assert TOKEN_PATH.read_text() == "tok999"
 
 
+def test_breeze_token_endpoint_no_secret_sets_env_and_forwards(monkeypatch, tmp_path):
+    """The in-cockpit 🔑 form posts just the token (login-gated, no secret): it sets the env,
+    persists the file, and forwards to the recorder over HTTP."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RECORDER_URL", "https://recorder.example/")   # trailing slash trimmed
+    c = _client(monkeypatch)
+    import web.cockpit_service as cs
+
+    monkeypatch.setattr(cs, "_probe_breeze", lambda: "connected")
+    posted: dict = {}
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _fake_urlopen(req, timeout=0):
+        posted["url"] = req.full_url
+        posted["body"] = req.data.decode()
+        return _Resp()
+
+    monkeypatch.setattr(cs.urllib.request, "urlopen", _fake_urlopen)
+
+    r = c.post("/api/breeze-token", data={"token": "  tokABC  "}, auth=("trader", "pw"))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["cockpit"] == "connected" and body["recorder"] == "ok"
+    assert os.environ["BREEZE_SESSION_TOKEN"] == "tokABC"             # stripped
+    from deploy.control import TOKEN_PATH
+    assert TOKEN_PATH.read_text() == "tokABC"
+    assert posted["url"] == "https://recorder.example/token"          # no double slash
+    assert "token=tokABC" in posted["body"] and "secret=s3cret" in posted["body"]
+
+
+def test_breeze_token_endpoint_recorder_unconfigured(monkeypatch, tmp_path):
+    """With RECORDER_URL unset the cockpit still applies the token and says so plainly."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RECORDER_URL", raising=False)
+    c = _client(monkeypatch)
+    import web.cockpit_service as cs
+    monkeypatch.setattr(cs, "_probe_breeze", lambda: "connected")
+    r = c.post("/api/breeze-token", data={"token": "tok1"}, auth=("trader", "pw"))
+    assert r.status_code == 200
+    assert r.json()["recorder"] == "not configured — set RECORDER_URL"
+    assert os.environ["BREEZE_SESSION_TOKEN"] == "tok1"
+
+
+def test_breeze_token_endpoint_requires_auth(monkeypatch):
+    c = _client(monkeypatch)
+    assert c.post("/api/breeze-token", data={"token": "x"}).status_code == 401
+
+
 def test_cockpit_routes_reachable_through_mount(monkeypatch):
     """The mounted cockpit is served under the auth-gated outer app."""
     c = _client(monkeypatch)

@@ -17,10 +17,38 @@ async function poll() {
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderChart(d); renderOI(d); renderStrategy();
     fetchChart(); fetchRecord();
+    // Reveal the token form when the feed reports a Breeze/token/OI problem in its notes.
+    flagTokenNeeded(/token|session|breeze|oi:/i.test((d.notes || []).join(" ")));
     // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
     // (all four tabs); the frozen head carries its cached read.
   } catch (e) {
     $("dot").className = "dot err"; $("meta").textContent = "error: " + e.message;
+    flagTokenNeeded(true);     // a failing poll is often an expired token — offer entry
+  }
+}
+
+// Surface the token entry when the feed looks unauthenticated (amber button + open form).
+function flagTokenNeeded(needed) {
+  $("tokenBtn").classList.toggle("warn", !!needed);
+  if (needed) $("tokenForm").hidden = false;
+}
+
+// POST today's Breeze token to the cockpit (applies it here + forwards to the recorder).
+async function postToken() {
+  const token = $("tokenInput").value.trim();
+  if (!token) return;
+  $("tokenMsg").textContent = "saving…";
+  try {
+    const fd = new FormData(); fd.append("token", token);
+    const r = await fetch("/api/breeze-token", { method: "POST", body: fd });
+    if (r.status === 404) { $("tokenMsg").textContent = "token endpoint only on the deployed cockpit"; return; }
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    const d = await r.json();
+    $("tokenMsg").textContent = `cockpit: ${d.cockpit}  ·  recorder: ${d.recorder}`;
+    $("tokenInput").value = "";
+    poll();                    // pick up the freshly authenticated feed
+  } catch (e) {
+    $("tokenMsg").textContent = "failed: " + e.message;
   }
 }
 
@@ -301,6 +329,9 @@ function appendMsg(role, text, file) {
 $("analyseBtn").onclick = analyse;
 $("approveBtn").onclick = () => decide("approve");
 $("rejectBtn").onclick = () => decide("reject");
+$("tokenBtn").onclick = () => { $("tokenForm").hidden = !$("tokenForm").hidden; };
+$("tokenSave").onclick = postToken;
+$("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });
 $("chatForm").onsubmit = sendChat;
 document.querySelectorAll("#stratTabs button").forEach((b) =>
   b.addEventListener("click", () => setStrat(b.dataset.strat)));

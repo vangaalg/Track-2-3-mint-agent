@@ -91,16 +91,27 @@ and **persists its decision journal + learning memory** to a private repo.
 | `RECORDER_TOKEN_SECRET` | guards the fallback `POST /token` |
 | `DATA_REPO_URL` | **the SAME** private data repo the recorder uses (read replica → inherits the token + OI store) |
 | `JOURNAL_REPO_URL` | a **separate** private repo for the journal, `https://<PAT>@github.com/vangaalg/mint-journal.git` |
+| `RECORDER_URL` | the recorder service's public HTTPS URL (so the cockpit's token form can forward today's token to it — single entry point) |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |
 | `SYNC_EVERY_MIN` | optional, journal push cadence, default `30` |
+
+> **One PAT, both repos:** you can use a SINGLE fine-grained PAT for `DATA_REPO_URL` and
+> `JOURNAL_REPO_URL` — give it *Contents: read/write* on both private repos (or scope it to
+> "All repositories") and reuse the same token string in both URLs.
 
 ## 3. Use it
 - Open the service's HTTPS URL → the browser prompts for `COCKPIT_USER`/`COCKPIT_PASSWORD`
   → the cockpit loads. `/healthz` stays open (for an uptime monitor); `/cockpit-status`
   shows sync state + a token fallback form.
-- **Token:** you already POST today's Breeze token to the *recorder* each morning; the
-  cockpit pulls the shared data repo (~every 10 min) and picks it up automatically. If you
-  need it instantly, paste it on the cockpit's `/cockpit-status` page too.
+- **Token (primary, in-app):** tap the **🔑 Token** button in the cockpit header → paste
+  today's Breeze session token → **Save**. No secret needed (you're already logged in). It
+  applies the token to the cockpit AND forwards it to the recorder (via `RECORDER_URL`), so
+  this is the *one* place you refresh the token — the separate recorder phone page is now an
+  optional fallback. The form auto-reveals (amber button) whenever the feed looks
+  unauthenticated. The response shows `cockpit: connected · recorder: ok`.
+- **Token (fallbacks):** the cockpit also still pulls the shared data repo (~every 10 min),
+  so a token POSTed to the recorder is inherited automatically; `/cockpit-status` keeps the
+  secret-guarded form too.
 - **Journal:** every approve/reject commits to `JOURNAL_REPO_URL` (plus a periodic push),
   so your track record + Claude's memory survive redeploys. `git clone` it to analyze.
 
