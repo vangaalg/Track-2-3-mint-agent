@@ -1,29 +1,37 @@
-"""Always-on host for the trading COCKPIT (Railway) — the live UI, authed + persisted.
+"""Always-on host for the trading COCKPIT (Railway) — the live UI + the OI recorder.
 
-A thin deployable wrapper around ``web.server.app`` (the cockpit). It adds the three
-deploy concerns that the local ``uvicorn web.server:app`` doesn't need:
+A deployable wrapper around ``web.server.app`` (the cockpit). One Railway service runs BOTH
+the dashboard AND the OI/macro recorder loop, so the trader has a single URL, a single login,
+and a single place to enter the daily token. It adds the deploy concerns the local
+``uvicorn web.server:app`` doesn't need:
 
 1. **Auth** — HTTP Basic over Railway's TLS (``COCKPIT_USER`` / ``COCKPIT_PASSWORD``),
    fail-closed so the cockpit is never exposed unauthenticated. The cockpit makes Breeze
    pulls + Claude calls, so an open URL would leak positions and spend credits.
-2. **Daily Breeze token** — auto-restored from the *shared* private data repo
-   (``DATA_REPO_URL``, the same one the recorder pushes its token to), so you POST the
-   token once (to the recorder) and the cockpit picks it up; a ``/token`` page is the
-   manual fallback. The cockpit only PULLS the data repo (read replica) → no conflict.
-3. **Journal persistence** — the decision log + learning DB are redirected (via the
+2. **Daily Breeze token** — entered once in the dashboard (the header 🔑 button →
+   ``POST /api/breeze-token``); applied to ``os.environ`` (both the cockpit pulls and the
+   in-process recorder read it fresh on every fetch), persisted under the data repo, and
+   eagerly pushed so a restart restores it. The ``/token`` page is a secret-guarded fallback.
+3. **OI/macro recorder** — ``feeds.recorder.run`` runs in a daemon thread (15-min indices /
+   60-min stocks), so OI accumulation no longer needs a separate service. This service is the
+   **sole writer** of the data repo (no two-writer conflict).
+4. **Journal persistence** — the decision log + learning DB are redirected (via the
    ``JOURNAL_DB`` / ``DECISIONS_LOG`` env, honored by ``web.server``) into ``journal_store/``,
    a clone of a SEPARATE private repo (``JOURNAL_REPO_URL``) pushed periodically + after
    each decision, so the track-record + Claude's memory survive redeploys.
 
 The cockpit app is **mounted** under a fresh outer app (not mutated in place) so importing
-this module never alters ``web.server.app`` for the rest of the test suite. Deploy as a
-SECOND Railway service with a custom start command (``uvicorn web.cockpit_service:app``) —
-see DEPLOY.md. Set ``COCKPIT_NO_BG=1`` to skip the background threads (tests / local).
+this module never alters ``web.server.app`` for the rest of the test suite. Deploy with the
+start command ``uvicorn web.cockpit_service:app`` (also the Procfile default) — see DEPLOY.md.
+Set ``COCKPIT_NO_BG=1`` to skip the background threads (tests / local). To split the recorder
+back out into its own service instead, run ``web.recorder_service`` separately and point the
+cockpit's ``RECORDER_URL`` at it (the token form then forwards over HTTP).
 """
 
 from __future__ import annotations
 
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -42,9 +50,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 import web.server as server
 from web.server import app as cockpit             # the cockpit FastAPI app (routes + static)
 from deploy import control, gitsync
+from feeds import recorder
 
 STATUS: dict = {"started": None, "last_push": None, "last_pull": None,
-                "token_restored": False, "errors": []}
+                "token_restored": False, "errors": [],
+                "last_cycle": None, "saved": [], "macro": None, "recorder": "off"}
 
 @asynccontextmanager
 async def lifespan(app):
@@ -87,11 +97,9 @@ def _breeze_status(ttl: int = 60, force: bool = False) -> str:
 
 
 def _forward_token(token: str) -> str:
-    """Best-effort: hand today's token to the SEPARATE recorder service so OI accumulation
-    keeps running from a single entry point. The cockpit can't reach the recorder via the
-    shared data repo mid-session (the recorder only pushes, never re-pulls), so forward over
-    HTTP to its `POST /token` (guarded by the shared RECORDER_TOKEN_SECRET). No-op + a clear
-    message when RECORDER_URL is unset; never raises."""
+    """Best-effort: hand today's token to a SEPARATE recorder service (the optional
+    two-service layout) so its OI accumulation keeps running. Forward over HTTP to its
+    `POST /token` (guarded by the shared RECORDER_TOKEN_SECRET). Never raises."""
     base = (os.environ.get("RECORDER_URL") or "").strip().rstrip("/")
     if not base:
         return "not configured — set RECORDER_URL"
@@ -103,6 +111,28 @@ def _forward_token(token: str) -> str:
             return "ok" if resp.status == 200 else f"recorder HTTP {resp.status}"
     except Exception as exc:
         return f"forward failed: {exc}"
+
+
+def _recorder_target(token: str) -> str:
+    """Where today's token reaches the OI recorder. Combined deploy: the recorder runs in
+    THIS process (same env), so it just picks the token up — report that. Two-service deploy:
+    forward over HTTP to the external recorder (``RECORDER_URL``)."""
+    if os.environ.get("RECORDER_URL"):
+        return _forward_token(token)
+    if STATUS.get("recorder") == "running":
+        return "in-process (combined service)"
+    return "not configured — set RECORDER_URL"
+
+
+def _persist_token_now() -> None:
+    """Eagerly commit+push the token file to the data repo so a restart shortly after the
+    POST still restores it (don't wait for the periodic sync). No-op without a data repo."""
+    if not os.environ.get("DATA_REPO_URL"):
+        return
+    try:
+        gitsync.commit_push("data", msg="cockpit token update")
+    except Exception:
+        pass
 
 
 @app.post("/token")
@@ -124,8 +154,9 @@ def set_breeze_token(token: str = Form(...)):
     token = token.strip()
     os.environ["BREEZE_SESSION_TOKEN"] = token
     control.save_token_file(token)
+    _persist_token_now()
     return {"ok": True, "cockpit": _breeze_status(force=True),
-            "recorder": _forward_token(token)}
+            "recorder": _recorder_target(token)}
 
 
 @app.get("/healthz")
@@ -152,7 +183,10 @@ def status_page():
 </form>
 <hr><pre>started:        {s['started']}
 token restored: {s['token_restored']}
-last pull:      {s['last_pull']}
+recorder:       {s['recorder']}
+last cycle:     {s['last_cycle']}
+saved:          {s['saved']}
+macro:          {s['macro']}
 last push:      {s['last_push']}
 errors:         {err}</pre></body>"""
 
@@ -169,18 +203,42 @@ def _push_journal() -> None:
         pass
 
 
+def _on_cycle(info: dict) -> None:
+    """Surface the recorder loop's live status on /healthz + /cockpit-status."""
+    STATUS.update(last_cycle=info["ts"], saved=info["saved"], macro=info["macro"])
+    if info.get("errors"):
+        STATUS["errors"] = info["errors"]
+
+
+def _recorder_thread() -> None:
+    """Run the OI/macro accumulation loop in-process (same env → reads today's token)."""
+    names = os.environ.get("RECORDER_INSTRUMENTS")
+    insts = recorder.select_instruments(
+        names.split(",") if names else None,
+        with_stocks=os.environ.get("RECORDER_STOCKS") == "1")
+    recorder.run(insts or None,
+                 index_every=int(os.environ.get("INDEX_EVERY_MIN", "15")),
+                 stock_every=int(os.environ.get("STOCK_EVERY_MIN", "60")),
+                 on_cycle=_on_cycle)
+
+
 def _start_background() -> None:
     STATUS["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    # Shared data repo = READ replica (token + OI store); never pushed (no recorder conflict).
+    # Shared data repo = READ-WRITE: this combined service is the SOLE writer (cockpit reads
+    # the token + OI store, and the in-process recorder writes fresh OI/macro). One writer →
+    # no two-service conflict.
     control.start_repo_sync("data", os.environ.get("DATA_REPO_URL"),
-                            every_min=int(os.environ.get("DATA_PULL_MIN", "10")),
-                            push=False, msg_prefix="data", status=STATUS)
+                            every_min=int(os.environ.get("SYNC_EVERY_MIN", "30")),
+                            push=True, msg_prefix="data", status=STATUS)
     STATUS["token_restored"] = control.restore_token()
     # Journal repo = READ-WRITE store for the decision log + learning DB.
     Path(_JDIR).mkdir(parents=True, exist_ok=True)
     control.start_repo_sync(_JDIR, os.environ.get("JOURNAL_REPO_URL"),
                             every_min=int(os.environ.get("SYNC_EVERY_MIN", "30")),
                             push=True, msg_prefix="journal", status=STATUS)
+    # OI/macro recorder loop — accumulate the live flywheel from the same service.
+    threading.Thread(target=_recorder_thread, daemon=True).start()
+    STATUS["recorder"] = "running"
 
 
 server.AFTER_WRITE = _push_journal               # push the journal on each decision

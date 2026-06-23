@@ -394,6 +394,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       updated. Tested in tests/test_cockpit_service.py (no-secret set+forward, RECORDER_URL unset, auth
       required); `web.server` untouched. Suite green.
 
+- [x] **Combined single Railway service — cockpit + OI recorder in one process (confirmed w/ trader).** The
+      trader runs everything on ONE Railway service and wants the dashboard AND the OI/macro flywheel together,
+      with the daily token entered once in the cockpit. `web/cockpit_service` now ALSO runs `feeds.recorder.run`
+      in a daemon thread (`_recorder_thread`/`_on_cycle`, env knobs `RECORDER_INSTRUMENTS`/`RECORDER_STOCKS`/
+      `INDEX_EVERY_MIN`/`STOCK_EVERY_MIN`) and becomes the **sole writer** of the data repo (`_start_background`
+      data sync flipped `push=False`→`push=True`). The token endpoint now eager-pushes the token to the data
+      repo (`_persist_token_now`) and reports the recorder target via `_recorder_target`: forwards over HTTP
+      when `RECORDER_URL` is set (the optional two-service split), else `in-process (combined service)` when the
+      loop is running (so the combined deploy reads clearly, not "misconfigured"). `Procfile` switched to
+      `uvicorn web.cockpit_service:app` so the single service "just works"; `/cockpit-status` + `/healthz` show
+      `recorder/last_cycle/saved/macro`. `recorder_service.py` kept intact for the split-out option. Decided w/
+      trader: combine (simplest ops; redeploys briefly pause recording — avoid market hours). DEPLOY.md rewritten
+      to the one-service layout (+ an optional "split later" note); JOURNAL_REPO_URL must DIFFER from
+      DATA_REPO_URL (same PAT, different repo). Tested in tests/test_cockpit_service.py (in-process recorder
+      target, `_start_background` launches the loop + data push=True); `web.server` untouched. Suite green.
+
 - [x] **Two specialist subagents (`.claude/agents/`, advisory personas).** `option-trader.md` (full
       option-strategy playbook → risk-defined, cost-aware, intraday-flat trades; grounded in the journal
       method — OI-wall S/R + ±37/72 bands, PCR/max-pain, macro — and the hard backtest truths: the 3-min

@@ -63,23 +63,24 @@ load_summary("NIFTY")   # growing PCR / max-pain / walls / bands time series
 
 ---
 
-# Deploy — Cockpit (the live trading UI) on Railway
+# Deploy — Combined cockpit + recorder on Railway (one service)
 
-Reach the cockpit from anywhere (phone/laptop) instead of `localhost:8000`. It runs as a
-**second Railway service** from this same repo, isolated from the recorder so a cockpit
-redeploy never disrupts the recording flywheel. It is **password-protected** (HTTP Basic
-over Railway's TLS), inherits the daily Breeze token from the recorder's shared data repo,
-and **persists its decision journal + learning memory** to a private repo.
+The simplest deploy: **one** Railway service runs BOTH the live trading cockpit AND the
+OI/macro recorder loop. One URL, one login, one place to enter the daily token. It is
+**password-protected** (HTTP Basic over Railway's TLS), is the **sole writer** of the shared
+data repo (OI store + token), and **persists its decision journal + learning memory** to a
+SEPARATE private repo.
 
-> Vercel/Netlify won't work — the cockpit is a long-running stateful server (in-memory
-> caches, the gated trigger queue, background pulls), not serverless functions.
+> Vercel/Netlify won't work — this is a long-running stateful server (in-memory caches, the
+> gated trigger queue, the recorder loop, background git sync), not serverless functions.
 
 ## 1. Create the service
-- Same Railway project → **New Service → Deploy from GitHub repo** → this repo, branch
+- Railway project → **New Service → Deploy from GitHub repo** → this repo, branch
   `claude/dazzling-lamport-7d0je8`.
-- **Settings → Deploy → Custom Start Command:**
-  `uvicorn web.cockpit_service:app --host 0.0.0.0 --port $PORT`
-  (the recorder keeps the default `Procfile`; only this service overrides it).
+- The `Procfile` already runs the combined app
+  (`uvicorn web.cockpit_service:app --host 0.0.0.0 --port $PORT`), so **no custom start
+  command is needed**. (If you previously set a custom start command to this same line, that's
+  fine too — you can clear it.)
 
 ## 2. Environment variables (Railway → Variables)
 | Variable | Value |
@@ -87,41 +88,56 @@ and **persists its decision journal + learning memory** to a private repo.
 | `COCKPIT_USER` / `COCKPIT_PASSWORD` | the login for the cockpit (you choose) — **required**, fail-closed |
 | `ANTHROPIC_API_KEY` | for Claude's read/sparring |
 | `BREEZE_API_KEY` / `BREEZE_API_SECRET` | your Breeze app creds |
+| `BREEZE_SESSION_TOKEN` | today's token (you'll refresh it daily in the cockpit) |
 | `TWELVEDATA_API_KEY` | macro scorecard (optional) |
 | `RECORDER_TOKEN_SECRET` | guards the fallback `POST /token` |
-| `DATA_REPO_URL` | **the SAME** private data repo the recorder uses (read replica → inherits the token + OI store) |
-| `JOURNAL_REPO_URL` | a **separate** private repo for the journal, `https://<PAT>@github.com/vangaalg/mint-journal.git` |
-| `RECORDER_URL` | the recorder service's public HTTPS URL (so the cockpit's token form can forward today's token to it — single entry point) |
+| `DATA_REPO_URL` | the private data repo (OI store + token) — this service READS and WRITES it |
+| `JOURNAL_REPO_URL` | a **separate** private repo for the journal, `https://<PAT>@github.com/vangaalg/mint-journal.git` (must DIFFER from `DATA_REPO_URL`) |
+| `RECORDER_INSTRUMENTS` | optional, e.g. `NIFTY,BANKNIFTY` (default = enabled defaults) |
+| `RECORDER_STOCKS` / `INDEX_EVERY_MIN` / `STOCK_EVERY_MIN` | optional recorder knobs (default `15` / `60` min) |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |
-| `SYNC_EVERY_MIN` | optional, journal push cadence, default `30` |
+| `SYNC_EVERY_MIN` | optional, data + journal push cadence, default `30` |
 
-> **One PAT, both repos:** you can use a SINGLE fine-grained PAT for `DATA_REPO_URL` and
-> `JOURNAL_REPO_URL` — give it *Contents: read/write* on both private repos (or scope it to
-> "All repositories") and reuse the same token string in both URLs.
+> **One PAT, two repos:** use a SINGLE fine-grained PAT for `DATA_REPO_URL` and
+> `JOURNAL_REPO_URL` — give it *Contents: read/write* on **both** private repos (or scope it to
+> "All repositories") and reuse the same token string in both URLs. The **repos must differ**
+> (e.g. `mint-data` + `mint-journal`); only the token is shared.
+>
+> `RECORDER_URL` is **not** used in this combined layout (the recorder is in-process).
 
 ## 3. Use it
 - Open the service's HTTPS URL → the browser prompts for `COCKPIT_USER`/`COCKPIT_PASSWORD`
-  → the cockpit loads. `/healthz` stays open (for an uptime monitor); `/cockpit-status`
-  shows sync state + a token fallback form.
-- **Token (primary, in-app):** tap the **🔑 Token** button in the cockpit header → paste
-  today's Breeze session token → **Save**. No secret needed (you're already logged in). It
-  applies the token to the cockpit AND forwards it to the recorder (via `RECORDER_URL`), so
-  this is the *one* place you refresh the token — the separate recorder phone page is now an
-  optional fallback. The form auto-reveals (amber button) whenever the feed looks
-  unauthenticated. The response shows `cockpit: connected · recorder: ok`.
-- **Token (fallbacks):** the cockpit also still pulls the shared data repo (~every 10 min),
-  so a token POSTed to the recorder is inherited automatically; `/cockpit-status` keeps the
-  secret-guarded form too.
+  → the cockpit loads. `/healthz` stays open (uptime monitor); `/cockpit-status` shows sync +
+  recorder state and a token fallback form.
+- **Daily token (in-app):** tap the **🔑 Token** button in the cockpit header → paste today's
+  Breeze session token → **Save**. No secret needed (you're already logged in). It applies the
+  token to the cockpit, persists it to the data repo, and the in-process recorder picks it up
+  on its next cycle — so this is the *one* place you refresh the token. The form auto-reveals
+  (amber button) whenever the feed looks unauthenticated. The response shows
+  `cockpit: connected · recorder: in-process (combined service)`.
+- **Recorder:** `/cockpit-status` (or `/healthz`) shows `recorder: running`, a fresh
+  `last cycle`, and `saved: ['NIFTY', …]` advancing every 15 min.
 - **Journal:** every approve/reject commits to `JOURNAL_REPO_URL` (plus a periodic push),
   so your track record + Claude's memory survive redeploys. `git clone` it to analyze.
 
 ## Notes / risks
 - **Token is manual by design** — Breeze has no refresh API. If a morning is missed, that day
-  isn't recorded (logged, non-fatal); just post the token when you can.
+  isn't recorded (logged, non-fatal); just enter the token when you can.
+- **Redeploys pause recording** — since one service does both, a cockpit redeploy briefly stops
+  the recorder. Avoid redeploying during market hours.
 - **Breeze from a Railway IP** — verify the first `connected` probe. If Breeze blocks the cloud
   IP, fall back to a small always-on box you control (same Procfile/command).
-- **Data-loss window** ≤ `SYNC_EVERY_MIN` (default 30 min) if the container dies between pushes.
+- **Data-loss window** ≤ `SYNC_EVERY_MIN` (default 30 min) if the container dies between pushes
+  (the token is also pushed eagerly on entry).
 - **Secrets in the data repo** — API key/secret live only in env, never the repo. The one
   exception is the **daily Breeze session token**: it's persisted under `data/recorder_state/`
   so it survives restarts (a deliberate tradeoff — the token expires daily and the data repo is
   private). Everything else in the repo is parquet.
+
+## Optional — split the recorder into its own service later
+If you'd rather isolate recording (so a cockpit redeploy never pauses it), run a **second**
+service with the default recorder (`uvicorn web.recorder_service:app`, the `RECORDER_INSTRUMENTS`
+etc. vars, and `DATA_REPO_URL`), and on the cockpit set `RECORDER_URL` to that service's public
+URL. The cockpit then stops running the loop itself and **forwards** the token to the recorder
+over HTTP instead (response shows `recorder: ok`). The combined single-service layout above is
+the recommended default.

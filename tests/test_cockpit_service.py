@@ -107,6 +107,43 @@ def test_breeze_token_endpoint_requires_auth(monkeypatch):
     assert c.post("/api/breeze-token", data={"token": "x"}).status_code == 401
 
 
+def test_breeze_token_recorder_inprocess(monkeypatch, tmp_path):
+    """Combined service: no RECORDER_URL, but the in-process recorder is running, so the token
+    endpoint reports it's covered locally (not a misconfiguration)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RECORDER_URL", raising=False)
+    c = _client(monkeypatch)
+    import web.cockpit_service as cs
+    monkeypatch.setattr(cs, "_probe_breeze", lambda: "connected")
+    monkeypatch.setitem(cs.STATUS, "recorder", "running")     # simulate the live loop
+    r = c.post("/api/breeze-token", data={"token": "tokX"}, auth=("trader", "pw"))
+    assert r.status_code == 200
+    assert r.json()["recorder"] == "in-process (combined service)"
+    assert os.environ["BREEZE_SESSION_TOKEN"] == "tokX"
+
+
+def test_combined_starts_recorder_and_writes_data(monkeypatch):
+    """_start_background runs the recorder loop in a thread and makes the data repo a WRITER."""
+    monkeypatch.setenv("RECORDER_TOKEN_SECRET", "s3cret")
+    monkeypatch.setenv("COCKPIT_PASSWORD", "pw")
+    monkeypatch.delenv("DATA_REPO_URL", raising=False)
+    monkeypatch.delenv("JOURNAL_REPO_URL", raising=False)
+    import web.cockpit_service as cs
+
+    syncs: list = []
+    monkeypatch.setattr(cs.control, "start_repo_sync",
+                        lambda path, url, **kw: syncs.append((path, kw.get("push"))))
+    monkeypatch.setattr(cs.control, "restore_token", lambda: False)
+    started: dict = {}
+    monkeypatch.setattr(cs.threading, "Thread",
+                        lambda target, daemon=False: type("T", (), {"start": lambda self: started.setdefault("t", target)})())
+
+    cs._start_background()
+    assert ("data", True) in syncs                            # data repo is now READ-WRITE
+    assert started["t"] is cs._recorder_thread                # recorder loop launched
+    assert cs.STATUS["recorder"] == "running"
+
+
 def test_cockpit_routes_reachable_through_mount(monkeypatch):
     """The mounted cockpit is served under the auth-gated outer app."""
     c = _client(monkeypatch)

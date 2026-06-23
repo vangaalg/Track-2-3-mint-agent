@@ -33,7 +33,8 @@ function flagTokenNeeded(needed) {
   if (needed) $("tokenForm").hidden = false;
 }
 
-// POST today's Breeze token to the cockpit (applies it here + forwards to the recorder).
+// POST today's Breeze token to the cockpit (applies it here; the in-process recorder picks
+// it up, or it's forwarded to a separate recorder when RECORDER_URL is set).
 async function postToken() {
   const token = $("tokenInput").value.trim();
   if (!token) return;
