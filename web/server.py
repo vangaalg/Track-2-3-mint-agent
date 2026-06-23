@@ -56,9 +56,10 @@ DEFAULT_SIZE = 75
 # THE active resolver: the trader's journal 3-min strategy (trio + 2-close confirm,
 # trigger-only — HTF is trend context, not a gate). Live cockpit + training both use it.
 RESOLVER_CFG = journal_mtf_config()
-# Multi-strategy registry — the 4 alert streams on the cockpit. Trade-1 (the 3-min) is
-# OI-automated; the other three are mechanical chart triggers the trader cross-checks
-# with OI MANUALLY (no auto OI-boost). The condor is non-directional / propose-only.
+# Multi-strategy registry — the 4 alert streams on the cockpit. The three directional
+# streams (3-min, CPR-ST, ORB) are OI-automated: Claude auto-reads + the OI-confluence
+# sizing boost auto-applies after a trigger. The condor is non-directional / propose-only.
+# Execution stays propose-only on all but the 3-min (the trader places the legs).
 STRATEGIES = [
     {"id": "trade1", "label": "3-min", "cfg": RESOLVER_CFG, "kind": "directional"},
     {"id": "cpr_st", "label": "CPR-ST", "cfg": cpr_st_mtf_config(), "kind": "directional"},
@@ -164,10 +165,11 @@ def _refresh(symbol: str, size: int) -> None:
                 apply_strike(p, select_strike(table, snap.spot, p.direction))
             return p
 
-        prop = _strike(propose_trade1(snap, size))     # Trade-1: OI-automated (boost in _run_read)
+        prop = _strike(propose_trade1(snap, size))     # strike now; OI boost in _run_head_read
         props = {
             "trade1": prop,
-            "cpr_st": _strike(propose_cpr_st(snap, size_lots=size)),   # OI manual: strike only
+            # directional streams: strike now, Claude read + OI boost auto-applied on the head
+            "cpr_st": _strike(propose_cpr_st(snap, size_lots=size)),
             "orb": _strike(propose_orb(snap, size_lots=size)),
             "condor": propose_condor(snap, table, expiry_weekday=EXPIRY_WEEKDAY),
         }
@@ -332,21 +334,22 @@ def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
     )
     if table is not None and direction in ("long", "short"):
         apply_strike(prop, select_strike(table, snap.spot, direction))
-    if sid == "trade1":      # carry the OI-confluence nudge from the cached read
+    if direction in ("long", "short"):   # auto OI-confluence nudge on every directional tab
         cached = _state["reads"].get((sid, head["ts"])) or {}
         apply_oi_boost(prop, cached.get("oi_bias"))
     return prop
 
 
 def _run_head_read(sid: str, head: dict) -> dict:
-    """Run Claude once for a strategy's head trigger and cache it by (sid, ts). The
-    OI-boost-to-sizing nudge stays Trade-1 only (the other three are OI-manual)."""
+    """Run Claude once for a strategy's head trigger and cache it by (sid, ts). The OI
+    confluence sizing boost auto-applies on every DIRECTIONAL tab (trade1/cpr_st/orb);
+    the condor is non-directional so it gets no boost."""
     snap = _state["snap"]
     memory = _learning_memory()
     _state["memory"] = memory
     prop = _proposal_from_head(sid, head, snap, _state.get("table"))
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
-    if sid == "trade1":
+    if getattr(prop, "direction", None) in ("long", "short"):   # auto OI boost, all directional tabs
         apply_oi_boost(prop, getattr(read, "oi_bias", None))
     _state["reads"][(sid, head["ts"])] = asdict(read)
     _state["read"] = read              # back-compat for _save_context_for / chat

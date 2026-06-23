@@ -69,18 +69,18 @@ def _open_trig(ts="2024-01-01T09:18:00+05:30", direction="long", conf=3):
             "points": 0.0, "rupees": 0.0}
 
 
-def _seed_heads(monkeypatch, trade1=None):
-    """Force a deterministic per-strategy queue (trade1 gets `trade1` triggers, the rest
-    empty) so a frozen HEAD exists for the gated-decision tests."""
+def _seed_heads(monkeypatch, trade1=None, sid="trade1", trigs=None):
+    """Force a deterministic per-strategy queue (`sid` gets the triggers, the rest empty)
+    so a frozen HEAD exists for the gated-decision tests."""
     empty = {"session": None, "triggers": [], "last": None,
              "summary": {"n": 0, "wins": 0, "losses": 0, "open": 0,
                          "net_points": 0.0, "net_rupees": 0.0, "hit_rate": None}}
-    trigs = trade1 if trade1 is not None else [_open_trig()]
-    q = {"session": "2024-01-01", "triggers": trigs, "last": trigs[-1] if trigs else None,
-         "summary": {**empty["summary"], "n": len(trigs), "open": len(trigs)}}
+    rows = trigs if trigs is not None else (trade1 if trade1 is not None else [_open_trig()])
+    q = {"session": "2024-01-01", "triggers": rows, "last": rows[-1] if rows else None,
+         "summary": {**empty["summary"], "n": len(rows), "open": len(rows)}}
     monkeypatch.setattr(srv, "_strategy_queue",
-                        lambda sid, snap, size: q if sid == "trade1" else dict(empty))
-    return trigs
+                        lambda s, snap, size: q if s == sid else dict(empty))
+    return rows
 
 
 def test_snapshot_returns_chart_oi_chain_proposal(client):
@@ -119,7 +119,8 @@ def test_snapshot_exposes_all_four_strategy_proposals(client):
     # the condor is non-directional / propose-only.
     assert d["proposals"]["condor"]["trade_type"] == "trade_condor"
     assert d["proposals"]["condor"]["direction"] == "flat"
-    # OI-boost fields stay unique to Trade-1 (the others are OI-manual → no auto bias).
+    # the LIVE proposal build never runs Claude, so it carries no bias until Claude runs
+    # on the head (the OI boost lands on the frozen head proposal, not on d["proposals"]).
     assert d["proposals"]["cpr_st"]["oi_bias"] is None
 
 
@@ -204,6 +205,30 @@ def test_per_tab_queues_independent(client, monkeypatch):
     assert d["heads"]["trade1"] is not None
     # the other tabs have their own (empty) queues — unaffected
     assert d["heads"].get("orb") is None and d["heads"].get("cpr_st") is None
+
+
+def test_oi_boost_auto_applies_on_mechanical_tab(client, monkeypatch, tmp_path):
+    """OI confluence is now automatic on the directional mechanical tabs (not just 3-min):
+    a CPR-ST long whose chain reads bullish gets its bias + a conviction-nudged size on
+    the logged proposal — like Trade-1."""
+    import journal.log as jlog
+    from journal import store
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    monkeypatch.setattr(srv, "READ_COMPLETER", lambda system, user: ClaudeRead(
+        agrees_with_engine=True, chart_analysis="ca", oi_analysis="oa", where_moving="wm",
+        right_trade="rt", challenge="ch", recommendation="enter", confidence=4,
+        key_risk="kr", oi_bias="bullish"))
+    t = _open_trig(direction="long", conf=3)
+    _seed_heads(monkeypatch, sid="cpr_st", trigs=[t])
+    client.get("/api/snapshot")                      # auto-fires Claude on the cpr_st head
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "cpr_st",
+                                            "ts": t["ts"], "live": "false"})
+    assert r.status_code == 200
+    from analysis.trade1 import size_for_confidence
+    rec = store.load_records(srv.JOURNAL_DB)[0]["proposal"]
+    assert rec["oi_bias"] == "bullish"                                  # chain lean recorded
+    assert rec["size_lots"] == size_for_confidence(3 + 1)              # +1 conviction nudge
 
 
 def test_chat_round_trips(client):

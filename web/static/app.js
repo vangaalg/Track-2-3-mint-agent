@@ -32,7 +32,7 @@ function renderStrategy() {
   currentHead = head;
   $("stratNote").hidden = (currentStrat === "trade1");
   if (currentStrat !== "trade1") $("stratNote").textContent =
-    "Mechanical chart trigger — cross-check OI manually. Propose-only (logged, not auto-executed).";
+    "Mechanical chart trigger — Claude + OI auto-read and sized after the trigger. Propose-only: place it yourself (not auto-executed).";
   $("trigTitle").textContent = `📛 ${STRAT_LABEL[currentStrat]} — today's triggers`;
 
   if (!head) { renderWatching(); }
