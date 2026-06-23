@@ -154,11 +154,13 @@ function renderWatching() {
 // A PINNED, frozen trigger awaiting the trader's approve/reject (stable across polls).
 function renderHead(head) {
   $("propBox").className = "propbox enter";
+  const bySrc = head.levels_source === "claude"
+    ? `🎯 levels by Claude` : `levels by engine`;
   $("propBox").innerHTML = `🔔 TRIGGER · ${head.direction.toUpperCase()} `
     + `<span class="muted">${(head.ts || "").slice(11, 16)}</span>`
     + `<br>Entry ${n(head.entry)} · Stop ${n(head.stop)} · Target ${n(head.target)}`
     + `<br>R:R ${head.rr} · ${head.size_lots} lots <span class="muted">(conviction ${head.mtf_confidence}/5)</span>`
-    + `<br><span class="small muted">pinned — won't advance until you approve/reject</span>`;
+    + `<br><span class="small muted">${bySrc} · pinned — won't advance until you approve/reject</span>`;
   $("decision").hidden = false;
 }
 

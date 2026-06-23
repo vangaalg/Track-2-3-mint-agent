@@ -245,6 +245,20 @@ def _recompute_heads() -> None:
                     pass                          # never let a Claude error break the poll
 
 
+def _head_out(sid: str, h: dict | None) -> dict | None:
+    """Serialise a head for the card: the frozen trigger + its cached Claude read, with
+    Claude's clamped target/stop/R:R overlaid when present (else the engine levels stand).
+    Copies the head — never mutates `_state["heads"]` or the replay queue."""
+    if h is None:
+        return None
+    cached = _state["reads"].get((sid, h["ts"])) or {}
+    out = {**h, "read": cached or None, "levels_source": "engine"}
+    if cached.get("claude_target") is not None:
+        out.update(target=cached["claude_target"], stop=cached["claude_stop"],
+                   rr=cached["claude_rr"], levels_source="claude")
+    return out
+
+
 def _payload(symbol: str) -> dict:
     snap, prop, chain = _state["snap"], _state["prop"], _state["chain"]
     props = _state.get("props") or {"trade1": prop}
@@ -264,9 +278,9 @@ def _payload(symbol: str) -> dict:
         "proposal": prop.as_dict(),                                  # back-compat (Trade-1)
         "proposals": {sid: p.as_dict() for sid, p in props.items()},  # all 4 strategy streams
         # the GATED decision card per tab: the frozen actionable trigger + its cached
-        # Claude read (None = "watching, no active trigger"). Stable across polls.
-        "heads": {sid: ({**h, "read": _state["reads"].get((sid, h["ts"]))} if h else None)
-                  for sid, h in _state.get("heads", {}).items()},
+        # Claude read (None = "watching, no active trigger"). Stable across polls. When Claude
+        # set the levels, overlay them so the card shows Claude's target/stop/R:R (not engine's).
+        "heads": {sid: _head_out(sid, h) for sid, h in _state.get("heads", {}).items()},
         "strategies": [{"id": s["id"], "label": s["label"], "kind": s["kind"]}
                        for s in STRATEGIES],
     }
@@ -327,20 +341,29 @@ def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
     direction = head["direction"]
     conf = int(head.get("mtf_confidence") or 0)
     lots = size_for_confidence(conf)
-    entry, stop = head.get("entry"), head.get("stop")
+    entry = head.get("entry")
+    cached = _state["reads"].get((sid, head["ts"])) or {}
+    # Claude OWNS the target/stop (sanity-railed in _run_head_read); fall back to the engine's
+    # structural levels when Claude stood down / proposed nothing usable.
+    if cached.get("claude_target") is not None:
+        stop, target, rr = cached["claude_stop"], cached["claude_target"], cached["claude_rr"]
+        levels_source = "claude"
+    else:
+        stop, target, rr = head.get("stop"), head.get("target"), head.get("rr")
+        levels_source = "engine"
     rupee_risk = (round(abs(entry - stop) * LOT_SIZE * lots, 2)
                   if entry is not None and stop is not None else None)
     prop = TradeProposal(
         instrument=snap.instrument, trade_type=sid, ts=head["ts"], direction=direction,
-        spot=snap.spot, entry=entry, stop=stop, target=head.get("target"),
-        rr_ratio=head.get("rr"), size_lots=lots, mtf_confidence=conf, rupee_risk=rupee_risk,
+        spot=snap.spot, entry=entry, stop=stop, target=target,
+        rr_ratio=rr, size_lots=lots, mtf_confidence=conf, rupee_risk=rupee_risk,
         recommendation=Recommendation.ENTER,
-        context={"chart_read": snap.chart_read, "oi": snap.oi, "macro": snap.macro},
+        context={"chart_read": snap.chart_read, "oi": snap.oi, "macro": snap.macro,
+                 "levels_source": levels_source},
     )
     if table is not None and direction in ("long", "short"):
         apply_strike(prop, select_strike(table, snap.spot, direction))
     if direction in ("long", "short"):   # auto OI-confluence nudge on every directional tab
-        cached = _state["reads"].get((sid, head["ts"])) or {}
         apply_oi_boost(prop, cached.get("oi_bias"))
     return prop
 
@@ -356,9 +379,18 @@ def _run_head_read(sid: str, head: dict) -> dict:
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
     if getattr(prop, "direction", None) in ("long", "short"):   # auto OI boost, all directional tabs
         apply_oi_boost(prop, getattr(read, "oi_bias", None))
-    _state["reads"][(sid, head["ts"])] = asdict(read)
+    cached = asdict(read)
+    # Claude DECIDES the levels on a directional trigger — sanity-rail them (correct side +
+    # 2%-of-price stop cap), but NO R:R floor (min_rr=0): R:R is whatever Claude chose. Unusable
+    # / stand-down levels clamp to None → _proposal_from_head falls back to the engine levels.
+    if head.get("direction") in ("long", "short") and head.get("entry") is not None:
+        from scoring.backtest import clamp_levels
+        tgt, stp, rr = clamp_levels(head["direction"], head["entry"],
+                                    read.proposed_target, read.proposed_stop, min_rr=0.0)
+        cached["claude_target"], cached["claude_stop"], cached["claude_rr"] = tgt, stp, rr
+    _state["reads"][(sid, head["ts"])] = cached
     _state["read"] = read              # back-compat for _save_context_for / chat
-    return asdict(read)
+    return cached
 
 
 def _run_read(sid: str = "trade1") -> dict:

@@ -410,6 +410,23 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       DATA_REPO_URL (same PAT, different repo). Tested in tests/test_cockpit_service.py (in-process recorder
       target, `_start_background` launches the loop + data push=True); `web.server` untouched. Suite green.
 
+- [x] **Claude's target/stop now drive the LIVE 3-min card (Claude OWNS R:R, confirmed w/ trader).** The
+      live decision card was still showing the engine's structural levels with a fixed R:R 1.5, even though
+      Claude already proposes `proposed_target`/`proposed_stop` on ENTER (`agent/read.py`/`prompt.py`) and they
+      were cached but discarded. Wired them through in `web/server.py`: `_run_head_read` now clamps Claude's
+      levels via the backtest's `scoring.backtest.clamp_levels(... min_rr=0.0)` — **sanity rails only** (correct
+      side of entry + 2%-of-price stop cap, **NO 1.5 R:R floor**, per the trader + the backtest finding that
+      wide-stop/R:R<1 setups can be best) — and caches `claude_target/stop/rr`; `_proposal_from_head` adopts
+      them (engine levels are the fallback when Claude stands down / proposes nothing usable) so the LOGGED +
+      EXECUTED decision (`/api/decision` rebuilds via the same fn) and settling use what the trader actually
+      took; new `_head_out` overlays them onto the card payload with a `levels_source` flag; `app.js renderHead`
+      tags "🎯 levels by Claude" vs engine. Applies to all directional tabs (trade1/cpr_st/orb); condor + the
+      engine "Today's triggers" replay table are unchanged (the latter still MEASURES the mechanical trigger).
+      Decided w/ trader: Claude owns R:R (sanity rails only). Tested in tests/test_web_server.py
+      (claude-levels drive card + logged proposal, R:R<1.5 NOT floored; stand-down → engine fallback). Suite
+      green (252). Completes the deferred "surface Claude's levels in the LIVE proposal" item (training reveal
+      still pending).
+
 - [x] **Two specialist subagents (`.claude/agents/`, advisory personas).** `option-trader.md` (full
       option-strategy playbook → risk-defined, cost-aware, intraday-flat trades; grounded in the journal
       method — OI-wall S/R + ±37/72 bands, PCR/max-pain, macro — and the hard backtest truths: the 3-min

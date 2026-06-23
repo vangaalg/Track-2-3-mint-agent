@@ -231,6 +231,33 @@ def test_oi_boost_auto_applies_on_mechanical_tab(client, monkeypatch, tmp_path):
     assert rec["size_lots"] == size_for_confidence(3 + 1)              # +1 conviction nudge
 
 
+def test_claude_owns_levels_on_live_card(client, monkeypatch, tmp_path):
+    """On a 3-min ENTER, Claude's target/stop drive the card + the logged decision (sanity
+    rails only — NO 1.5 floor, so R:R can be below 1.5). Engine levels are the fallback."""
+    import journal.log as jlog
+    from journal import store
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    # LONG: Claude picks tighter levels than the engine, R:R 1.0 (would be pushed to 1.5 if floored)
+    monkeypatch.setattr(srv, "READ_COMPLETER", lambda system, user: ClaudeRead(
+        agrees_with_engine=True, chart_analysis="ca", oi_analysis="oa", where_moving="wm",
+        right_trade="rt", challenge="ch", recommendation="enter", confidence=4, key_risk="kr",
+        proposed_target=24030.0, proposed_stop=23970.0))   # entry 24000 → reward 30 / risk 30
+    t = _open_trig(direction="long", conf=3)               # engine stop 23980 / target 24060
+    _seed_heads(monkeypatch, trade1=[t])
+    head = client.get("/api/snapshot").json()["heads"]["trade1"]
+    assert head["levels_source"] == "claude"
+    assert head["stop"] == 23970.0 and head["target"] == 24030.0
+    assert head["rr"] == 1.0                                # NOT floored to 1.5
+    # the approved/logged trade carries Claude's levels (drives settling/execution)
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                            "ts": t["ts"], "live": "false"})
+    assert r.status_code == 200
+    rec = store.load_records(srv.JOURNAL_DB)[0]["proposal"]
+    assert rec["entry"] == 24000.0 and rec["stop"] == 23970.0 and rec["target"] == 24030.0
+    assert rec["rr_ratio"] == 1.0
+
+
 def test_chat_round_trips(client):
     client.get("/api/snapshot")
     r = client.post("/api/chat", data={"text": "why flat?"})
