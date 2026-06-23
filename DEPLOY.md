@@ -36,7 +36,9 @@ and runs the recorder + a git-sync loop in background threads. Data persists by 
 1. Generate today's Breeze session token (ICICI Breeze login → API session).
 2. Open the Railway service URL → paste the token + your `RECORDER_TOKEN_SECRET` → **Update token**.
 3. The page shows `breeze: connected` if the token is valid. The recorder picks it up on its
-   next 15-min cycle — no restart.
+   next 15-min cycle — no restart. The token is also persisted to the data repo, so a container
+   **restart/redeploy auto-restores it** (`/healthz` shows `token_restored`) — you only re-POST
+   once a day for a fresh token, not after every redeploy.
 4. **(Optional) Morning overlay** — on the same page, the *GIFT + events* form: enter the manual
    **GIFT Nifty** level (overrides the best-effort investing.com auto-fetch — it's the source of
    truth when investing.com blocks the server) and paste the **overnight-events note** (the
@@ -65,4 +67,7 @@ load_summary("NIFTY")   # growing PCR / max-pain / walls / bands time series
 - **Breeze from a Railway IP** — verify the first `connected` probe. If Breeze blocks the cloud
   IP, fall back to a small always-on box you control (same Procfile/command).
 - **Data-loss window** ≤ `SYNC_EVERY_MIN` (default 30 min) if the container dies between pushes.
-- **Secrets never enter the data repo** — token/keys live only in env/memory; the repo holds parquet.
+- **Secrets in the data repo** — API key/secret live only in env, never the repo. The one
+  exception is the **daily Breeze session token**: it's persisted under `data/recorder_state/`
+  so it survives restarts (a deliberate tradeoff — the token expires daily and the data repo is
+  private). Everything else in the repo is parquet.

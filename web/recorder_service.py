@@ -7,6 +7,11 @@ expires and has no refresh API) is posted from the trader's phone to ``POST /tok
 ``loaders.breeze.get_breeze_client`` reads the env fresh on every fetch, the new token reaches
 the recorder on its next cycle — no restart.
 
+Token persistence: a restart wipes the in-memory token, so the POSTed token is ALSO written
+under ``data/`` (the durable data repo) and auto-restored on boot — surviving redeploys
+without a manual re-POST. This is a deliberate exception to "secrets never enter the repo":
+the token expires daily and the data repo is private (the trader accepted the tradeoff).
+
 Lightweight imports only (no agent/analysis) so the container is cheap to boot.
 """
 
@@ -16,6 +21,7 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -25,6 +31,39 @@ from deploy import gitsync
 
 STATUS: dict = {"started": None, "last_cycle": None, "saved": [], "macro": None,
                 "errors": [], "last_push": None}
+
+# Daily Breeze token persisted under the synced data/ tree (survives restarts).
+_TOKEN_PATH = Path("data") / "recorder_state" / "breeze_session.txt"
+
+
+def _save_token_file(token: str) -> None:
+    """Persist the token under data/ so a restart can restore it (best-effort)."""
+    try:
+        _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _TOKEN_PATH.write_text(token.strip())
+    except Exception:
+        pass
+
+
+def _load_token_file() -> str | None:
+    try:
+        tok = _TOKEN_PATH.read_text().strip()
+        return tok or None
+    except Exception:
+        return None
+
+
+def _restore_token() -> bool:
+    """On boot, if no token is in the env, restore the last persisted one. Returns
+    True when a token was restored."""
+    if os.environ.get("BREEZE_SESSION_TOKEN"):
+        return False
+    tok = _load_token_file()
+    if tok:
+        os.environ["BREEZE_SESSION_TOKEN"] = tok
+        STATUS["token_restored"] = True
+        return True
+    return False
 
 
 @asynccontextmanager
@@ -71,6 +110,7 @@ def _start_background() -> None:
             gitsync.clone_or_pull(repo, "data")
         except Exception as exc:
             STATUS["errors"] = [f"clone: {exc}"]
+    _restore_token()                                  # survive a restart without a re-POST
     STATUS["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
     threading.Thread(target=_recorder_thread, daemon=True).start()
     if repo:
@@ -90,9 +130,19 @@ def _check(secret: str) -> None:
 
 @app.post("/token")
 def set_token(token: str = Form(...), secret: str = Form(...)):
-    """Update the daily Breeze session token (guarded by RECORDER_TOKEN_SECRET)."""
+    """Update the daily Breeze session token (guarded by RECORDER_TOKEN_SECRET).
+
+    Sets the env (picked up on the next fetch) AND persists it under data/ so a restart
+    restores it; pushes the data repo immediately so the persisted copy isn't lost if the
+    container restarts before the periodic sync."""
     _check(secret)
     os.environ["BREEZE_SESSION_TOKEN"] = token.strip()
+    _save_token_file(token)
+    if os.environ.get("DATA_REPO_URL"):               # persist now, don't wait for the sync loop
+        try:
+            gitsync.commit_push("data", msg="recorder token update")
+        except Exception:
+            pass
     return {"ok": True, "breeze": _probe_breeze()}
 
 

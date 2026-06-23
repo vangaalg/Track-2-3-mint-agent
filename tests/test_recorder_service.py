@@ -30,6 +30,32 @@ def test_token_sets_env_and_status_renders(monkeypatch):
         assert "recorder" in c.get("/").text.lower()            # mobile form page
 
 
+def test_token_persists_to_data_repo(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)                          # data/ lands under tmp
+    monkeypatch.delenv("DATA_REPO_URL", raising=False)   # no repo → skip the immediate push
+    with _client(monkeypatch) as c:
+        r = c.post("/token", data={"token": "tok-persist", "secret": "s3cret"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        # the token is written under the synced data/ tree (restored on the next boot)
+        f = tmp_path / "data" / "recorder_state" / "breeze_session.txt"
+        assert f.exists() and f.read_text().strip() == "tok-persist"
+
+
+def test_restore_token_from_file(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BREEZE_SESSION_TOKEN", raising=False)
+    import web.recorder_service as svc
+    # no file yet → nothing to restore
+    assert svc._restore_token() is False
+    # write a persisted token, clear the env, and restore it (the boot path)
+    svc._save_token_file("restored-tok")
+    monkeypatch.delenv("BREEZE_SESSION_TOKEN", raising=False)
+    assert svc._restore_token() is True
+    assert os.environ["BREEZE_SESSION_TOKEN"] == "restored-tok"
+    # with a token already in the env, restore is a no-op
+    assert svc._restore_token() is False
+
+
 def test_context_endpoint_saves_overlay(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)                          # data/context.json under tmp
     with _client(monkeypatch) as c:
