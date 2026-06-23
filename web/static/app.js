@@ -1,5 +1,7 @@
 "use strict";
-const SYMBOL = "NIFTY", SIZE = 75, POLL_MS = 15000, CHART_STRIKES = 8;
+let currentSymbol = "NIFTY";          // active instrument (NIFTY / BANKNIFTY / …)
+const sym = () => encodeURIComponent(currentSymbol);
+const SIZE = 75, POLL_MS = 15000, CHART_STRIKES = 8;
 const $ = (id) => document.getElementById(id);
 const n = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? "—" : Number(x).toFixed(d);
 const lakh = (x) => (x === null || x === undefined) ? "—" : (x / 1e5).toFixed(2);
@@ -16,12 +18,13 @@ let _trigDates = [], _trigStrats = [];
 
 async function poll() {
   try {
-    const r = await fetch(`/api/snapshot?symbol=${SYMBOL}`);
+    const r = await fetch(`/api/snapshot?symbol=${sym()}`);
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const d = await r.json();
     lastPayload = d;
     $("dot").className = "dot live";
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
+    renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
     fetchChart(); fetchRecord(); fetchTable();
     // Reveal the token form when the feed reports a Breeze/token/OI problem in its notes.
@@ -218,7 +221,7 @@ function renderRead(rd) {
 // Chart ▲/▼ overlay follows the active CHART tab (independent of the table filter).
 async function fetchMarkers(strat) {
   try {
-    const d = await (await fetch(`/api/triggers?strategy=${strat}`)).json();
+    const d = await (await fetch(`/api/triggers?strategy=${strat}&symbol=${sym()}`)).json();
     _triggers = (d.triggers || []).filter((t) => t.direction === "long" || t.direction === "short");
   } catch (e) { /* keep last */ }
 }
@@ -226,7 +229,7 @@ async function fetchMarkers(strat) {
 // The triggers TABLE: merged across strategies (filter), browseable by day, paginated.
 async function fetchTable() {
   try {
-    let url = `/api/triggers?strategy=${_trigStrat}`;
+    let url = `/api/triggers?strategy=${_trigStrat}&symbol=${sym()}`;
     if (_trigDate) url += `&date=${_trigDate}`;
     const d = await (await fetch(url)).json();
     _trigRows = d.triggers || [];
@@ -234,10 +237,21 @@ async function fetchTable() {
     _trigLast = d.last; _trigSession = d.session;
     if (d.dates) _trigDates = d.dates;
     if (d.strategies) _trigStrats = d.strategies;
-    if (_trigDate === null && _trigDates.length) _trigDate = _trigDates[_trigDates.length - 1];
+    if (_trigDate === null && _trigDates.length) _trigDate = _trigDates[0];   // newest first
     populateTrigSelectors();
     renderTriggers();
   } catch (e) { /* keep last */ }
+}
+
+// Populate the instrument selector from the snapshot's instrument list.
+function renderInstruments(d) {
+  const list = d.instruments || [];
+  const sel = $("instrSel");
+  if (!sel || !list.length) return;
+  if (sel.options.length !== list.length) {
+    sel.innerHTML = list.map((i) => `<option value="${i.id}">${i.label}</option>`).join("");
+  }
+  sel.value = currentSymbol;
 }
 
 function populateTrigSelectors() {
@@ -257,7 +271,6 @@ function populateTrigSelectors() {
 function renderTriggers() {
   const condor = _trigStrat === "condor";
   const s = _trigSummary, last = _trigLast;
-  const latest = _trigDates.length ? _trigDates[_trigDates.length - 1] : null;
   if (last) {
     const oc = last.outcome, t = last.ts.slice(11, 16);
     $("trigLast").className = "trig-last " + oc;
@@ -289,10 +302,12 @@ function renderTriggers() {
   for (const t of pageRows) {
     const pts = `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`;
     const rs = `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td>`;
-    // Exit only the live session's open trades (past days are read-only replay).
-    const canExit = t.outcome === "open" && _trigDate === latest;
-    const act = canExit ? `<td><button class="btn exit" data-exit-ts="${t.ts}" data-strat="${t.strategy || ""}">Exit</button></td>`
-      : t.outcome === "exit" ? `<td class="muted">@ ${n(t.exit)}</td>` : "<td></td>";
+    // Exit/record ANY directional trade you took (any row, any date) — overrides the
+    // hypothetical replay outcome. Already-exited rows show the price you closed at.
+    const dir = t.direction === "long" || t.direction === "short";
+    const act = t.outcome === "exit" ? `<td class="muted">@ ${n(t.exit)}</td>`
+      : dir ? `<td><button class="btn exit" data-exit-ts="${t.ts}" data-strat="${t.strategy || ""}">Exit</button></td>`
+      : "<td></td>";
     h += condor
       ? `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.short_put}</td><td>${t.short_call}</td>`
         + `<td>${t.credit}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`
@@ -319,6 +334,7 @@ async function exitTrigger(ts, strat) {
   const px = parseFloat(ans);
   const fd = new FormData();
   fd.append("strategy", strat || currentStrat); fd.append("ts", ts);
+  fd.append("symbol", currentSymbol);
   if (!Number.isNaN(px)) fd.append("exit_px", px);
   const r = await fetch("/api/exit", { method: "POST", body: fd });
   const d = await r.json().catch(() => ({}));
@@ -329,12 +345,12 @@ async function exitTrigger(ts, strat) {
 async function fetchChart() {
   initCharts();
   if (!LW) return;
-  try { renderLW(await (await fetch(`/api/chart?tf=${chartTF}&bars=200`)).json()); }
+  try { renderLW(await (await fetch(`/api/chart?tf=${chartTF}&bars=200&symbol=${sym()}`)).json()); }
   catch (e) { /* keep last */ }
 }
 
 async function fetchRecord() {
-  try { renderRecord(await (await fetch("/api/record")).json()); } catch (e) { /* keep */ }
+  try { renderRecord(await (await fetch(`/api/record?symbol=${sym()}`)).json()); } catch (e) { /* keep */ }
 }
 
 const CELL = {
@@ -391,7 +407,7 @@ async function analyse() {
   if (!currentHead) { $("readBox").innerHTML = "<span class='muted'>No active trigger to analyse.</span>"; return; }
   analysing = true; $("analyseBtn").textContent = "Analysing…";
   try {
-    const r = await fetch(`/api/analyse?strategy=${currentStrat}`, { method: "POST" });
+    const r = await fetch(`/api/analyse?strategy=${currentStrat}&symbol=${sym()}`, { method: "POST" });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     renderRead(await r.json());
   } catch (e) { $("readBox").innerHTML = `<span class="muted">Claude unavailable: ${e.message}</span>`; }
@@ -416,6 +432,7 @@ async function decide(action) {
   const acted = currentHead;
   const fd = new FormData();
   fd.append("action", action); fd.append("strategy", currentStrat); fd.append("ts", acted.ts);
+  fd.append("symbol", currentSymbol);
   const lbl = document.querySelector('input[name="liveLabel"]:checked');
   if (lbl) fd.append("label", lbl.value);
   const r = await fetch("/api/decision", { method: "POST", body: fd });
@@ -433,7 +450,8 @@ async function sendChat(ev) {
   ev.preventDefault();
   const text = $("chatText").value.trim(), file = $("chatFile").files[0];
   if (!text && !file) return;
-  const fd = new FormData(); fd.append("text", text); if (file) fd.append("files", file);
+  const fd = new FormData(); fd.append("text", text); fd.append("symbol", currentSymbol);
+  if (file) fd.append("files", file);
   appendMsg("user", text, file);
   $("chatText").value = ""; $("chatFile").value = "";
   const r = await fetch("/api/chat", { method: "POST", body: fd });
@@ -457,6 +475,13 @@ $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") post
 $("trigTbl").addEventListener("click", (e) => {     // Exit buttons on open trigger rows
   const b = e.target.closest("button[data-exit-ts]");
   if (b) exitTrigger(b.dataset.exitTs, b.dataset.strat);
+});
+$("instrSel").addEventListener("change", (e) => {   // switch instrument → reset per-instrument view
+  currentSymbol = e.target.value;
+  _trigDate = null; _trigPage = 0; _triggers = []; currentHead = null;
+  $("chatLog").innerHTML = "";
+  $("dot").className = "dot"; $("meta").textContent = `loading ${currentSymbol}…`;
+  poll();
 });
 $("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _trigPage = 0; fetchTable(); });
 $("trigStrat").addEventListener("change", (e) => { _trigStrat = e.target.value; _trigPage = 0; fetchTable(); });

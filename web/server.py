@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextvars import ContextVar
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,8 @@ from feeds.oi import chain_table, summarise_chain
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store
+from feeds.instruments import (
+    INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT)
 from analysis.trade1 import (
     propose_trade1, apply_strike, apply_oi_boost, size_for_confidence, LOT_SIZE)
 from analysis.cpr_st import propose_cpr_st
@@ -80,15 +83,19 @@ _STATIC = Path(__file__).parent / "static"
 # --- injectable seams (overridden in tests) -------------------------------- #
 def _default_pull(symbol: str):
     loader = get_loader("breeze")
-    base_min = loader.load(symbol, "minute", start=date.today() - timedelta(days=3),
+    ls = get_instrument(symbol)["loader_symbol"]      # NIFTY / CNXBAN (Bank Nifty) / …
+    base_min = loader.load(ls, "minute", start=date.today() - timedelta(days=3),
                            use_cache=False)
-    daily = loader.load(symbol, "day", start=date.today() - timedelta(days=800),
+    daily = loader.load(ls, "day", start=date.today() - timedelta(days=800),
                         use_cache=False)
     return base_min, daily
 
 
 def _default_chain(symbol: str):
-    return make_chain_fetcher(weekday=EXPIRY_WEEKDAY)(symbol)
+    inst = get_instrument(symbol)                     # per-instrument expiry (monthly for Bank Nifty)
+    fetch = make_chain_fetcher(weekday=inst["weekday"], exchange=inst["exchange"],
+                               monthly=inst["monthly"])
+    return fetch(inst["loader_symbol"])
 
 
 def _default_macro(symbol: str):
@@ -119,15 +126,36 @@ REASON_COMPLETER = None   # explain_outcome completer (None -> live Anthropic ca
 # triggers auto-expire out of the head. ``queues`` caches the per-strategy replay,
 # ``heads`` the current actionable trigger, ``actioned`` the durable decided set, and
 # ``reads`` Claude's read cached per (strategy, ts) so it fires once per trigger.
-_state: dict = {
-    "snap": None, "prop": None, "chain": None,
-    "snap_at": 0.0, "oi_at": 0.0,
-    "read": None, "analysed_bar": None,
-    "chat": [],
-    "queues": {}, "heads": {}, "actioned": {}, "reads": {},
-    # manual exits the trader took off the triggers table: overlay + store-row ids
-    "exits": {}, "records": {},
-}
+# Per-instrument cockpit state: each symbol keeps its own snap/chain/queues/heads/
+# exits/etc. ``_active`` selects the instrument for the current request (set by each
+# endpoint), so the helpers resolve the right state via ``_st()`` with no symbol arg.
+_states: dict[str, dict] = {}
+_active: ContextVar = ContextVar("active_symbol", default=DEFAULT_INSTRUMENT)
+
+
+def _new_state() -> dict:
+    return {
+        "snap": None, "prop": None, "chain": None,
+        "snap_at": 0.0, "oi_at": 0.0,
+        "read": None, "analysed_bar": None,
+        "chat": [],
+        "queues": {}, "heads": {}, "actioned": {}, "reads": {},
+        # manual exits the trader took off the triggers table: overlay + store-row ids
+        "exits": {}, "records": {},
+    }
+
+
+def _st(symbol: str | None = None) -> dict:
+    """The per-instrument state dict (lazily created), for the active instrument."""
+    sym = (symbol or _active.get()).upper()
+    s = _states.get(sym)
+    if s is None:
+        s = _states[sym] = _new_state()
+    return s
+
+
+# back-compat: the default NIFTY state object (tests mutate it in place via .update)
+_state = _st(DEFAULT_INSTRUMENT)
 
 # --- training-mode state (separate from the live cockpit) ------------------- #
 TRAIN_TTL = 900          # re-pull the 7-day history every ~15 min
@@ -144,27 +172,29 @@ if _STATIC.exists():
 # --- engine glue ----------------------------------------------------------- #
 def _refresh(symbol: str, size: int) -> None:
     """Re-pull on TTL: chain/macro every OI_TTL, snapshot every PULL_TTL."""
+    _active.set(symbol.upper())
+    inst = get_instrument(symbol)
     now = time.time()
-    if _state["chain"] is None or now - _state["oi_at"] > OI_TTL:
+    if _st()["chain"] is None or now - _st()["oi_at"] > OI_TTL:
         try:
-            _state["chain"] = CHAIN_FN(symbol)
+            _st()["chain"] = CHAIN_FN(symbol)
         except Exception as exc:
-            _state["chain"] = None
-            _state["chain_err"] = str(exc)
-        _state["macro"] = MACRO_FN(symbol)
-        _state["oi_at"] = now
+            _st()["chain"] = None
+            _st()["chain_err"] = str(exc)
+        _st()["macro"] = MACRO_FN(symbol)
+        _st()["oi_at"] = now
 
-    if _state["snap"] is None or now - _state["snap_at"] > PULL_TTL:
+    if _st()["snap"] is None or now - _st()["snap_at"] > PULL_TTL:
         base_min, daily = PULL_FN(symbol)
-        chain = _state["chain"]
+        chain = _st()["chain"]
         snap = build_snapshot(
             symbol, base_min, daily, anchor=ANCHOR, mtf_cfg=RESOLVER_CFG,
             oi_fetch_fn=(lambda i: chain) if chain is not None else None,
-            macro=_state.get("macro"),
+            macro=_st().get("macro"),
         )
-        if snap.oi is None and _state.get("chain_err"):
-            snap.notes.append(f"oi: {_state['chain_err']}")
-        _state["snap"] = snap
+        if snap.oi is None and _st().get("chain_err"):
+            snap.notes.append(f"oi: {_st()['chain_err']}")
+        _st()["snap"] = snap
         table = (chain_table(chain, snap.spot, window=VIZ_POINTS)
                  if chain is not None and not chain.empty else None)
 
@@ -180,40 +210,58 @@ def _refresh(symbol: str, size: int) -> None:
             # directional streams: strike now, Claude read + OI boost auto-applied on the head
             "cpr_st": _strike(propose_cpr_st(snap, size_lots=size)),
             "orb": _strike(propose_orb(snap, size_lots=size)),
-            "condor": propose_condor(snap, table, expiry_weekday=EXPIRY_WEEKDAY),
+            "condor": propose_condor(snap, table, expiry_weekday=inst["weekday"]),
         }
-        _state["prop"] = prop          # back-compat: chat/payload reference Trade-1
-        _state["props"] = props
-        _state["table"] = table
-        _state["snap_at"] = now
+        for p in props.values():     # ₹ risk uses the instrument's lot size (NIFTY 65 / BankNifty 30)
+            _scale_rupee(p, inst["lot_size"])
+        _st()["prop"] = prop          # back-compat: chat/payload reference Trade-1
+        _st()["props"] = props
+        _st()["table"] = table
+        _st()["snap_at"] = now
         # log the chain snapshot (the OI flywheel) once per fresh OI bucket
         if LOG_OI and chain is not None and not chain.empty \
-                and _state.get("oi_logged_at") != _state["oi_at"]:
+                and _st().get("oi_logged_at") != _st()["oi_at"]:
             try:
                 oi_store.save_chain(symbol, snap.ts, snap.spot, chain)
-                _state["oi_logged_at"] = _state["oi_at"]
+                _st()["oi_logged_at"] = _st()["oi_at"]
             except Exception:
                 pass
+        _load_persisted_exits(symbol)   # restore manual exits from the durable store (survive restart)
         for s in STRATEGIES:        # cache today's triggers per strategy (throttled)
-            _state["queues"][s["id"]] = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size))
+            _st()["queues"][s["id"]] = _apply_exits(
+                s["id"], _strategy_queue(s["id"], snap, size, lot_size=inst["lot_size"]))
 
 
-def _strategy_queue(sid: str, snap, size: int, session_date=None) -> dict:
+def _scale_rupee(prop, lot_size: int) -> None:
+    """Re-base a proposal's ₹ risk onto the instrument's lot size (propose_* bake in the
+    module LOT_SIZE = NIFTY 65; Bank Nifty etc. override it). No-op for NIFTY."""
+    if prop is not None and getattr(prop, "rupee_risk", None) and lot_size != LOT_SIZE:
+        prop.rupee_risk = round(prop.rupee_risk * lot_size / LOT_SIZE, 2)
+
+
+def _lot_size_for(snap) -> int:
+    """The active instrument's contract lot size (from the snapshot's instrument)."""
+    return get_instrument(getattr(snap, "instrument", None))["lot_size"]
+
+
+def _strategy_queue(sid: str, snap, size: int, session_date=None, lot_size: int | None = None) -> dict:
     """One session's discrete triggers for a strategy (replay_today / condor proxy).
-    ``session_date`` browses a previous day (default = the latest session)."""
+    ``session_date`` browses a previous day (default = the latest session); ``lot_size``
+    scales the ₹ column to the instrument (NIFTY 65 / Bank Nifty 30)."""
     meta = _STRAT[sid]
+    lot = lot_size or _lot_size_for(snap)
     if meta["kind"] == "nondirectional":
-        return _condor_today(snap, size, session_date=session_date)
+        return _condor_today(snap, size, session_date=session_date, lot_size=lot)
     return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size,
-                        session_date=session_date)
+                        lot_size=lot, session_date=session_date)
 
 
 def _session_dates(snap) -> list[str]:
-    """Distinct session dates available in the live frame (for the date toggle)."""
+    """Distinct session dates in the live frame (NEWEST first — for the date toggle)."""
     f = snap.frames.get("3min") if snap is not None else None
     if f is None or f.empty:
         return []
-    return [str(d) for d in sorted({ts.date() for ts in f.index})]
+    return [str(d) for d in sorted({ts.date() for ts in f.index}, reverse=True)]
 
 
 def _rows_summary(rows: list[dict]) -> dict:
@@ -231,7 +279,7 @@ def _rows_summary(rows: list[dict]) -> dict:
 def _apply_exits(sid: str, queue: dict) -> dict:
     """Overlay the trader's MANUAL exits onto the replay rows (the replay itself stays a pure
     measurement) and recompute the footer, so a closed trade shows on the table as `exit`."""
-    exits = _state.get("exits") or {}
+    exits = _st().get("exits") or {}
     rows = queue.get("triggers") or []
     if not exits or not rows:
         return queue
@@ -256,14 +304,40 @@ def _apply_exits(sid: str, queue: dict) -> dict:
     return queue
 
 
+def _load_persisted_exits(symbol: str) -> None:
+    """Rebuild the manual-exit overlay from the DURABLE store so exits survive a restart.
+
+    `/api/exit` writes each close to the SQLite store; the in-memory overlay is wiped on a
+    redeploy. Re-seed `exits` (+ the store-row id / actioned flag) for this instrument from
+    the saved manual-exit outcomes, WITHOUT clobbering an exit taken this session."""
+    st = _st()
+    try:
+        recs = store.load_records(JOURNAL_DB, kind="live", symbol=symbol)
+    except Exception:
+        return
+    for r in recs:
+        o = r.get("outcome") or {}
+        if not o.get("manual"):
+            continue
+        prop = r.get("proposal") or {}
+        # key on the TRIGGER ts (proposal.ts) — the row id the table uses; the record's
+        # ``ts`` column is the live snapshot bar, not the trigger.
+        key = (prop.get("trade_type") or "trade1", prop.get("ts") or r.get("ts"))
+        if key[1] is None or key in st["exits"]:
+            continue
+        st["exits"][key] = {k: o.get(k) for k in ("exit", "exit_ts", "points", "rupees")}
+        st["records"].setdefault(key, r.get("id"))
+        st["actioned"].setdefault(key, "approved")
+
+
 def _head_for(sid: str, queue: dict) -> dict | None:
     """The actionable HEAD trigger: the oldest still-OPEN, un-actioned trigger for the
     strategy. Resolved (win/loss) triggers auto-expire out of the head (kept in history).
     The condor (non-directional, propose-only — its proxy rows are always win/loss) uses
     the LIVE gate-open proposal as its head instead."""
-    actioned = _state["actioned"]
+    actioned = _st()["actioned"]
     if _STRAT[sid]["kind"] == "nondirectional":
-        prop = (_state.get("props") or {}).get("condor")
+        prop = (_st().get("props") or {}).get("condor")
         if prop is None or prop.recommendation is not Recommendation.ENTER:
             return None
         if (sid, prop.ts) in actioned:
@@ -287,12 +361,12 @@ def _recompute_heads() -> None:
     the actioned set, so the decision card stays put until the trader approves/rejects."""
     for s in STRATEGIES:
         sid = s["id"]
-        old = _state["heads"].get(sid)
-        head = _head_for(sid, _state["queues"].get(sid, {}))
-        _state["heads"][sid] = head
+        old = _st()["heads"].get(sid)
+        head = _head_for(sid, _st()["queues"].get(sid, {}))
+        _st()["heads"][sid] = head
         if head is not None and (old or {}).get("ts") != head["ts"]:
             key = (sid, head["ts"])
-            if key not in _state["reads"]:
+            if key not in _st()["reads"]:
                 try:
                     _run_head_read(sid, head)
                 except Exception:
@@ -302,10 +376,10 @@ def _recompute_heads() -> None:
 def _head_out(sid: str, h: dict | None) -> dict | None:
     """Serialise a head for the card: the frozen trigger + its cached Claude read, with
     Claude's clamped target/stop/R:R overlaid when present (else the engine levels stand).
-    Copies the head — never mutates `_state["heads"]` or the replay queue."""
+    Copies the head — never mutates `_st()["heads"]` or the replay queue."""
     if h is None:
         return None
-    cached = _state["reads"].get((sid, h["ts"])) or {}
+    cached = _st()["reads"].get((sid, h["ts"])) or {}
     out = {**h, "read": cached or None, "levels_source": "engine"}
     if cached.get("claude_target") is not None:
         out.update(target=cached["claude_target"], stop=cached["claude_stop"],
@@ -314,8 +388,8 @@ def _head_out(sid: str, h: dict | None) -> dict | None:
 
 
 def _payload(symbol: str) -> dict:
-    snap, prop, chain = _state["snap"], _state["prop"], _state["chain"]
-    props = _state.get("props") or {"trade1": prop}
+    snap, prop, chain = _st()["snap"], _st()["prop"], _st()["chain"]
+    props = _st().get("props") or {"trade1": prop}
     rows = []
     if chain is not None and not chain.empty:
         t = chain_table(chain, snap.spot, window=VIZ_POINTS)
@@ -334,9 +408,11 @@ def _payload(symbol: str) -> dict:
         # the GATED decision card per tab: the frozen actionable trigger + its cached
         # Claude read (None = "watching, no active trigger"). Stable across polls. When Claude
         # set the levels, overlay them so the card shows Claude's target/stop/R:R (not engine's).
-        "heads": {sid: _head_out(sid, h) for sid, h in _state.get("heads", {}).items()},
+        "heads": {sid: _head_out(sid, h) for sid, h in _st().get("heads", {}).items()},
         "strategies": [{"id": s["id"], "label": s["label"], "kind": s["kind"]}
                        for s in STRATEGIES],
+        # multi-instrument selector: the available instruments + the active one
+        "instruments": instrument_list(), "symbol": symbol.upper(),
     }
 
 
@@ -390,13 +466,16 @@ def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
     """Build a real ``TradeProposal`` from a FROZEN head trigger so log_decision /
     save_decision (which need the dataclass) work unchanged. Levels are frozen from the
     trigger; the option vehicle is picked off the LIVE chain (you fill it now)."""
+    inst = get_instrument(getattr(snap, "instrument", None))
     if head.get("condor"):
-        return propose_condor(snap, table, expiry_weekday=EXPIRY_WEEKDAY)
+        prop = propose_condor(snap, table, expiry_weekday=inst["weekday"])
+        _scale_rupee(prop, inst["lot_size"])
+        return prop
     direction = head["direction"]
     conf = int(head.get("mtf_confidence") or 0)
     lots = size_for_confidence(conf)
     entry = head.get("entry")
-    cached = _state["reads"].get((sid, head["ts"])) or {}
+    cached = _st()["reads"].get((sid, head["ts"])) or {}
     # Claude OWNS the target/stop (sanity-railed in _run_head_read); fall back to the engine's
     # structural levels when Claude stood down / proposed nothing usable.
     if cached.get("claude_target") is not None:
@@ -405,7 +484,7 @@ def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
     else:
         stop, target, rr = head.get("stop"), head.get("target"), head.get("rr")
         levels_source = "engine"
-    rupee_risk = (round(abs(entry - stop) * LOT_SIZE * lots, 2)
+    rupee_risk = (round(abs(entry - stop) * inst["lot_size"] * lots, 2)
                   if entry is not None and stop is not None else None)
     prop = TradeProposal(
         instrument=snap.instrument, trade_type=sid, ts=head["ts"], direction=direction,
@@ -426,10 +505,10 @@ def _run_head_read(sid: str, head: dict) -> dict:
     """Run Claude once for a strategy's head trigger and cache it by (sid, ts). The OI
     confluence sizing boost auto-applies on every DIRECTIONAL tab (trade1/cpr_st/orb);
     the condor is non-directional so it gets no boost."""
-    snap = _state["snap"]
+    snap = _st()["snap"]
     memory = _learning_memory()
-    _state["memory"] = memory
-    prop = _proposal_from_head(sid, head, snap, _state.get("table"))
+    _st()["memory"] = memory
+    prop = _proposal_from_head(sid, head, snap, _st().get("table"))
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
     if getattr(prop, "direction", None) in ("long", "short"):   # auto OI boost, all directional tabs
         apply_oi_boost(prop, getattr(read, "oi_bias", None))
@@ -442,14 +521,14 @@ def _run_head_read(sid: str, head: dict) -> dict:
         tgt, stp, rr = clamp_levels(head["direction"], head["entry"],
                                     read.proposed_target, read.proposed_stop, min_rr=0.0)
         cached["claude_target"], cached["claude_stop"], cached["claude_rr"] = tgt, stp, rr
-    _state["reads"][(sid, head["ts"])] = cached
-    _state["read"] = read              # back-compat for _save_context_for / chat
+    _st()["reads"][(sid, head["ts"])] = cached
+    _st()["read"] = read              # back-compat for _save_context_for / chat
     return cached
 
 
 def _run_read(sid: str = "trade1") -> dict:
     """Manual 're-analyse' for a tab's current head (used by /api/analyse)."""
-    head = _state["heads"].get(sid)
+    head = _st()["heads"].get(sid)
     if head is None:
         raise HTTPException(status_code=409, detail="no active trigger to analyse")
     return _run_head_read(sid, head)
@@ -538,11 +617,12 @@ def _chart_bundle(snap, tfs=("3min", "15min", "60min", "1day"), bars: int = 60) 
 
 
 @app.get("/api/chart")
-def chart(tf: str = "3min", bars: int = 200):
+def chart(tf: str = "3min", bars: int = 200, symbol: str = "NIFTY"):
     """Candlestick + indicator overlays for the price panel (computed per TF)."""
-    if _state["snap"] is None:
+    _active.set(symbol.upper())
+    if _st()["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
-    snap = _state["snap"]
+    snap = _st()["snap"]
     frame = snap.frames.get(tf)
     if frame is None or frame.empty:
         raise HTTPException(status_code=404, detail=f"no frame for tf {tf!r}")
@@ -551,24 +631,29 @@ def chart(tf: str = "3min", bars: int = 200):
 
 
 @app.get("/api/record")
-def record():
-    """Settle the decision log against today's bars and return the 2x2 track record.
+def record(symbol: str = "NIFTY"):
+    """Settle the decision log against today's bars and return the 2x2 track record FOR THE
+    SELECTED INSTRUMENT.
 
     The track record is summarised from the durable SQLite STORE (not the JSONL log): the
     store is git-synced + survives Railway restarts, and the trader's manual /api/exit
-    closes write their realized outcome there — the ephemeral JSONL would read 0."""
-    frames = _state["snap"].frames if _state["snap"] is not None else {}
+    closes write their realized outcome there — the ephemeral JSONL would read 0. Scoped to
+    ``symbol`` and settled against THAT instrument's bars (Bank Nifty trades must not settle
+    against NIFTY)."""
+    _active.set(symbol.upper())
+    sym = symbol.upper()
+    frames = _st()["snap"].frames if _st()["snap"] is not None else {}
     settle_log(DEFAULT_LOG, frames)        # keep the local JSONL settled (back-compat)
     settled = []
     try:
-        settled = settle_store(frames, path=JOURNAL_DB)   # grade the rich store (same 2x2)
+        settled = settle_store(frames, path=JOURNAL_DB, symbol=sym)   # grade this instrument (same 2x2)
         _settle_reasons(settled)                            # post-mortem newly-resolved trades
     except Exception:
         pass
     recent = settled[-12:]
     posts = []     # settled live trades that carry a Claude post-mortem
     try:
-        for r in store.load_records(JOURNAL_DB, kind="live", limit=20):
+        for r in store.load_records(JOURNAL_DB, kind="live", limit=20, symbol=sym):
             if r.get("reason_why"):
                 posts.append({"ts": r.get("ts"), "direction": r.get("direction"),
                               "label": r.get("trigger_label"), "matrix": r.get("matrix"),
@@ -587,10 +672,12 @@ def record():
                         "outcome": r.get("outcome")} for r in recent]}
 
 
-def _condor_today(snap, size: int, session_date=None) -> dict:
+def _condor_today(snap, size: int, session_date=None, lot_size: int | None = None) -> dict:
     """One session's expiry-day condor setups in a replay_today-compatible shape."""
+    inst = get_instrument(getattr(snap, "instrument", None))
+    lot = lot_size or inst["lot_size"]
     trigs = list_condor_triggers(snap.feats.get("3min"), snap.frames.get("3min"),
-                                 expiry_weekday=EXPIRY_WEEKDAY, size_lots=size, lot_size=LOT_SIZE)
+                                 expiry_weekday=inst["weekday"], size_lots=size, lot_size=lot)
     if session_date is not None:
         today = str(pd.Timestamp(session_date).date())
     else:
@@ -601,26 +688,28 @@ def _condor_today(snap, size: int, session_date=None) -> dict:
     net = round(sum(t["points"] for t in trigs), 2)
     return {"session": today, "triggers": trigs, "last": trigs[-1] if trigs else None,
             "summary": {"n": len(trigs), "wins": wins, "losses": losses, "open": 0,
-                        "net_points": net, "net_rupees": round(net * LOT_SIZE * size, 0),
+                        "net_points": net, "net_rupees": round(net * lot * size, 0),
                         "hit_rate": round(wins / (wins + losses), 2) if (wins + losses) else None}}
 
 
 @app.get("/api/triggers")
-def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | None = None):
+def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | None = None,
+             symbol: str = "NIFTY"):
     """Today's (or ``date``'s) triggers. ``strategy="all"`` merges every DIRECTIONAL
     strategy into one table (each row tagged with its strategy); the condor — a different,
     non-directional instrument — is browsed on its own tab. ``date`` browses a prior session
-    from the multi-day live pull; ``dates`` lists what's available for the toggle.
+    from the multi-day live pull; ``dates`` lists what's available (NEWEST first) for the toggle.
 
     replay_today sizes each row by its own conviction (65-130 band), so the ₹ column matches
     the proposal; the condor (no conviction) keeps the flat size."""
-    snap = _state["snap"]
+    _active.set(symbol.upper())
+    snap = _st()["snap"]
     if snap is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
     if strategy != "all" and strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
     dates = _session_dates(snap)
-    sd = date or (dates[-1] if dates else None)
+    sd = date or (dates[0] if dates else None)         # dates are newest-first → [0] = latest
     strat_list = [{"id": s["id"], "label": s["label"]} for s in STRATEGIES]
     if strategy == "all":
         merged: list[dict] = []
@@ -645,33 +734,41 @@ def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | Non
 @app.post("/api/exit")
 def exit_trade(strategy: str = Form("trade1"), ts: str = Form(...),
                exit_px: float | None = Form(None), symbol: str = Form("NIFTY")):
-    """Manually CLOSE an OPEN trigger at ``exit_px`` (default = the live spot): record the
-    realized P&L as a trade the trader took + closed (feeds the journal track-record) and overlay
-    the triggers table. Propose-only — you square off on your own broker."""
+    """Manually CLOSE/record ANY directional trigger at ``exit_px`` (default = the live spot):
+    record the realized P&L as a trade the trader actually took + closed (feeds the journal
+    track-record) and overlay the triggers table — overriding that row's hypothetical replay
+    outcome. Works on any row (open OR replay-resolved), any date. Propose-only — you square
+    off on your own broker."""
+    _active.set(symbol.upper())
     if strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
-    snap = _state["snap"]
+    snap = _st()["snap"]
     if snap is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
     key = (strategy, ts)
-    if key in _state["exits"]:
+    if key in _st()["exits"]:
         raise HTTPException(status_code=409, detail="trade already exited")
-    q = _state["queues"].get(strategy) or _strategy_queue(strategy, snap, DEFAULT_SIZE)
+    lot = get_instrument(symbol)["lot_size"]
+    q = (_st()["queues"].get(strategy)
+         or _strategy_queue(strategy, snap, DEFAULT_SIZE, lot_size=lot))
+    # the row may be on a prior session not in the cached queue → search any session's date
     trig = next((t for t in q.get("triggers", []) if t.get("ts") == ts), None)
-    if (trig is None or trig.get("outcome") != "open"
-            or trig.get("direction") not in ("long", "short")):
-        raise HTTPException(status_code=409, detail="no open trade at that trigger")
+    if trig is None and ts[:10] != (q.get("session") or ""):
+        alt = _strategy_queue(strategy, snap, DEFAULT_SIZE, session_date=ts[:10], lot_size=lot)
+        trig = next((t for t in alt.get("triggers", []) if t.get("ts") == ts), None)
+    if trig is None or trig.get("direction") not in ("long", "short"):
+        raise HTTPException(status_code=409, detail="no directional trade at that trigger")
     px = float(exit_px) if exit_px is not None else snap.spot
     exit_ts = datetime.now().isoformat(timespec="seconds")
-    outcome = manual_exit_outcome(trig, px, exit_ts)
+    outcome = manual_exit_outcome(trig, px, exit_ts, lot_size=lot)
     # persist: reuse the card-approved store row if it exists, else log the taken trade now
-    prop = _proposal_from_head(strategy, trig, snap, _state.get("table"))
-    rid = _state["records"].get(key)
+    prop = _proposal_from_head(strategy, trig, snap, _st().get("table"))
+    rid = _st()["records"].get(key)
     if rid is None:
         log_decision(prop, "approved", execution={"status": "manual"})
         rid = _save_context_for(prop, "approved", symbol, {"status": "manual"})
-        _state["records"][key] = rid
-        _state["actioned"][key] = "approved"
+        _st()["records"][key] = rid
+        _st()["actioned"][key] = "approved"
     if rid is not None:
         store.update_outcome(rid, outcome, "good", _matrix("good", outcome["status"]),
                              path=JOURNAL_DB)
@@ -680,13 +777,14 @@ def exit_trade(strategy: str = Form("trade1"), ts: str = Form(...),
             AFTER_WRITE()
         except Exception:
             pass
-    _state["exits"][key] = {k: outcome[k] for k in ("exit", "exit_ts", "points", "rupees")}
+    _st()["exits"][key] = {k: outcome[k] for k in ("exit", "exit_ts", "points", "rupees")}
     return {"ok": True, "outcome": outcome}
 
 
 @app.post("/api/analyse")
-def analyse(strategy: str = "trade1"):
-    if _state["snap"] is None:
+def analyse(strategy: str = "trade1", symbol: str = "NIFTY"):
+    _active.set(symbol.upper())
+    if _st()["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
     if strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
@@ -699,8 +797,10 @@ def analyse(strategy: str = "trade1"):
 
 
 @app.post("/api/chat")
-async def chat(text: str = Form(""), files: list[UploadFile] = File(default=[])):
-    if _state["snap"] is None:
+async def chat(text: str = Form(""), files: list[UploadFile] = File(default=[]),
+               symbol: str = Form("NIFTY")):
+    _active.set(symbol.upper())
+    if _st()["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
     import base64
     blocks = []
@@ -711,13 +811,13 @@ async def chat(text: str = Form(""), files: list[UploadFile] = File(default=[]))
         blocks.append({"type": "image", "source": {
             "type": "base64", "media_type": f.content_type or "image/png",
             "data": base64.standard_b64encode(data).decode()}})
-    _state["chat"].append({"role": "user", "content": blocks if files else text})
+    _st()["chat"].append({"role": "user", "content": blocks if files else text})
     try:
-        reply = spar_turn(_state["chat"], _state["snap"], _state["prop"],
-                          _state.get("memory", ""), completer=CHAT_COMPLETER)
+        reply = spar_turn(_st()["chat"], _st()["snap"], _st()["prop"],
+                          _st().get("memory", ""), completer=CHAT_COMPLETER)
     except Exception as exc:
         reply = f"(chat unavailable: {exc})"
-    _state["chat"].append({"role": "assistant", "content": reply})
+    _st()["chat"].append({"role": "assistant", "content": reply})
     return {"reply": reply}
 
 
@@ -727,20 +827,20 @@ def _save_context_for(prop, decision: str, symbol: str, execution: dict | None,
     chart datapoints, raw chain, all macro) so the agent can learn from everything.
     ``prop`` is the FROZEN proposal being decided (the queue head), not the live bar;
     the surrounding context (chain/chart/macro) is still sourced from the live snapshot."""
-    snap, chain = _state["snap"], _state["chain"]
+    snap, chain = _st()["snap"], _st()["chain"]
     chain_rows = None
     if chain is not None and not chain.empty:
         try:
             chain_rows = json.loads(chain_table(chain, snap.spot, window=VIZ_POINTS).to_json(orient="records"))
         except Exception:
             chain_rows = None
-    read = _state.get("read")
+    read = _st().get("read")
     payload = {
         "ts": snap.ts, "symbol": symbol, "decision": decision, "spot": snap.spot,
         "proposal": prop.as_dict(),
         "trigger_label": (label or "").strip().lower() or None,
         "claude_read": asdict(read) if read is not None else None,
-        "chat": _state.get("chat") or None,
+        "chat": _st().get("chat") or None,
         "chart": _chart_bundle(snap),
         "chain": chain_rows,
         "macro": snap.macro, "oi_summary": snap.oi, "notes": snap.notes,
@@ -763,8 +863,8 @@ def _advance_head(strategy: str) -> dict | None:
     """Re-select the strategy's HEAD from its cached queue (cheap, NO Claude) after the
     current one was actioned, and return the serialised next head so the client can swap
     the card instantly — without waiting on the next snapshot poll's synchronous read."""
-    nh = _head_for(strategy, _state["queues"].get(strategy, {}))
-    _state["heads"][strategy] = nh
+    nh = _head_for(strategy, _st()["queues"].get(strategy, {}))
+    _st()["heads"][strategy] = nh
     return _head_out(strategy, nh)
 
 
@@ -776,33 +876,34 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     actioned so the next open trigger surfaces (returned as ``next_head`` so the card
     advances instantly). ``skip`` records NOTHING (the track record stays clean — only a
     deliberate ``reject`` is a logged stand-down). Execution stays Trade-1 only."""
+    _active.set(symbol.upper())
     if strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
     if action not in ("approve", "reject", "skip"):
         raise HTTPException(status_code=400, detail=f"unknown action {action!r}")
-    head = _state["heads"].get(strategy)
+    head = _st()["heads"].get(strategy)
     if head is None:
         raise HTTPException(status_code=409, detail="no active trigger to decide")
     if ts and ts != head["ts"]:                       # stale click — the trigger moved on
         raise HTTPException(status_code=409, detail="trigger moved on — refresh and re-read")
     key = (strategy, head["ts"])
-    if key in _state["actioned"]:
+    if key in _st()["actioned"]:
         raise HTTPException(status_code=409, detail="trigger already actioned")
     if action == "skip":                              # silent — no journal, no execution
-        _state["actioned"][key] = "skipped"
+        _st()["actioned"][key] = "skipped"
         return {"status": "skipped", "next_head": _advance_head(strategy)}
-    prop = _proposal_from_head(strategy, head, _state["snap"], _state.get("table"))
+    prop = _proposal_from_head(strategy, head, _st()["snap"], _st().get("table"))
     if action == "approve":
         result = breeze_exec.place(prop, live=live) if strategy == "trade1" else \
             {"status": "logged (propose-only)"}
         rec = log_decision(prop, "approved", execution=result)
-        _state["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
-        _state["actioned"][key] = "approved"
+        _st()["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
+        _st()["actioned"][key] = "approved"
         return {"status": result.get("status"), "logged": rec["decision"],
                 "next_head": _advance_head(strategy)}
     rec = log_decision(prop, "rejected")
     _save_context_for(prop, "rejected", symbol, None, label=label)
-    _state["actioned"][key] = "rejected"
+    _st()["actioned"][key] = "rejected"
     return {"status": "rejected", "logged": rec["decision"],
             "next_head": _advance_head(strategy)}
 

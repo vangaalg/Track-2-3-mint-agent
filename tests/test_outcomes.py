@@ -52,7 +52,7 @@ def test_settle_good_process_win_is_deserved():
     recs, changed = settle([_rec("approved", "enter")], {"3min": bars})
     assert changed
     o = recs[0]["outcome"]
-    assert o["status"] == "win" and o["points"] == 2.0 and o["rupees"] == 2.0 * 75 * 75
+    assert o["status"] == "win" and o["points"] == 2.0 and o["rupees"] == 2.0 * 65 * 75
     assert recs[0]["matrix"] == "deserved"
 
 

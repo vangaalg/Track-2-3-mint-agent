@@ -144,16 +144,17 @@ def settle_log(path: str | Path = DEFAULT_LOG,
 
 
 def settle_store(frames_by_tf: dict[str, pd.DataFrame] | None = None,
-                 path: str | Path | None = None) -> list[dict]:
+                 path: str | Path | None = None, symbol: str | None = None) -> list[dict]:
     """Settle the SQLite full-context store with the same 2x2 grading as the log.
 
     Reads the rich decision rows, grades + (where forward bars exist) resolves each,
     and writes the process grade / 2x2 cell / outcome back onto the row. Returns the
     settled records (so the caller can summarise the track record from the store).
+    ``symbol`` scopes to one instrument (settle each instrument against its OWN bars).
     """
     from journal import store as _store
     p = path or _store.DB_PATH
-    records = _store.load_records(p, kind="live")   # training rows grade at save time
+    records = _store.load_records(p, kind="live", symbol=symbol)   # training rows grade at save time
     if not records:
         return []
     settled, _ = settle(records, frames_by_tf or {})

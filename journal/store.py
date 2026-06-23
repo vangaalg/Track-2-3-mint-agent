@@ -164,23 +164,29 @@ def _row_to_dict(r: sqlite3.Row) -> dict:
 
 
 def load_records(path: str | Path = DB_PATH, limit: int | None = None,
-                 kind: str | None = None) -> list[dict]:
+                 kind: str | None = None, symbol: str | None = None) -> list[dict]:
     """Read decision rows (newest last), JSON columns parsed back to objects.
 
     ``kind`` optionally filters to "live" or "training" (legacy rows have NULL kind,
-    treated as "live").
+    treated as "live"). ``symbol`` optionally scopes to one instrument (the cockpit's
+    per-instrument track record).
     """
     p = Path(path)
     if not p.exists():
         return []
-    where = ""
+    clauses, params = [], []
     if kind == "live":
-        where = "WHERE kind='live' OR kind IS NULL"
+        clauses.append("(kind='live' OR kind IS NULL)")
     elif kind:
-        where = f"WHERE kind='{kind}'"
+        clauses.append("kind=?")
+        params.append(kind)
+    if symbol:
+        clauses.append("symbol=?")
+        params.append(symbol)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     q = f"SELECT * FROM decisions {where} ORDER BY id"
     if limit:
         q = (f"SELECT * FROM (SELECT * FROM decisions {where} ORDER BY id DESC "
              f"LIMIT {int(limit)}) ORDER BY id")
     with _connect(path) as conn:
-        return [_row_to_dict(r) for r in conn.execute(q).fetchall()]
+        return [_row_to_dict(r) for r in conn.execute(q, params).fetchall()]

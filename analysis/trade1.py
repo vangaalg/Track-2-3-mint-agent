@@ -19,7 +19,9 @@ from analysis.proposal import TradeProposal, Recommendation
 from analysis import discipline
 
 # Nifty contract + first-cut level params (PROVISIONAL — Stage-2 calibrates).
-LOT_SIZE = 75
+# LOT_SIZE = the NIFTY contract multiplier (trader-confirmed 65). Other instruments
+# override it via feeds.instruments (e.g. Bank Nifty = 30), threaded by the cockpit.
+LOT_SIZE = 65
 DEFAULT_SIZE_LOTS = 75
 R_MULTIPLE = 1.5           # MINIMUM reward:risk — structural targets are floored to this
 ITM_OFFSET = 300           # points in-the-money for the deep-ITM strike

@@ -79,7 +79,8 @@ def _seed_heads(monkeypatch, trade1=None, sid="trade1", trigs=None):
     q = {"session": "2024-01-01", "triggers": rows, "last": rows[-1] if rows else None,
          "summary": {**empty["summary"], "n": len(rows), "open": len(rows)}}
     monkeypatch.setattr(srv, "_strategy_queue",
-                        lambda s, snap, size, session_date=None: q if s == sid else dict(empty))
+                        lambda s, snap, size, session_date=None, lot_size=None:
+                        q if s == sid else dict(empty))
     return rows
 
 
@@ -356,6 +357,81 @@ def test_manual_exit_unknown_trigger_409(client, monkeypatch):
     client.get("/api/snapshot")
     r = client.post("/api/exit", data={"strategy": "trade1", "ts": "1999-01-01T00:00:00+05:30"})
     assert r.status_code == 409
+
+
+def test_exit_overrides_a_replay_resolved_row(client, monkeypatch, tmp_path):
+    """Exit works on ANY directional row — including one the replay already marked win/loss —
+    recording the trade you actually took and overriding that row's hypothetical outcome."""
+    import journal.log as jlog
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    won = {**_open_trig(direction="long"), "outcome": "win", "points": 60.0, "rupees": 3900.0}
+    _seed_heads(monkeypatch, trade1=[won])
+    client.get("/api/snapshot")
+    r = client.post("/api/exit", data={"strategy": "trade1", "ts": won["ts"], "exit_px": "24010"})
+    assert r.status_code == 200 and r.json()["outcome"]["points"] == 10.0   # the REAL exit, not +60
+    row = next(x for x in client.get("/api/triggers?strategy=trade1").json()["triggers"]
+               if x["ts"] == won["ts"])
+    assert row["outcome"] == "exit" and row["points"] == 10.0
+
+
+def test_exit_reconstructs_from_store_after_restart(client, monkeypatch, tmp_path):
+    """Manual exits are durable: after a redeploy wipes the in-memory overlay, the exit is
+    rebuilt from the store so the row still shows `exit`."""
+    import journal.log as jlog
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    t = _open_trig(direction="long")
+    _seed_heads(monkeypatch, trade1=[t])
+    client.get("/api/snapshot")
+    client.post("/api/exit", data={"strategy": "trade1", "ts": t["ts"], "exit_px": "24050"})
+    st = srv._st("NIFTY")
+    st["exits"].clear(); st["records"].clear()       # simulate a restart (overlay wiped)
+    srv._load_persisted_exits("NIFTY")
+    key = ("trade1", t["ts"])
+    assert key in st["exits"] and st["exits"][key]["points"] == 50.0
+
+
+def test_state_isolated_per_instrument(client, monkeypatch, tmp_path):
+    import journal.log as jlog
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    t = _open_trig(direction="long")
+    _seed_heads(monkeypatch, trade1=[t])
+    client.get("/api/snapshot")
+    client.post("/api/exit", data={"strategy": "trade1", "ts": t["ts"],
+                                   "exit_px": "24050", "symbol": "NIFTY"})
+    key = ("trade1", t["ts"])
+    assert key in srv._st("NIFTY")["exits"]
+    assert key not in srv._st("BANKNIFTY")["exits"]   # Bank Nifty state is separate
+
+
+def test_snapshot_exposes_instruments_and_active_symbol(client):
+    d = client.get("/api/snapshot").json()
+    assert d["symbol"] == "NIFTY"
+    assert any(i["id"] == "BANKNIFTY" for i in d["instruments"])
+
+
+def test_session_dates_newest_first(client):
+    client.get("/api/snapshot")
+    dates = client.get("/api/triggers?strategy=trade1").json()["dates"]
+    assert dates == sorted(dates, reverse=True)
+
+
+def test_record_scoped_per_instrument(client, tmp_path, monkeypatch):
+    from journal import store
+    for s, pts in [("NIFTY", 60.0), ("BANKNIFTY", 40.0)]:
+        rid = store.save_decision({
+            "decision": "approved", "symbol": s, "ts": "2024-01-01T09:18:00+05:30",
+            "proposal": {"recommendation": "enter", "direction": "long", "entry": 100.0,
+                         "stop": 100.0, "target": 100.0, "ts": "2024-01-01T09:18:00+05:30"}},
+            path=srv.JOURNAL_DB)
+        store.update_outcome(rid, {"status": "win", "points": pts, "rupees": 1.0, "manual": True},
+                             "good", "deserved", path=srv.JOURNAL_DB)
+    client.get("/api/snapshot")
+    d = client.get("/api/record?symbol=BANKNIFTY").json()
+    assert d["summary"]["n_settled"] == 1                       # only the Bank Nifty trade
+    assert d["recent"][0]["outcome"]["points"] == 40.0
 
 
 def test_chat_round_trips(client):

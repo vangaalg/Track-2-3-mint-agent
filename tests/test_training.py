@@ -214,8 +214,8 @@ def test_train_answer_entry_reason_rr_2lots(tclient):
         "stop": 23960.0, "reason": "clean breakout over CPR"})
     d = r.json()
     assert d["rr"] == 2.0                                    # |80| / |40|
-    assert d["your_outcome"]["rupees"] == round(d["your_outcome"]["points"] * 75 * 2, 0)
-    assert d["engine_outcome"]["rupees"] == round(d["engine_outcome"]["points"] * 75 * 2, 0)
+    assert d["your_outcome"]["rupees"] == round(d["your_outcome"]["points"] * 65 * 2, 0)
+    assert d["engine_outcome"]["rupees"] == round(d["engine_outcome"]["points"] * 65 * 2, 0)
     rows = store.load_records(srv.JOURNAL_DB, kind="training")
     assert rows[0]["proposal"]["reason"] == "clean breakout over CPR"
     assert rows[0]["proposal"]["size_lots"] == 2 and rows[0]["proposal"]["rr_ratio"] == 2.0

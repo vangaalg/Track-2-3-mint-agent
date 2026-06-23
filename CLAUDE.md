@@ -501,6 +501,26 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       inside-CPR. PENDING: Trade 2/3 (strangle/expiry-OTM) deliberately NOT built; backtest-validate the 3 new
       streams live before trusting them.
 
+- [x] **Multi-instrument cockpit (NIFTY + Bank Nifty) + exitable rows + durable exits + decision confidence.**
+      Five trader-driven cockpit fixes. (1) **Decision confidence surfaced + stored:** engine conviction (0-5,
+      `final_confidence` = mtf 45-EMA + OI boost) is a queryable store column + a Conf column in the triggers +
+      track-record tables + the approve/reject line; Claude's confidence shown alongside in the track record; a
+      "win-rate by conviction" panel (`journal.outcomes.conviction_breakdown`) answers "does higher conviction
+      win more?". (2) **Exit ANY directional row, any date** (`/api/exit` dropped the open-only gate) — record the
+      REAL trade you took + exit price, overriding that row's hypothetical replay outcome. (3) **Durable exits:**
+      `_load_persisted_exits` rebuilds the in-memory exit overlay from the SQLite store on refresh (keyed on the
+      proposal/trigger ts) so closes survive a Railway restart. (4) **Date toggle newest-first** (`_session_dates`
+      reversed). (5) **Bank Nifty via a full instrument switcher + per-instrument state:** new `feeds/instruments.py`
+      registry (loader symbol CNXBAN, lot size, monthly expiry, scaled ±bands); `web.server` swapped the single
+      global `_state` for per-instrument `_states` selected by an `_active` ContextVar (set per request, threaded
+      via `_st()`), with per-instrument pull/chain/expiry/lot/band + a header instrument `<select>`; `/api/record`
+      is now per-instrument (settle each against its OWN bars). **Lot sizes: NIFTY = 65, Bank Nifty = 30** (trader-
+      confirmed; NIFTY changed from 75 — flagged that NSE's NIFTY contract is 75, trader reaffirmed 65, so it's an
+      intentional override; one constant to revert). Tested in test_instruments + extended test_web_server (per-
+      instrument isolation, exit-override, exit reconstruct-after-restart, record scoping, newest-first dates) +
+      lot-size test updates; suite green (278). NOTE: Bank Nifty's live Breeze chain (CNXBAN + monthly last-Tue)
+      needs open-network verification; NSE-50 option stocks slot into the same registry later.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
