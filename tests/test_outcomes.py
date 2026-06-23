@@ -38,6 +38,9 @@ def test_manual_exit_outcome_long_win_short_loss():
     short_p = {"direction": "short", "entry": 24000.0, "size_lots": 1}
     o2 = manual_exit_outcome(short_p, 24030.0, None)
     assert o2["status"] == "loss" and o2["points"] == -30.0
+    # auto-flatten-on-reversal close is flagged auto=True (vs a hand-picked exit)
+    assert o["auto"] is False
+    assert manual_exit_outcome(long_p, 24050.0, None, auto=True)["auto"] is True
 
 
 def test_grade_process():

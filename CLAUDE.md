@@ -535,6 +535,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       state (recorder runs on the trader's machine; sandbox dir empty). Tested in test_web_server (oi-history
       serve/filter/empty/per-instrument) + test_analysis_trade1/discipline band updates; suite green (281).
 
+- [x] **One position at a time (auto-flatten on reversal) + PCR empty-state diagnostic.** Trader rule: per
+      strategy you hold ONE directional position — a new trigger auto-exits the prior (opposite = reverse,
+      same direction = re-enter). (1) **Table:** `analysis.triggers._resolve_window` + `replay_today(one_position=
+      True)` model flip-and-reverse — each trigger closes at the NEXT trigger's entry (or its own stop/target if
+      hit first, outcome `flip`/win/loss), only the LAST trade holds to stop/target/eod; default stays independent.
+      `web.server._strategy_queue` passes `one_position=True` for directional tabs (per-strategy scope; condor
+      unchanged). (2) **Live:** `_new_state()["position"]` tracks the open approved trade per strategy; `/api/decision`
+      approve calls `_auto_flatten` (closes the prior at the live spot via the shared `_record_exit`, extracted from
+      `exit_trade`) BEFORE opening the new one, then sets the new position; `manual_exit_outcome(auto=True)` tags the
+      reversal close (vs a hand-picked exit). (3) **PCR diagnostic:** the empty PCR panel now best-effort fetches
+      `/healthz` and appends the recorder's `recorder/last_cycle/saved/last error` so the trader can tell after-hours
+      from a token failure (wiring confirmed correct — recorder writes + cockpit reads the same `data/oi_summary`).
+      Decided w/ trader: per-strategy, table+live both, re-enter on same direction. Tested in test_triggers
+      (flip-and-reverse + `_resolve_window`), test_web_server (approve-opposite auto-flattens), test_outcomes
+      (auto flag). Suite green (284).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

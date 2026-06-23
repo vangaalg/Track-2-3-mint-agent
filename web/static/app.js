@@ -179,6 +179,19 @@ async function fetchPcrHistory() {
   } catch (e) { /* keep last */ }
 }
 
+// Diagnose an empty PCR panel: surface the recorder's live status from /healthz (the
+// combined Railway service) so the trader can tell "after-hours / no data" from "token failing".
+async function pcrRecorderStatus() {
+  try {
+    const s = await (await fetch("/healthz")).json();
+    if (!s || s.recorder === undefined) return;
+    const last = s.last_cycle ? s.last_cycle.slice(11, 16) : "—";
+    const err = (s.errors || []).slice(-1)[0];
+    $("pcrEmpty").textContent += `  ·  recorder: ${s.recorder} · last cycle ${last}`
+      + ` · saved ${(s.saved || []).length}` + (err ? ` · last error: ${err}` : "");
+  } catch (e) { /* standalone web.server has no /healthz — keep the base note */ }
+}
+
 function populatePcrDays() {
   const sel = $("pcrDay");
   if (sel.options.length !== _pcrDays.length + 1) {
@@ -193,7 +206,8 @@ function renderPcr(rows) {
     $("pcrChart").style.display = "none";
     $("pcrEmpty").hidden = false;
     $("pcrEmpty").textContent = "No OI history recorded yet for " + currentSymbol
-      + " — the recorder accumulates it live (pull the data repo).";
+      + " — the recorder accumulates it live (records 09:15–15:30 IST).";
+    pcrRecorderStatus();                        // best-effort: append WHY (last cycle / errors)
     $("pcrTbl").innerHTML = "";
     return;
   }

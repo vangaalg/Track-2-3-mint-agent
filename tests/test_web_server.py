@@ -58,7 +58,8 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "CHAT_COMPLETER", lambda system, history: "sparring reply")
     srv._state.update(snap=None, prop=None, chain=None, snap_at=0.0, oi_at=0.0,
                       read=None, analysed_bar=None, chat=[],
-                      queues={}, heads={}, actioned={}, reads={}, exits={}, records={})
+                      queues={}, heads={}, actioned={}, reads={}, exits={}, records={},
+                      position={})
     return TestClient(srv.app)
 
 
@@ -209,6 +210,32 @@ def test_approve_acts_on_frozen_trigger_and_advances(client, monkeypatch, tmp_pa
     # next poll advances the head to the second open trigger
     head = client.get("/api/snapshot").json()["heads"]["trade1"]
     assert head["ts"] == t2["ts"]
+
+
+def test_approve_opposite_auto_flattens_prior_position(client, monkeypatch, tmp_path):
+    """One position at a time: approving a trade auto-exits the strategy's prior open trade
+    at the live spot (the auto-flatten close is tagged auto=True)."""
+    import journal.log as jlog
+    from journal import store
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    lng = _open_trig(ts="2024-01-01T09:18:00+05:30", direction="long")
+    sht = _open_trig(ts="2024-01-01T10:00:00+05:30", direction="short")
+    _seed_heads(monkeypatch, trade1=[lng, sht])
+    client.get("/api/snapshot")
+    client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                       "ts": lng["ts"], "live": "false"})
+    assert srv._st("NIFTY")["position"]["trade1"]["ts"] == lng["ts"]   # long is the open position
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                           "ts": sht["ts"], "live": "false"})
+    assert r.status_code == 200
+    af = r.json()["auto_exit"]                          # the prior long was auto-closed
+    assert af and af["ts"] == lng["ts"]
+    assert ("trade1", lng["ts"]) in srv._st("NIFTY")["exits"]
+    long_rec = next(x for x in store.load_records(srv.JOURNAL_DB)
+                    if (x.get("proposal") or {}).get("ts") == lng["ts"])
+    assert (long_rec.get("outcome") or {}).get("auto") is True
+    assert srv._st("NIFTY")["position"]["trade1"]["ts"] == sht["ts"]   # short is now the position
 
 
 def test_skip_advances_silently_without_logging(client, monkeypatch):

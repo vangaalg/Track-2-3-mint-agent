@@ -166,11 +166,12 @@ def settle_store(frames_by_tf: dict[str, pd.DataFrame] | None = None,
 
 
 def manual_exit_outcome(proposal: dict, exit_px: float, exit_ts: str | None = None,
-                        lot_size: int = LOT_SIZE) -> dict:
-    """Outcome for a trader's MANUAL exit at ``exit_px`` (records realized P&L now instead of
+                        lot_size: int = LOT_SIZE, auto: bool = False) -> dict:
+    """Outcome for a MANUAL exit at ``exit_px`` (records realized P&L now instead of
     waiting for the auto-settle at stop/target/EOD). Same shape as ``settle`` writes, so
     ``store.update_outcome`` persists it unchanged; status is win/loss by P&L sign, so it slots
-    straight into the 2x2 via ``_matrix``."""
+    straight into the 2x2 via ``_matrix``. ``auto=True`` flags an auto-flatten-on-reversal close
+    (the position was closed because an opposite/new trade was taken) vs a hand-picked exit."""
     direction = proposal.get("direction")
     entry = proposal.get("entry")
     size = proposal.get("size_lots") or 75
@@ -178,7 +179,7 @@ def manual_exit_outcome(proposal: dict, exit_px: float, exit_ts: str | None = No
     status = "win" if points >= 0 else "loss"
     return {"status": status, "exit": round(exit_px, 2), "points": points,
             "rupees": round(points * lot_size * size, 0), "exit_ts": exit_ts,
-            "manual": True, "settled_at": datetime.now(timezone.utc).isoformat()}
+            "manual": True, "auto": auto, "settled_at": datetime.now(timezone.utc).isoformat()}
 
 
 def matrix_summary(decisions: list[dict]) -> dict:

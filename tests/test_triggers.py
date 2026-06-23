@@ -75,6 +75,44 @@ def test_replay_today_stop_out(monkeypatch):
     assert out["summary"]["losses"] == 1
 
 
+def test_replay_today_one_position_flips_on_reversal(monkeypatch):
+    import analysis.triggers as trig
+    # long @ bar2 (close 100); a SHORT trigger fires @ bar4 (close 101) before the long
+    # hits its 99.6 stop / 102 target -> the long is FLATTENED at the short's entry.
+    closes = [100, 100, 100, 100.5, 101, 100.5, 100]
+    highs = [100, 100, 100, 100.8, 101.2, 100.8, 100.3]
+    lows = [99.6, 99.6, 99.6, 100.2, 100.5, 99.8, 99.6]
+    frames = _frames(closes, highs, lows)
+    feats = frames.assign(ema_45=99.0, supertrend=98.0, cpr_pivot=99.5,
+                          cpr_tc=102.0, cpr_bc=97.0)
+    calls = pd.Series(["flat", "flat", "long", "long", "short", "short", "short"],
+                      index=frames.index)
+    monkeypatch.setattr(trig, "resolve_direction_mtf", lambda f, c: calls)
+
+    op = replay_today({"3min": feats}, {"3min": frames}, cfg=_StubMTF(), one_position=True)
+    assert op["summary"]["n"] == 2
+    long_row = op["triggers"][0]
+    # the long closes at the short's entry (101), NOT held to its own stop/target
+    assert long_row["direction"] == "long" and long_row["outcome"] == "flip"
+    assert long_row["exit"] == 101.0 and long_row["points"] == 1.0 and long_row["exit_ts"]
+    assert op["triggers"][1]["direction"] == "short"           # the reversed position
+
+    # default (independent) keeps the old behavior — no "flip", no exit field
+    indep = replay_today({"3min": feats}, {"3min": frames}, cfg=_StubMTF())
+    assert indep["triggers"][0]["outcome"] != "flip" and "exit" not in indep["triggers"][0]
+
+
+def test_resolve_window_stops_before_next_trigger():
+    import analysis.triggers as trig
+    frames = _frames([100, 100, 100, 99.0, 99.0], highs=[100, 100, 101, 101, 101],
+                     lows=[100, 100, 99.4, 98.5, 98.5])
+    ts, nxt = frames.index[1], frames.index[4]      # window spans bars 2,3
+    # long entry 100, stop 99.5 hit at bar3 (low 99.4) BEFORE the next trigger -> loss
+    outcome, exit_px, pts, exit_ts = trig._resolve_window(frames, ts, nxt, "long", 100.0, 99.5, 103.0)
+    assert outcome == "loss" and exit_px == 99.5 and pts == -0.5
+    assert exit_ts == frames.index[2]
+
+
 def test_replay_no_session_data():
     out = replay_today({}, {})
     assert out["summary"]["n"] == 0 and out["triggers"] == []

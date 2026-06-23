@@ -131,6 +131,40 @@ def _resolve_intraday(frame3m, ts, direction, entry, stop, target):
     return "eod", round(close_last, 2), round(pts, 2), idx[-1]
 
 
+def _resolve_window(frame3m, ts, next_ts, direction, entry, stop, target):
+    """Resolve ONE trade in a single-position (flip-and-reverse) session: walk the bars
+    after ``ts`` until either stop/target hits OR the NEXT trigger fires at ``next_ts``.
+
+    Returns ``(outcome, exit_px, points, exit_ts)``:
+      * stop/target touched before ``next_ts`` -> ``win`` / ``loss`` at that level;
+      * otherwise the trade is FLATTENED at ``next_ts`` (a new trade is taken) -> ``flip``
+        exit at that bar's close (= the next trigger's entry);
+      * ``next_ts is None`` (the session's LAST trade) -> defer to ``_resolve_intraday``
+        (win / loss / eod at the bell).
+    """
+    if next_ts is None:
+        return _resolve_intraday(frame3m, ts, direction, entry, stop, target)
+    t, nt = pd.Timestamp(ts), pd.Timestamp(next_ts)
+    win = frame3m[(frame3m.index > t) & (frame3m.index < nt)]   # bars strictly before the flip
+    long = direction == "long"
+    for k in range(len(win)):
+        h, lo = float(win["high"].iloc[k]), float(win["low"].iloc[k])
+        if long and lo <= stop:
+            return "loss", round(stop, 2), round(stop - entry, 2), win.index[k]
+        if long and h >= target:
+            return "win", round(target, 2), round(target - entry, 2), win.index[k]
+        if (not long) and h >= stop:
+            return "loss", round(stop, 2), round(entry - stop, 2), win.index[k]
+        if (not long) and lo <= target:
+            return "win", round(target, 2), round(entry - target, 2), win.index[k]
+    # neither hit by the next trigger -> flip out at the next trigger's bar (its entry)
+    flip = frame3m[frame3m.index == nt]
+    exit_px = float(flip["close"].iloc[0]) if not flip.empty else float(entry)
+    pts = (exit_px - entry) if long else (entry - exit_px)
+    return "flip", round(exit_px, 2), round(pts, 2), nt
+
+
+
 def list_triggers(
     feats_by_tf: dict[str, pd.DataFrame],
     frames_by_tf: dict[str, pd.DataFrame],
@@ -235,12 +269,18 @@ def replay_today(
     size_lots: int = DEFAULT_SIZE_LOTS,
     lot_size: int = LOT_SIZE,
     session_date=None,
+    one_position: bool = False,
 ) -> dict:
     """Replay one session's Trade-1 triggers and their outcomes.
 
     ``session_date`` (a ``date`` or ``YYYY-MM-DD`` string) picks which session to replay;
     default ``None`` = the latest session in the frame (back-compat). Lets the cockpit
     browse previous days from the multi-day live pull.
+
+    ``one_position=True`` models a SINGLE position (flip-and-reverse): each trigger closes
+    the prior trade at the next trigger's entry (or its own stop/target if hit first), and
+    only the LAST trade holds to stop/target/EOD — so the table never shows two directions
+    open at once. Default False keeps the independent per-trigger outcomes.
     """
     cfg = cfg or MTFDirectionalConfig()
     empty = {"session": None, "triggers": [], "last": None,
@@ -266,7 +306,8 @@ def replay_today(
     high, low, close = bars["high"].to_numpy(), bars["low"].to_numpy(), bars["close"].to_numpy()
     ts = calls.index
 
-    triggers = []
+    # Pass 1: collect the discrete flip triggers (entry/stop/target/conf) in order.
+    raw = []
     for i in range(len(c)):
         prev = c[i - 1] if i > 0 else "flat"
         if c[i] not in ("long", "short") or c[i] == prev:
@@ -279,19 +320,36 @@ def replay_today(
         stop, target, rr = trade1_levels(direction, entry, levels)
         if stop is None or target is None:
             continue
+        raw.append({"i": i, "ts": ts[i], "direction": direction, "entry": entry,
+                    "stop": stop, "target": target, "rr": rr, "conf": int(conf.iloc[i])})
 
-        outcome, exit_px, points = simulate_trade(
-            direction, entry, stop, target, high[i + 1:], low[i + 1:], close[-1])
+    frame3m = frames_by_tf["3min"]
+    triggers = []
+    for k, r in enumerate(raw):
+        if one_position:    # single position: close at the NEXT trigger's entry (or stop/target first)
+            next_ts = raw[k + 1]["ts"] if k + 1 < len(raw) else None
+            outcome, exit_px, points, exit_ts = _resolve_window(
+                frame3m, r["ts"], next_ts, r["direction"], r["entry"], r["stop"], r["target"])
+        else:               # independent: each trade simulated to the session's end
+            outcome, exit_px, points = simulate_trade(
+                r["direction"], r["entry"], r["stop"], r["target"],
+                high[r["i"] + 1:], low[r["i"] + 1:], close[-1])
+            exit_ts = None
         # ₹ is sized by THIS trigger's conviction (1-2 lot band), matching the live
         # proposal — not a flat lot count — so the table and the proposal agree.
-        row_lots = size_for_confidence(int(conf.iloc[i]))
-        triggers.append({
-            "ts": ts[i].isoformat(), "direction": direction,
-            "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2),
-            "rr": rr, "mtf_confidence": int(conf.iloc[i]), "size_lots": row_lots,
+        row_lots = size_for_confidence(r["conf"])
+        row = {
+            "ts": r["ts"].isoformat(), "direction": r["direction"],
+            "entry": round(r["entry"], 2), "stop": round(r["stop"], 2),
+            "target": round(r["target"], 2), "rr": r["rr"],
+            "mtf_confidence": r["conf"], "size_lots": row_lots,
             "outcome": outcome, "points": round(points, 2),
             "rupees": round(points * lot_size * row_lots, 0),
-        })
+        }
+        if one_position:
+            row["exit"] = exit_px
+            row["exit_ts"] = exit_ts.isoformat() if exit_ts is not None else None
+        triggers.append(row)
 
     wins = sum(1 for t in triggers if t["outcome"] == "win")
     losses = sum(1 for t in triggers if t["outcome"] == "loss")

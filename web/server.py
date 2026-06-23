@@ -144,6 +144,8 @@ def _new_state() -> dict:
         "queues": {}, "heads": {}, "actioned": {}, "reads": {},
         # manual exits the trader took off the triggers table: overlay + store-row ids
         "exits": {}, "records": {},
+        # one-position-at-a-time: the open APPROVED trade per strategy (auto-flattened on a new one)
+        "position": {},
     }
 
 
@@ -254,8 +256,10 @@ def _strategy_queue(sid: str, snap, size: int, session_date=None, lot_size: int 
     lot = lot_size or _lot_size_for(snap)
     if meta["kind"] == "nondirectional":
         return _condor_today(snap, size, session_date=session_date, lot_size=lot)
+    # one_position: a strategy holds ONE directional position — each trigger flattens the
+    # prior at the next trigger's entry (no long+short open at once), per the trader's rule.
     return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size,
-                        lot_size=lot, session_date=session_date)
+                        lot_size=lot, session_date=session_date, one_position=True)
 
 
 def _session_dates(snap) -> list[str]:
@@ -777,14 +781,25 @@ def exit_trade(strategy: str = Form("trade1"), ts: str = Form(...),
     if trig is None or trig.get("direction") not in ("long", "short"):
         raise HTTPException(status_code=409, detail="no directional trade at that trigger")
     px = float(exit_px) if exit_px is not None else snap.spot
+    outcome = _record_exit(strategy, trig, px, symbol, lot, auto=False)
+    return {"ok": True, "outcome": outcome}
+
+
+def _record_exit(strategy: str, trig: dict, px: float, symbol: str, lot: int,
+                 auto: bool = False) -> dict:
+    """Record a close of ``trig`` at ``px`` (a manual exit OR an auto-flatten-on-reversal):
+    persist to the journal store + overlay the triggers table, and clear the strategy's open
+    position if this was it. Returns the outcome dict (``auto`` flags the reversal close)."""
+    key = (strategy, trig["ts"])
     exit_ts = datetime.now().isoformat(timespec="seconds")
-    outcome = manual_exit_outcome(trig, px, exit_ts, lot_size=lot)
+    outcome = manual_exit_outcome(trig, px, exit_ts, lot_size=lot, auto=auto)
     # persist: reuse the card-approved store row if it exists, else log the taken trade now
-    prop = _proposal_from_head(strategy, trig, snap, _st().get("table"))
+    prop = _proposal_from_head(strategy, trig, _st()["snap"], _st().get("table"))
     rid = _st()["records"].get(key)
     if rid is None:
-        log_decision(prop, "approved", execution={"status": "manual"})
-        rid = _save_context_for(prop, "approved", symbol, {"status": "manual"})
+        status = "auto" if auto else "manual"
+        log_decision(prop, "approved", execution={"status": status})
+        rid = _save_context_for(prop, "approved", symbol, {"status": status})
         _st()["records"][key] = rid
         _st()["actioned"][key] = "approved"
     if rid is not None:
@@ -796,7 +811,25 @@ def exit_trade(strategy: str = Form("trade1"), ts: str = Form(...),
         except Exception:
             pass
     _st()["exits"][key] = {k: outcome[k] for k in ("exit", "exit_ts", "points", "rupees")}
-    return {"ok": True, "outcome": outcome}
+    if (_st()["position"].get(strategy) or {}).get("ts") == trig["ts"]:
+        _st()["position"].pop(strategy, None)        # that position is now flat
+    return outcome
+
+
+def _auto_flatten(strategy: str, symbol: str) -> dict | None:
+    """One position at a time: close the strategy's currently-open approved trade at the live
+    spot before a NEW trade in that strategy opens (opposite = reverse, same = re-enter)."""
+    pos = _st()["position"].get(strategy)
+    snap = _st()["snap"]
+    if not pos or snap is None:
+        return None
+    if (strategy, pos["ts"]) in _st()["exits"]:       # already closed
+        _st()["position"].pop(strategy, None)
+        return None
+    lot = get_instrument(symbol)["lot_size"]
+    out = _record_exit(strategy, pos, snap.spot, symbol, lot, auto=True)
+    return {"ts": pos["ts"], "direction": pos.get("direction"),
+            "points": out["points"], "exit": out["exit"]}
 
 
 @app.post("/api/analyse")
@@ -912,13 +945,16 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
         return {"status": "skipped", "next_head": _advance_head(strategy)}
     prop = _proposal_from_head(strategy, head, _st()["snap"], _st().get("table"))
     if action == "approve":
+        # one position at a time: auto-exit the strategy's prior open trade before this opens
+        flat = _auto_flatten(strategy, symbol)
         result = breeze_exec.place(prop, live=live) if strategy == "trade1" else \
             {"status": "logged (propose-only)"}
         rec = log_decision(prop, "approved", execution=result)
         _st()["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
         _st()["actioned"][key] = "approved"
+        _st()["position"][strategy] = dict(head)       # the new open position for this strategy
         return {"status": result.get("status"), "logged": rec["decision"],
-                "next_head": _advance_head(strategy)}
+                "auto_exit": flat, "next_head": _advance_head(strategy)}
     rec = log_decision(prop, "rejected")
     _save_context_for(prop, "rejected", symbol, None, label=label)
     _st()["actioned"][key] = "rejected"
