@@ -4,12 +4,12 @@ const $ = (id) => document.getElementById(id);
 const n = (x, d = 2) => (x === null || x === undefined || Number.isNaN(x)) ? "—" : Number(x).toFixed(d);
 const lakh = (x) => (x === null || x === undefined) ? "—" : (x / 1e5).toFixed(2);
 
-let lastBar = null, analysing = false, lastPayload = null, currentStrat = "trade1";
+let analysing = false, lastPayload = null, currentStrat = "trade1", currentHead = null;
 const STRAT_LABEL = { trade1: "3-min", cpr_st: "CPR-ST", orb: "ORB", condor: "Expiry condor" };
 
 async function poll() {
   try {
-    const r = await fetch(`/api/snapshot?symbol=${SYMBOL}&size=${SIZE}`);
+    const r = await fetch(`/api/snapshot?symbol=${SYMBOL}`);
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const d = await r.json();
     lastPayload = d;
@@ -17,25 +17,33 @@ async function poll() {
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderChart(d); renderOI(d); renderStrategy();
     fetchChart(); fetchRecord();
-    // auto-analyse once per new ENTER bar (Trade-1 only — the OI-automated stream)
-    if (d.auto_trigger && d.ts !== lastBar && !analysing) { lastBar = d.ts; analyse(); }
+    // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
+    // (all four tabs); the frozen head carries its cached read.
   } catch (e) {
     $("dot").className = "dot err"; $("meta").textContent = "error: " + e.message;
   }
 }
 
-// Render whichever strategy tab is active off the last snapshot payload.
+// Render the active tab's GATED decision card off the frozen head trigger.
 function renderStrategy() {
   const d = lastPayload;
-  if (!d || !d.proposals) return;
-  const isT1 = currentStrat === "trade1";
-  // Claude/decision controls act on the OI-automated Trade-1 stream only.
-  $("claudeBlock").style.display = isT1 ? "" : "none";
-  $("stratNote").hidden = isT1;
-  if (!isT1) $("stratNote").textContent =
-    "Mechanical chart trigger — cross-check OI manually. Propose-only (no auto Claude/execute).";
+  if (!d) return;
+  const head = (d.heads || {})[currentStrat] || null;
+  currentHead = head;
+  $("stratNote").hidden = (currentStrat === "trade1");
+  if (currentStrat !== "trade1") $("stratNote").textContent =
+    "Mechanical chart trigger — cross-check OI manually. Propose-only (logged, not auto-executed).";
   $("trigTitle").textContent = `📛 ${STRAT_LABEL[currentStrat]} — today's triggers`;
-  renderProposal(d.proposals[currentStrat] || d.proposal);
+
+  if (!head) { renderWatching(); }
+  else if (currentStrat === "condor") { renderCondor((d.proposals || {}).condor || {}); $("decision").hidden = false; }
+  else { renderHead(head); }
+
+  // Claude's read (auto-fired per trigger, server-side) on every tab.
+  const rd = head && head.read;
+  if (rd) renderRead(rd);
+  else $("readBox").innerHTML = `<span class="muted">${head ? "Analysing this trigger… (or press Analyse)" : "No active trigger — watching."}</span>`;
+
   fetchTriggers(currentStrat);
 }
 
@@ -106,25 +114,23 @@ function renderOI(d) {
   $("chainTbl").innerHTML = h + "</tbody>";
 }
 
-function renderProposal(p) {
-  const box = $("propBox"), dec = $("decision");
-  if (!p) { box.className = "propbox"; box.textContent = "—"; return; }
-  if (p.trade_type === "trade_condor") return renderCondor(p);
-  if (p.recommendation === "enter") {
-    box.className = "propbox enter";
-    const conv = p.final_confidence != null ? p.final_confidence : p.mtf_confidence;
-    box.innerHTML = `ENTER · ${p.direction}<br>Entry ${n(p.entry)} · Stop ${n(p.stop)} · Target ${n(p.target)}`
-      + `<br>R:R ${p.rr_ratio} · ${p.size_lots} lots <span class="muted">(conviction ${conv}/5)</span>`
-      + `<br><span class="muted">${p.vehicle || ""}</span>`
-      + (p.selected_strike ? `<br><span class="small">Strike ${p.selected_strike} @${n(p.vehicle_ltp)} · time-value ${n(p.vehicle_extrinsic)}</span>` : "")
-      + (p.oi_confidence_boost > 0 ? `<br><span class="small">🟢 OI confirms ${p.oi_bias} → +1 conviction (${p.final_confidence}/5)</span>`
-         : (p.oi_bias ? `<br><span class="small muted">OI ${p.oi_bias} — no boost</span>` : ""));
-    dec.hidden = false;
-  } else {
-    box.className = "propbox stand";
-    box.innerHTML = "STAND DOWN — flat/conflicted read, no trade to size. <span class='muted'>(no-trade is a win)</span>";
-    dec.hidden = false;
-  }
+// The calm idle state — no flickering ENTER/STAND-DOWN between triggers.
+function renderWatching() {
+  $("propBox").className = "propbox watching";
+  $("propBox").innerHTML = "👁 Watching — no active trigger. "
+    + "<span class='muted'>(approve/reject appears the moment one fires)</span>";
+  $("decision").hidden = true;
+}
+
+// A PINNED, frozen trigger awaiting the trader's approve/reject (stable across polls).
+function renderHead(head) {
+  $("propBox").className = "propbox enter";
+  $("propBox").innerHTML = `🔔 TRIGGER · ${head.direction.toUpperCase()} `
+    + `<span class="muted">${(head.ts || "").slice(11, 16)}</span>`
+    + `<br>Entry ${n(head.entry)} · Stop ${n(head.stop)} · Target ${n(head.target)}`
+    + `<br>R:R ${head.rr} · ${head.size_lots} lots <span class="muted">(conviction ${head.mtf_confidence}/5)</span>`
+    + `<br><span class="small muted">pinned — won't advance until you approve/reject</span>`;
+  $("decision").hidden = false;
 }
 
 // Non-directional defined-risk iron condor (propose-only — manual multi-leg entry).
@@ -157,7 +163,8 @@ function renderRead(rd) {
 
 async function fetchTriggers(strat) {
   try {
-    const d = await (await fetch(`/api/triggers?size=${SIZE}&strategy=${strat || currentStrat}`)).json();
+    // no size param — the server sizes each row by its own conviction (matches the card)
+    const d = await (await fetch(`/api/triggers?strategy=${strat || currentStrat}`)).json();
     renderTriggers(d, strat || currentStrat);
   } catch (e) { /* keep last */ }
 }
@@ -247,9 +254,10 @@ function renderRecord(d) {
 }
 
 async function analyse() {
+  if (!currentHead) { $("readBox").innerHTML = "<span class='muted'>No active trigger to analyse.</span>"; return; }
   analysing = true; $("analyseBtn").textContent = "Analysing…";
   try {
-    const r = await fetch("/api/analyse", { method: "POST" });
+    const r = await fetch(`/api/analyse?strategy=${currentStrat}`, { method: "POST" });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     renderRead(await r.json());
   } catch (e) { $("readBox").innerHTML = `<span class="muted">Claude unavailable: ${e.message}</span>`; }
@@ -257,14 +265,19 @@ async function analyse() {
 }
 
 async function decide(action) {
-  const fd = new FormData(); fd.append("action", action);
+  if (!currentHead) { $("decisionMsg").textContent = "No active trigger to decide."; return; }
+  const fd = new FormData();
+  fd.append("action", action); fd.append("strategy", currentStrat); fd.append("ts", currentHead.ts);
   const lbl = document.querySelector('input[name="liveLabel"]:checked');
   if (lbl) fd.append("label", lbl.value);
   const r = await fetch("/api/decision", { method: "POST", body: fd });
   const d = await r.json();
-  $("decisionMsg").textContent = `Logged ${d.logged} · execution ${d.status || "—"}`
+  if (!r.ok) { $("decisionMsg").textContent = "⚠ " + (d.detail || "decision failed"); return; }
+  $("decisionMsg").textContent = `${action === "approve" ? "Approved" : "Rejected"} ${currentStrat} `
+    + `${(currentHead.ts || "").slice(11, 16)} · logged ${d.logged} · ${d.status || "—"}`
     + (lbl ? ` · trigger ${lbl.value}` : "");
   document.querySelectorAll('input[name="liveLabel"]').forEach((el) => { el.checked = false; });
+  poll();        // advance to the next pending trigger (if any)
 }
 
 async function sendChat(ev) {

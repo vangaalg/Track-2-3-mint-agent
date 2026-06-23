@@ -29,13 +29,14 @@ from feeds.oi import chain_table, summarise_chain
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store
-from analysis.trade1 import propose_trade1, apply_strike, apply_oi_boost, LOT_SIZE
+from analysis.trade1 import (
+    propose_trade1, apply_strike, apply_oi_boost, size_for_confidence, LOT_SIZE)
 from analysis.cpr_st import propose_cpr_st
 from analysis.orb import propose_orb
 from analysis.condor import propose_condor, list_condor_triggers
 from analysis.strike import select_strike
 from analysis.triggers import replay_today, list_triggers, simulate_intraday
-from analysis.proposal import Recommendation
+from analysis.proposal import Recommendation, TradeProposal
 from agent.memory import load_decisions, distill_memory, distill_context
 from agent.read import claude_read
 from agent.reason import explain_outcome
@@ -105,11 +106,17 @@ CHAT_COMPLETER = None     # spar_turn completer (None -> live Anthropic call)
 REASON_COMPLETER = None   # explain_outcome completer (None -> live Anthropic call)
 
 # --- in-process state (single local user) ---------------------------------- #
+# Gated trigger queue: each strategy pins its oldest still-open, un-actioned trigger as
+# the "head" (frozen entry/stop/target) until the trader approves/rejects it; resolved
+# triggers auto-expire out of the head. ``queues`` caches the per-strategy replay,
+# ``heads`` the current actionable trigger, ``actioned`` the durable decided set, and
+# ``reads`` Claude's read cached per (strategy, ts) so it fires once per trigger.
 _state: dict = {
     "snap": None, "prop": None, "chain": None,
     "snap_at": 0.0, "oi_at": 0.0,
     "read": None, "analysed_bar": None,
     "chat": [],
+    "queues": {}, "heads": {}, "actioned": {}, "reads": {},
 }
 
 # --- training-mode state (separate from the live cockpit) ------------------- #
@@ -164,8 +171,9 @@ def _refresh(symbol: str, size: int) -> None:
             "orb": _strike(propose_orb(snap, size_lots=size)),
             "condor": propose_condor(snap, table, expiry_weekday=EXPIRY_WEEKDAY),
         }
-        _state["prop"] = prop          # back-compat: analyse/decision/chat act on Trade-1
+        _state["prop"] = prop          # back-compat: chat/payload reference Trade-1
         _state["props"] = props
+        _state["table"] = table
         _state["snap_at"] = now
         # log the chain snapshot (the OI flywheel) once per fresh OI bucket
         if LOG_OI and chain is not None and not chain.empty \
@@ -175,6 +183,59 @@ def _refresh(symbol: str, size: int) -> None:
                 _state["oi_logged_at"] = _state["oi_at"]
             except Exception:
                 pass
+        for s in STRATEGIES:        # cache today's triggers per strategy (throttled)
+            _state["queues"][s["id"]] = _strategy_queue(s["id"], snap, size)
+
+
+def _strategy_queue(sid: str, snap, size: int) -> dict:
+    """Today's discrete triggers for one strategy (replay_today / condor proxy)."""
+    meta = _STRAT[sid]
+    if meta["kind"] == "nondirectional":
+        return _condor_today(snap, size)
+    return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size)
+
+
+def _head_for(sid: str, queue: dict) -> dict | None:
+    """The actionable HEAD trigger: the oldest still-OPEN, un-actioned trigger for the
+    strategy. Resolved (win/loss) triggers auto-expire out of the head (kept in history).
+    The condor (non-directional, propose-only — its proxy rows are always win/loss) uses
+    the LIVE gate-open proposal as its head instead."""
+    actioned = _state["actioned"]
+    if _STRAT[sid]["kind"] == "nondirectional":
+        prop = (_state.get("props") or {}).get("condor")
+        if prop is None or prop.recommendation is not Recommendation.ENTER:
+            return None
+        if (sid, prop.ts) in actioned:
+            return None
+        return {"ts": prop.ts, "direction": "flat", "condor": True,
+                "entry": prop.entry, "stop": prop.stop, "target": prop.target,
+                "rr": prop.rr_ratio, "mtf_confidence": 0, "outcome": "open"}
+    for t in queue.get("triggers", []):
+        if (sid, t["ts"]) in actioned:
+            continue
+        if t.get("outcome") != "open":          # auto-expire resolved triggers
+            continue
+        return t
+    return None
+
+
+def _recompute_heads() -> None:
+    """Re-select each strategy's HEAD from the cached queue (cheap — runs every poll) so a
+    just-actioned trigger advances to the next open one immediately, and auto-run Claude
+    ONCE per new head (all four tabs). Heads are deterministic from the trigger list minus
+    the actioned set, so the decision card stays put until the trader approves/rejects."""
+    for s in STRATEGIES:
+        sid = s["id"]
+        old = _state["heads"].get(sid)
+        head = _head_for(sid, _state["queues"].get(sid, {}))
+        _state["heads"][sid] = head
+        if head is not None and (old or {}).get("ts") != head["ts"]:
+            key = (sid, head["ts"])
+            if key not in _state["reads"]:
+                try:
+                    _run_head_read(sid, head)
+                except Exception:
+                    pass                          # never let a Claude error break the poll
 
 
 def _payload(symbol: str) -> dict:
@@ -195,6 +256,10 @@ def _payload(symbol: str) -> dict:
         "chain": rows,
         "proposal": prop.as_dict(),                                  # back-compat (Trade-1)
         "proposals": {sid: p.as_dict() for sid, p in props.items()},  # all 4 strategy streams
+        # the GATED decision card per tab: the frozen actionable trigger + its cached
+        # Claude read (None = "watching, no active trigger"). Stable across polls.
+        "heads": {sid: ({**h, "read": _state["reads"].get((sid, h["ts"]))} if h else None)
+                  for sid, h in _state.get("heads", {}).items()},
         "strategies": [{"id": s["id"], "label": s["label"], "kind": s["kind"]}
                        for s in STRATEGIES],
     }
@@ -246,18 +311,54 @@ def _settle_reasons(settled: list[dict]) -> None:
                 store.update_reason(r["id"], _reason_text(rw), path=JOURNAL_DB)
 
 
-def _run_read() -> dict:
-    snap, prop = _state["snap"], _state["prop"]
+def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
+    """Build a real ``TradeProposal`` from a FROZEN head trigger so log_decision /
+    save_decision (which need the dataclass) work unchanged. Levels are frozen from the
+    trigger; the option vehicle is picked off the LIVE chain (you fill it now)."""
+    if head.get("condor"):
+        return propose_condor(snap, table, expiry_weekday=EXPIRY_WEEKDAY)
+    direction = head["direction"]
+    conf = int(head.get("mtf_confidence") or 0)
+    lots = size_for_confidence(conf)
+    entry, stop = head.get("entry"), head.get("stop")
+    rupee_risk = (round(abs(entry - stop) * LOT_SIZE * lots, 2)
+                  if entry is not None and stop is not None else None)
+    prop = TradeProposal(
+        instrument=snap.instrument, trade_type=sid, ts=head["ts"], direction=direction,
+        spot=snap.spot, entry=entry, stop=stop, target=head.get("target"),
+        rr_ratio=head.get("rr"), size_lots=lots, mtf_confidence=conf, rupee_risk=rupee_risk,
+        recommendation=Recommendation.ENTER,
+        context={"chart_read": snap.chart_read, "oi": snap.oi, "macro": snap.macro},
+    )
+    if table is not None and direction in ("long", "short"):
+        apply_strike(prop, select_strike(table, snap.spot, direction))
+    if sid == "trade1":      # carry the OI-confluence nudge from the cached read
+        cached = _state["reads"].get((sid, head["ts"])) or {}
+        apply_oi_boost(prop, cached.get("oi_bias"))
+    return prop
+
+
+def _run_head_read(sid: str, head: dict) -> dict:
+    """Run Claude once for a strategy's head trigger and cache it by (sid, ts). The
+    OI-boost-to-sizing nudge stays Trade-1 only (the other three are OI-manual)."""
+    snap = _state["snap"]
     memory = _learning_memory()
     _state["memory"] = memory
+    prop = _proposal_from_head(sid, head, snap, _state.get("table"))
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
-    # LIVE OI confluence: +1 conviction (re-nudges size) when Claude's chain lean
-    # agrees with the trade direction.
-    if prop is not None:
+    if sid == "trade1":
         apply_oi_boost(prop, getattr(read, "oi_bias", None))
-    _state["read"] = read
-    _state["analysed_bar"] = snap.ts
+    _state["reads"][(sid, head["ts"])] = asdict(read)
+    _state["read"] = read              # back-compat for _save_context_for / chat
     return asdict(read)
+
+
+def _run_read(sid: str = "trade1") -> dict:
+    """Manual 're-analyse' for a tab's current head (used by /api/analyse)."""
+    head = _state["heads"].get(sid)
+    if head is None:
+        raise HTTPException(status_code=409, detail="no active trigger to analyse")
+    return _run_head_read(sid, head)
 
 
 # --- routes ---------------------------------------------------------------- #
@@ -273,14 +374,8 @@ def snapshot(symbol: str = "NIFTY", size: int = DEFAULT_SIZE):
         _refresh(symbol, size)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"data pull failed: {exc}")
-    payload = _payload(symbol)
-    # auto-analyse once per new ENTER bar (server-side dedupe)
-    payload["analysed_bar"] = _state.get("analysed_bar")
-    payload["auto_trigger"] = (
-        _state["prop"].recommendation is Recommendation.ENTER
-        and _state.get("analysed_bar") != _state["snap"].ts
-    )
-    return payload
+    _recompute_heads()      # advance/auto-analyse the gated head every poll (not just on a new bar)
+    return _payload(symbol)
 
 
 def _jf(x):
@@ -407,21 +502,23 @@ def _condor_today(snap, size: int) -> dict:
 def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1"):
     if _state["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
-    snap = _state["snap"]
-    meta = _STRAT.get(strategy)
-    if meta is None:
+    if strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
-    if meta["kind"] == "nondirectional":
-        return _condor_today(snap, size)
-    return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size)
+    # replay_today now sizes each row by its own conviction (65-130 band), so the ₹
+    # column matches the proposal; the condor (no conviction) keeps the flat size.
+    return _strategy_queue(strategy, _state["snap"], size)
 
 
 @app.post("/api/analyse")
-def analyse():
+def analyse(strategy: str = "trade1"):
     if _state["snap"] is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
+    if strategy not in _STRAT:
+        raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
     try:
-        return _run_read()
+        return _run_read(strategy)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"claude unavailable: {exc}")
 
@@ -449,11 +546,13 @@ async def chat(text: str = Form(""), files: list[UploadFile] = File(default=[]))
     return {"reply": reply}
 
 
-def _save_context(decision: str, symbol: str, execution: dict | None,
-                  label: str | None = None) -> None:
+def _save_context_for(prop, decision: str, symbol: str, execution: dict | None,
+                      label: str | None = None) -> None:
     """Archive the WHOLE decision moment to the SQLite store (chat, Claude read,
-    chart datapoints, raw chain, all macro) so the agent can learn from everything."""
-    snap, prop, chain = _state["snap"], _state["prop"], _state["chain"]
+    chart datapoints, raw chain, all macro) so the agent can learn from everything.
+    ``prop`` is the FROZEN proposal being decided (the queue head), not the live bar;
+    the surrounding context (chain/chart/macro) is still sourced from the live snapshot."""
+    snap, chain = _state["snap"], _state["chain"]
     chain_rows = None
     if chain is not None and not chain.empty:
         try:
@@ -480,17 +579,31 @@ def _save_context(decision: str, symbol: str, execution: dict | None,
 
 @app.post("/api/decision")
 def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Form("NIFTY"),
-             label: str = Form("")):
-    prop = _state["prop"]
-    if prop is None:
-        raise HTTPException(status_code=409, detail="no proposal yet")
+             label: str = Form(""), strategy: str = Form("trade1"), ts: str = Form("")):
+    """Approve/reject the FROZEN queue HEAD for ``strategy`` (identified by ``ts``).
+    Acts on the trigger the trader actually saw — not a moved-on live bar — and marks it
+    actioned so the next open trigger surfaces. Execution stays Trade-1 only."""
+    if strategy not in _STRAT:
+        raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
+    head = _state["heads"].get(strategy)
+    if head is None:
+        raise HTTPException(status_code=409, detail="no active trigger to decide")
+    if ts and ts != head["ts"]:                       # stale click — the trigger moved on
+        raise HTTPException(status_code=409, detail="trigger moved on — refresh and re-read")
+    key = (strategy, head["ts"])
+    if key in _state["actioned"]:
+        raise HTTPException(status_code=409, detail="trigger already actioned")
+    prop = _proposal_from_head(strategy, head, _state["snap"], _state.get("table"))
     if action == "approve":
-        result = breeze_exec.place(prop, live=live)
+        result = breeze_exec.place(prop, live=live) if strategy == "trade1" else \
+            {"status": "logged (propose-only)"}
         rec = log_decision(prop, "approved", execution=result)
-        _save_context("approved", symbol, result, label=label)
-        return {"status": result["status"], "logged": rec["decision"]}
+        _save_context_for(prop, "approved", symbol, result, label=label)
+        _state["actioned"][key] = "approved"
+        return {"status": result.get("status"), "logged": rec["decision"]}
     rec = log_decision(prop, "rejected")
-    _save_context("rejected", symbol, None, label=label)
+    _save_context_for(prop, "rejected", symbol, None, label=label)
+    _state["actioned"][key] = "rejected"
     return {"status": "rejected", "logged": rec["decision"]}
 
 

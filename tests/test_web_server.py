@@ -57,8 +57,30 @@ def client(monkeypatch, tmp_path):
         confidence=4, key_risk="kr"))
     monkeypatch.setattr(srv, "CHAT_COMPLETER", lambda system, history: "sparring reply")
     srv._state.update(snap=None, prop=None, chain=None, snap_at=0.0, oi_at=0.0,
-                      read=None, analysed_bar=None, chat=[])
+                      read=None, analysed_bar=None, chat=[],
+                      queues={}, heads={}, actioned={}, reads={})
     return TestClient(srv.app)
+
+
+def _open_trig(ts="2024-01-01T09:18:00+05:30", direction="long", conf=3):
+    return {"tid": 0, "ts": ts, "date": ts[:10], "direction": direction,
+            "entry": 24000.0, "stop": 23980.0, "target": 24060.0, "rr": 1.5,
+            "mtf_confidence": conf, "size_lots": 104, "outcome": "open",
+            "points": 0.0, "rupees": 0.0}
+
+
+def _seed_heads(monkeypatch, trade1=None):
+    """Force a deterministic per-strategy queue (trade1 gets `trade1` triggers, the rest
+    empty) so a frozen HEAD exists for the gated-decision tests."""
+    empty = {"session": None, "triggers": [], "last": None,
+             "summary": {"n": 0, "wins": 0, "losses": 0, "open": 0,
+                         "net_points": 0.0, "net_rupees": 0.0, "hit_rate": None}}
+    trigs = trade1 if trade1 is not None else [_open_trig()]
+    q = {"session": "2024-01-01", "triggers": trigs, "last": trigs[-1] if trigs else None,
+         "summary": {**empty["summary"], "n": len(trigs), "open": len(trigs)}}
+    monkeypatch.setattr(srv, "_strategy_queue",
+                        lambda sid, snap, size: q if sid == "trade1" else dict(empty))
+    return trigs
 
 
 def test_snapshot_returns_chart_oi_chain_proposal(client):
@@ -111,16 +133,77 @@ def test_triggers_per_strategy(client):
     assert client.get("/api/triggers?strategy=bogus").status_code == 404
 
 
-def test_analyse_returns_four_part_read(client):
-    client.get("/api/snapshot")
-    rd = client.post("/api/analyse").json()
-    assert rd["chart_analysis"] == "ca" and rd["oi_analysis"] == "oa"
-    assert rd["where_moving"] == "wm" and rd["right_trade"] == "rt"
+def test_analyse_returns_four_part_read(client, monkeypatch):
+    _seed_heads(monkeypatch)
+    d = client.get("/api/snapshot").json()
+    # Claude auto-fired once on the new head → cached on the head payload.
+    head = d["heads"]["trade1"]
+    assert head is not None and head["read"]["chart_analysis"] == "ca"
+    assert head["read"]["oi_bias"] == "neutral"
+    # the manual re-analyse button hits the same head
+    rd = client.post("/api/analyse?strategy=trade1").json()
+    assert rd["chart_analysis"] == "ca" and rd["right_trade"] == "rt"
     assert rd["recommendation"] == "stand_down"
-    assert rd["oi_bias"] == "neutral"             # read carries the chain lean
-    # the OI boost is applied to the live proposal after Claude runs
-    p = client.get("/api/snapshot").json()["proposal"]
-    assert p["oi_bias"] == "neutral" and p["final_confidence"] is not None
+
+
+def test_head_stable_across_polls(client, monkeypatch):
+    _seed_heads(monkeypatch)
+    a = client.get("/api/snapshot").json()["heads"]["trade1"]
+    b = client.get("/api/snapshot").json()["heads"]["trade1"]
+    assert a["ts"] == b["ts"]                      # pinned — no flicker between polls
+
+
+def test_resolved_trigger_auto_expires_from_head(client, monkeypatch):
+    won = _open_trig(); won["outcome"] = "win"     # already resolved
+    _seed_heads(monkeypatch, trade1=[won])
+    d = client.get("/api/snapshot").json()
+    assert d["heads"]["trade1"] is None            # watching — auto-expired out of the head
+    assert d["proposals"]["trade1"]["trade_type"] == "trade1"   # tab still renders
+
+
+def test_approve_acts_on_frozen_trigger_and_advances(client, monkeypatch, tmp_path):
+    import journal.log as jlog
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    t2 = _open_trig(ts="2024-01-01T10:00:00+05:30", direction="short")
+    _seed_heads(monkeypatch, trade1=[t1, t2])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                           "ts": t1["ts"], "live": "false"})
+    assert r.status_code == 200
+    # the logged proposal carries the FROZEN levels of t1
+    from journal import store
+    rec = store.load_records(srv.JOURNAL_DB)[0]["proposal"]
+    assert rec["entry"] == 24000.0 and rec["stop"] == 23980.0 and rec["ts"] == t1["ts"]
+    # next poll advances the head to the second open trigger
+    head = client.get("/api/snapshot").json()["heads"]["trade1"]
+    assert head["ts"] == t2["ts"]
+
+
+def test_stale_ts_rejected(client, monkeypatch):
+    _seed_heads(monkeypatch)
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                           "ts": "1999-01-01T00:00:00+05:30"})
+    assert r.status_code == 409
+
+
+def test_triggers_lots_scale_by_conviction(client):
+    d = client.get("/api/snapshot").json()
+    rows = client.get("/api/triggers?strategy=trade1").json()["triggers"]
+    from analysis.trade1 import size_for_confidence, LOT_SIZE
+    for t in rows:
+        assert t["size_lots"] == size_for_confidence(t["mtf_confidence"])
+        assert t["rupees"] == round(t["points"] * LOT_SIZE * t["size_lots"], 0)
+
+
+def test_per_tab_queues_independent(client, monkeypatch):
+    _seed_heads(monkeypatch)
+    d = client.get("/api/snapshot").json()
+    assert d["heads"]["trade1"] is not None
+    # the other tabs have their own (empty) queues — unaffected
+    assert d["heads"].get("orb") is None and d["heads"].get("cpr_st") is None
 
 
 def test_chat_round_trips(client):
@@ -136,8 +219,9 @@ def test_decision_logs(client, tmp_path, monkeypatch):
     import journal.log as jlog
     monkeypatch.setattr(srv, "log_decision",
                         lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    _seed_heads(monkeypatch)
     client.get("/api/snapshot")
-    d = client.post("/api/decision", data={"action": "reject"}).json()
+    d = client.post("/api/decision", data={"action": "reject"}).json()   # ts omitted → trade1 head
     assert d["logged"] == "rejected"
     assert (tmp_path / "d.jsonl").exists()
 
@@ -203,8 +287,9 @@ def test_decision_persists_full_context(client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "DEFAULT_LOG", str(tmp_path / "d.jsonl"))
     monkeypatch.setattr(srv, "log_decision",
                         lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    _seed_heads(monkeypatch)
     client.get("/api/snapshot")
-    client.post("/api/analyse")                         # populate Claude's read
+    client.post("/api/analyse?strategy=trade1")          # populate Claude's read
     client.post("/api/chat", data={"text": "why flat?"})  # populate chat
     client.post("/api/decision", data={"action": "reject"})
     rows = store.load_records(srv.JOURNAL_DB)
@@ -226,6 +311,7 @@ def test_live_decision_captures_trigger_label(client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "DEFAULT_LOG", str(tmp_path / "d.jsonl"))
     monkeypatch.setattr(srv, "REASON_COMPLETER", lambda system, user: ReasonWhy(
         why="ran straight to target", trigger_quality="false", lesson="skip the graze"))
+    _seed_heads(monkeypatch)
     client.get("/api/snapshot")
     client.post("/api/decision", data={"action": "reject", "label": "false"})
     r = store.load_records(srv.JOURNAL_DB)[0]

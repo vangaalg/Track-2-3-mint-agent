@@ -87,7 +87,17 @@
       <div id="propBox" class="propbox">—</div>
       <div id="claudeBlock">
         <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>
-        <div id="readBox" class="readbox"><span class="muted">No Claude read yet — fires on an ENTER, or press Analyse.</span></div>
+        <div id="readBox" class="readbox"><span class="muted">No active trigger — watching.</span></div>
+        <!-- Spar sits directly under Claude's analysis: read → spar → decide -->
+        <div class="chat incard">
+          <div class="chat-h">💬 Spar with Claude</div>
+          <div id="chatLog" class="chatlog"></div>
+          <form id="chatForm" class="chatform">
+            <input id="chatText" type="text" placeholder="Defend your thesis, ask why…" autocomplete="off" />
+            <input id="chatFile" type="file" accept="image/*" />
+            <button class="btn" type="submit">Send</button>
+          </form>
+        </div>
         <div id="decision" class="decision" hidden>
           <div class="labelrow">Trigger:
             <label><input type="radio" name="liveLabel" value="genuine" /> 👍 genuine</label>
@@ -116,17 +126,6 @@
     <div id="recSummary" class="row small muted">—</div>
     <div class="tablewrap"><table id="recTbl"></table></div>
     <div id="recPosts" class="postmortems"></div>
-  </section>
-
-  <!-- Chat -->
-  <section class="card chat">
-    <h2>💬 Spar with Claude</h2>
-    <div id="chatLog" class="chatlog"></div>
-    <form id="chatForm" class="chatform">
-      <input id="chatText" type="text" placeholder="Defend your thesis, ask why…" autocomplete="off" />
-      <input id="chatFile" type="file" accept="image/*" />
-      <button class="btn" type="submit">Send</button>
-    </form>
   </section>
 
   <script src="/static/chart.js"></script>

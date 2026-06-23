@@ -19,7 +19,7 @@ from indicators.directional import (
     MTFDirectionalConfig, resolve_direction_mtf, mtf_ema45_confidence,
 )
 from indicators.engine import atr as _atr
-from analysis.trade1 import trade1_levels, LOT_SIZE, DEFAULT_SIZE_LOTS
+from analysis.trade1 import trade1_levels, size_for_confidence, LOT_SIZE, DEFAULT_SIZE_LOTS
 
 
 def _f(x):
@@ -276,12 +276,15 @@ def replay_today(
 
         outcome, exit_px, points = simulate_trade(
             direction, entry, stop, target, high[i + 1:], low[i + 1:], close[-1])
+        # ₹ is sized by THIS trigger's conviction (65-130 band), matching the live
+        # proposal — not a flat lot count — so the table and the proposal agree.
+        row_lots = size_for_confidence(int(conf.iloc[i]))
         triggers.append({
             "ts": ts[i].isoformat(), "direction": direction,
             "entry": round(entry, 2), "stop": round(stop, 2), "target": round(target, 2),
-            "rr": rr, "mtf_confidence": int(conf.iloc[i]),
+            "rr": rr, "mtf_confidence": int(conf.iloc[i]), "size_lots": row_lots,
             "outcome": outcome, "points": round(points, 2),
-            "rupees": round(points * lot_size * size_lots, 0),
+            "rupees": round(points * lot_size * row_lots, 0),
         })
 
     wins = sum(1 for t in triggers if t["outcome"] == "win")
@@ -294,7 +297,8 @@ def replay_today(
         "last": triggers[-1] if triggers else None,
         "summary": {
             "n": len(triggers), "wins": wins, "losses": losses, "open": opens,
-            "net_points": net_pts, "net_rupees": round(net_pts * lot_size * size_lots, 0),
+            "net_points": net_pts,
+            "net_rupees": round(sum(t["rupees"] for t in triggers), 0),  # per-row conviction
             "hit_rate": round(wins / (wins + losses), 2) if (wins + losses) else None,
         },
     }

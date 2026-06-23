@@ -50,7 +50,10 @@ def test_replay_today_win_and_loss(monkeypatch):
     t = out["last"]
     assert t["direction"] == "long" and t["entry"] == 100.0
     assert t["outcome"] == "win" and t["points"] == 2.0
-    assert t["rupees"] == 2.0 * 75 * 75
+    # ₹ is sized by the row's own conviction (size_for_confidence), not a flat 75 lots.
+    from analysis.trade1 import size_for_confidence
+    assert t["size_lots"] == size_for_confidence(t["mtf_confidence"])
+    assert t["rupees"] == 2.0 * 75 * t["size_lots"]
     assert out["summary"]["wins"] == 1 and out["summary"]["hit_rate"] == 1.0
 
 

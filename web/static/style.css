@@ -57,6 +57,11 @@ td.pshelf { background:rgba(84,162,75,.28); } td.pshelf2 { background:rgba(84,16
 .decision { display:flex; gap:8px; margin-top:10px; }
 
 .chat { margin:0 12px 16px; }
+/* spar nested under Claude's analysis (read → spar → decide) */
+.chat.incard { margin:10px 0; padding-top:8px; border-top:1px dashed var(--line); }
+.chat.incard .chat-h { font-weight:600; margin-bottom:6px; font-size:13px; }
+.chat.incard .chatlog { max-height:160px; }
+.propbox.watching { background:var(--tile); border:1px dashed var(--line); color:var(--muted); }
 .chatlog { max-height:240px; overflow:auto; display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
 .msg { padding:6px 10px; border-radius:8px; max-width:80%; }
 .msg.user { align-self:flex-end; background:#dce7ff; } .msg.assistant { align-self:flex-start; background:var(--tile); }
