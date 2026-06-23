@@ -177,9 +177,36 @@ def test_approve_acts_on_frozen_trigger_and_advances(client, monkeypatch, tmp_pa
     from journal import store
     rec = store.load_records(srv.JOURNAL_DB)[0]["proposal"]
     assert rec["entry"] == 24000.0 and rec["stop"] == 23980.0 and rec["ts"] == t1["ts"]
+    # the decision response advances the card INSTANTLY (no snapshot round-trip needed)
+    assert r.json()["next_head"]["ts"] == t2["ts"]
     # next poll advances the head to the second open trigger
     head = client.get("/api/snapshot").json()["heads"]["trade1"]
     assert head["ts"] == t2["ts"]
+
+
+def test_skip_advances_silently_without_logging(client, monkeypatch):
+    from journal import store
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    t2 = _open_trig(ts="2024-01-01T10:00:00+05:30", direction="short")
+    _seed_heads(monkeypatch, trade1=[t1, t2])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "skip", "strategy": "trade1", "ts": t1["ts"]})
+    assert r.status_code == 200 and r.json()["status"] == "skipped"
+    # advances to the next trigger…
+    assert r.json()["next_head"]["ts"] == t2["ts"]
+    assert srv._state["actioned"][("trade1", t1["ts"])] == "skipped"
+    # …but records NOTHING (skip is silent — only reject is a logged stand-down)
+    assert store.load_records(srv.JOURNAL_DB) == []
+    # re-deciding the skipped trigger is a 409 (already actioned)
+    r2 = client.post("/api/decision", data={"action": "approve", "strategy": "trade1", "ts": t1["ts"]})
+    assert r2.status_code == 409
+
+
+def test_unknown_action_rejected(client, monkeypatch):
+    _seed_heads(monkeypatch)
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "maybe", "strategy": "trade1"})
+    assert r.status_code == 400
 
 
 def test_stale_ts_rejected(client, monkeypatch):

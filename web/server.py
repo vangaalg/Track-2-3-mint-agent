@@ -698,14 +698,27 @@ def _save_context_for(prop, decision: str, symbol: str, execution: dict | None,
     return rid
 
 
+def _advance_head(strategy: str) -> dict | None:
+    """Re-select the strategy's HEAD from its cached queue (cheap, NO Claude) after the
+    current one was actioned, and return the serialised next head so the client can swap
+    the card instantly — without waiting on the next snapshot poll's synchronous read."""
+    nh = _head_for(strategy, _state["queues"].get(strategy, {}))
+    _state["heads"][strategy] = nh
+    return _head_out(strategy, nh)
+
+
 @app.post("/api/decision")
 def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Form("NIFTY"),
              label: str = Form(""), strategy: str = Form("trade1"), ts: str = Form("")):
-    """Approve/reject the FROZEN queue HEAD for ``strategy`` (identified by ``ts``).
+    """Approve/reject/skip the FROZEN queue HEAD for ``strategy`` (identified by ``ts``).
     Acts on the trigger the trader actually saw — not a moved-on live bar — and marks it
-    actioned so the next open trigger surfaces. Execution stays Trade-1 only."""
+    actioned so the next open trigger surfaces (returned as ``next_head`` so the card
+    advances instantly). ``skip`` records NOTHING (the track record stays clean — only a
+    deliberate ``reject`` is a logged stand-down). Execution stays Trade-1 only."""
     if strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
+    if action not in ("approve", "reject", "skip"):
+        raise HTTPException(status_code=400, detail=f"unknown action {action!r}")
     head = _state["heads"].get(strategy)
     if head is None:
         raise HTTPException(status_code=409, detail="no active trigger to decide")
@@ -714,6 +727,9 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     key = (strategy, head["ts"])
     if key in _state["actioned"]:
         raise HTTPException(status_code=409, detail="trigger already actioned")
+    if action == "skip":                              # silent — no journal, no execution
+        _state["actioned"][key] = "skipped"
+        return {"status": "skipped", "next_head": _advance_head(strategy)}
     prop = _proposal_from_head(strategy, head, _state["snap"], _state.get("table"))
     if action == "approve":
         result = breeze_exec.place(prop, live=live) if strategy == "trade1" else \
@@ -721,11 +737,13 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
         rec = log_decision(prop, "approved", execution=result)
         _state["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
         _state["actioned"][key] = "approved"
-        return {"status": result.get("status"), "logged": rec["decision"]}
+        return {"status": result.get("status"), "logged": rec["decision"],
+                "next_head": _advance_head(strategy)}
     rec = log_decision(prop, "rejected")
     _save_context_for(prop, "rejected", symbol, None, label=label)
     _state["actioned"][key] = "rejected"
-    return {"status": "rejected", "logged": rec["decision"]}
+    return {"status": "rejected", "logged": rec["decision"],
+            "next_head": _advance_head(strategy)}
 
 
 # --- training mode (replay past 3-min triggers, label them, back-train) ----- #

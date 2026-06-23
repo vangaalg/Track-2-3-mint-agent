@@ -314,20 +314,34 @@ async function analyse() {
   analysing = false; $("analyseBtn").textContent = "🤖 Analyse with Claude";
 }
 
+// Swap the card to the next trigger INSTANTLY off the decision response's `next_head`
+// (no snapshot round-trip), then kick Claude's read for it asynchronously.
+function advanceTo(nextHead) {
+  currentHead = nextHead || null;
+  document.querySelectorAll('input[name="liveLabel"]').forEach((el) => { el.checked = false; });
+  if (currentHead) { renderHead(currentHead); $("decision").hidden = false; }
+  else renderWatching();
+  $("readBox").innerHTML = currentHead
+    ? "<span class='muted'>Analysing this trigger…</span>" : "";
+  fetchTriggers(currentStrat); fetchRecord();        // table + track record reflect the action
+  if (currentHead) analyse();                        // load Claude's read without blocking the card
+}
+
 async function decide(action) {
   if (!currentHead) { $("decisionMsg").textContent = "No active trigger to decide."; return; }
+  const acted = currentHead;
   const fd = new FormData();
-  fd.append("action", action); fd.append("strategy", currentStrat); fd.append("ts", currentHead.ts);
+  fd.append("action", action); fd.append("strategy", currentStrat); fd.append("ts", acted.ts);
   const lbl = document.querySelector('input[name="liveLabel"]:checked');
   if (lbl) fd.append("label", lbl.value);
   const r = await fetch("/api/decision", { method: "POST", body: fd });
   const d = await r.json();
   if (!r.ok) { $("decisionMsg").textContent = "⚠ " + (d.detail || "decision failed"); return; }
-  $("decisionMsg").textContent = `${action === "approve" ? "Approved" : "Rejected"} ${currentStrat} `
-    + `${(currentHead.ts || "").slice(11, 16)} · logged ${d.logged} · ${d.status || "—"}`
-    + (lbl ? ` · trigger ${lbl.value}` : "");
-  document.querySelectorAll('input[name="liveLabel"]').forEach((el) => { el.checked = false; });
-  poll();        // advance to the next pending trigger (if any)
+  const verb = action === "approve" ? "Approved" : action === "skip" ? "Skipped" : "Rejected";
+  $("decisionMsg").textContent = `${verb} ${currentStrat} ${(acted.ts || "").slice(11, 16)}`
+    + (action === "skip" ? " · not recorded"
+       : ` · logged ${d.logged} · ${d.status || "—"}` + (lbl ? ` · trigger ${lbl.value}` : ""));
+  advanceTo(d.next_head);        // instant swap to the next pending trigger (if any)
 }
 
 async function sendChat(ev) {
@@ -351,6 +365,7 @@ function appendMsg(role, text, file) {
 $("analyseBtn").onclick = analyse;
 $("approveBtn").onclick = () => decide("approve");
 $("rejectBtn").onclick = () => decide("reject");
+$("skipBtn").onclick = () => decide("skip");
 $("tokenBtn").onclick = () => { $("tokenForm").hidden = !$("tokenForm").hidden; };
 $("tokenSave").onclick = postToken;
 $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });

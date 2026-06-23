@@ -94,6 +94,17 @@
       </div>
       <div id="stratNote" class="row small muted" hidden></div>
       <div id="propBox" class="propbox">—</div>
+      <!-- Act right AT the trigger — above Claude's read, so no scrolling to decide -->
+      <div id="decision" class="decision" hidden>
+        <div class="labelrow">Trigger:
+          <label><input type="radio" name="liveLabel" value="genuine" /> 👍 genuine</label>
+          <label><input type="radio" name="liveLabel" value="false" /> 👎 false</label>
+        </div>
+        <button id="approveBtn" class="btn ok">✅ Approve</button>
+        <button id="rejectBtn" class="btn no">❌ Reject</button>
+        <button id="skipBtn" class="btn skip" title="Move to the next trigger — records nothing">⏭ Next</button>
+      </div>
+      <div id="decisionMsg" class="muted small"></div>
       <div id="claudeBlock">
         <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>
         <div id="readBox" class="readbox"><span class="muted">No active trigger — watching.</span></div>
@@ -107,15 +118,6 @@
             <button class="btn" type="submit">Send</button>
           </form>
         </div>
-        <div id="decision" class="decision" hidden>
-          <div class="labelrow">Trigger:
-            <label><input type="radio" name="liveLabel" value="genuine" /> 👍 genuine</label>
-            <label><input type="radio" name="liveLabel" value="false" /> 👎 false</label>
-          </div>
-          <button id="approveBtn" class="btn ok">✅ Approve</button>
-          <button id="rejectBtn" class="btn no">❌ Reject</button>
-        </div>
-        <div id="decisionMsg" class="muted small"></div>
       </div>
     </section>
   </main>
