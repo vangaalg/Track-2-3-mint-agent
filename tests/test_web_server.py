@@ -492,6 +492,51 @@ def test_oi_history_per_instrument(client, tmp_path, monkeypatch):
     assert len(client.get("/api/oi-history?symbol=BANKNIFTY").json()["rows"]) == 3
 
 
+def _seed_oi_chains(base, symbol="NIFTY"):
+    from feeds import oi_store
+    for ts in ("2026-06-22T10:00:00+05:30", "2026-06-23T10:00:00+05:30",
+               "2026-06-23T13:00:00+05:30"):
+        chain = pd.DataFrame({"strike": [23900.0, 24000.0, 24100.0],
+                              "call_oi": [1e6, 2e6, 3e6], "put_oi": [3e6, 2e6, 1e6],
+                              "call_ltp": [200.0, 120.0, 60.0], "put_ltp": [50.0, 110.0, 210.0]})
+        oi_store.save_chain(symbol, ts, 24010.0, chain, base=base)
+
+
+def test_oi_download_summary_csv(client, tmp_path, monkeypatch):
+    """The PCR/OI summary downloads as a CSV (Excel), date-wise, with a named attachment."""
+    root = tmp_path / "oi_summary"
+    _seed_oi_history(root, "NIFTY")
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(root))
+    r = client.get("/api/oi-download?symbol=NIFTY&day=2026-06-23&kind=summary")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert 'filename="NIFTY_oi_summary_2026-06-23.csv"' in r.headers["content-disposition"]
+    body = r.text.splitlines()
+    assert "pcr" in body[0] and "max_pain" in body[0]            # header row
+    assert len(body) == 2 and "1.2" in body[1]                  # only that day's single cycle
+
+
+def test_oi_download_chain_csv(client, tmp_path, monkeypatch):
+    """The full per-strike chain snapshots download as one CSV, filtered by day."""
+    base = tmp_path / "oi"
+    _seed_oi_chains(base, "NIFTY")
+    monkeypatch.setattr(srv, "OI_ROOT", str(base))
+    r = client.get("/api/oi-download?symbol=NIFTY&day=2026-06-23&kind=chain")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    assert 'filename="NIFTY_chain_2026-06-23.csv"' in r.headers["content-disposition"]
+    body = r.text.splitlines()
+    assert body[0].startswith("ts,spot,strike,call_oi,put_oi")  # ordered columns
+    assert len(body) == 1 + 2 * 3                                # 2 cycles that day x 3 strikes
+    # all days = both sessions (3 cycles total x 3 strikes)
+    allr = client.get("/api/oi-download?symbol=NIFTY&kind=chain").text.splitlines()
+    assert len(allr) == 1 + 3 * 3
+
+
+def test_oi_download_empty_is_blank_csv(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
+    r = client.get("/api/oi-download?symbol=BANKNIFTY&kind=summary")
+    assert r.status_code == 200 and r.text == ""                # no 500, just an empty file
+
+
 def test_record_scoped_per_instrument(client, tmp_path, monkeypatch):
     from journal import store
     for s, pts in [("NIFTY", 60.0), ("BANKNIFTY", 40.0)]:

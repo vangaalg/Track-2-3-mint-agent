@@ -19,7 +19,7 @@ from pathlib import Path
 import pandas as pd
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from loaders import get_loader
@@ -79,6 +79,7 @@ _STRAT = {s["id"]: s for s in STRATEGIES}
 JOURNAL_DB = os.environ.get("JOURNAL_DB", store.DB_PATH)   # full-context SQLite store
 DEFAULT_LOG = os.environ.get("DECISIONS_LOG", DEFAULT_LOG)  # append-only decision log
 OI_SUMMARY_ROOT = os.environ.get("OI_SUMMARY_ROOT")        # recorder's PCR/OI time series (None=default)
+OI_ROOT = os.environ.get("OI_ROOT")                        # recorder's full per-strike chain snapshots (None=default)
 AFTER_WRITE = None   # optional hook: deploy wrapper sets it to push the journal repo
 _STATIC = Path(__file__).parent / "static"
 
@@ -650,6 +651,52 @@ def oi_history(symbol: str = "NIFTY", day: str | None = None):
         df = df[[str(t)[:10] == day for t in df.index]]
     rows = json.loads(df.reset_index().to_json(orient="records"))  # NaN -> null
     return {"symbol": symbol.upper(), "rows": rows, "days": days}
+
+
+def _chain_history_df(sym: str, day: str | None):
+    """Concatenate the recorder's per-strike chain snapshots for ``sym`` (optionally one
+    ``day``) into a single frame: ts·spot·strike·call/put OI+LTP, one row per strike/cycle."""
+    base = OI_ROOT or oi_store.DATA_DIR
+    snaps = oi_store.list_snapshots(sym, base=base)
+    if day and day != "all":
+        snaps = [(t, f) for t, f in snaps if str(t.date()) == day]
+    frames = []
+    for _, f in snaps:
+        try:
+            frames.append(pd.read_parquet(f))
+        except Exception:
+            continue
+    if not frames:
+        return None
+    df = pd.concat(frames, ignore_index=True)
+    cols = [c for c in ("ts", "spot", "strike", "call_oi", "put_oi", "call_ltp", "put_ltp")
+            if c in df.columns] + [c for c in df.columns
+                                   if c not in ("ts", "spot", "strike", "call_oi", "put_oi",
+                                                "call_ltp", "put_ltp")]
+    sort_by = [c for c in ("ts", "strike") if c in df.columns]
+    return (df[cols].sort_values(sort_by) if sort_by else df[cols])
+
+
+@app.get("/api/oi-download")
+def oi_download(symbol: str = "NIFTY", day: str | None = None, kind: str = "summary"):
+    """Download the recorder's saved data as CSV (opens in Excel), date-wise. ``kind=summary``
+    = the PCR/max-pain/walls/bands series (one row per cycle); ``kind=chain`` = the full
+    per-strike option chain at each cycle. ``day`` (YYYY-MM-DD) follows the cockpit's Day picker
+    (a single session, or omitted/"all" for the whole history)."""
+    sym = symbol.upper()
+    if kind == "chain":
+        df = _chain_history_df(sym, day)
+        fname = f"{sym}_chain_{day or 'all'}.csv"
+    else:
+        df = oi_summary_store.load_summary(sym, root=OI_SUMMARY_ROOT)
+        if df is not None and day and day != "all":
+            df = df[[str(t)[:10] == day for t in df.index]]
+        if df is not None:
+            df = df.reset_index()
+        fname = f"{sym}_oi_summary_{day or 'all'}.csv"
+    csv = df.to_csv(index=False) if df is not None and not df.empty else ""
+    return Response(content=csv, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @app.get("/api/record")

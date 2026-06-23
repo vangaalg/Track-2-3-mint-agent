@@ -75,6 +75,8 @@ td.conf { font-weight:600; white-space:nowrap; }
   border-top:1px dashed var(--line); padding-top:10px; }
 .pcrhdr select { margin-left:auto; background:var(--tile); color:var(--txt); border:1px solid var(--line);
   border-radius:7px; padding:3px 6px; font-size:12px; }
+.btn.csv { padding:3px 8px; font-size:11px; background:var(--tile); border-color:var(--line); color:var(--txt); }
+.btn.csv:hover { border-color:var(--blue); }
 .decision { display:flex; gap:8px; margin-top:10px; align-items:center; }
 
 .chat { margin:0 12px 16px; }

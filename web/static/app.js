@@ -192,6 +192,13 @@ async function pcrRecorderStatus() {
   } catch (e) { /* standalone web.server has no /healthz — keep the base note */ }
 }
 
+// Download the recorder's saved data as CSV (Excel) for the active instrument + selected day.
+function downloadCsv(kind) {
+  const url = `/api/oi-download?symbol=${sym()}&day=${encodeURIComponent(_pcrDay)}&kind=${kind}`;
+  const a = document.createElement("a");
+  a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
+}
+
 function populatePcrDays() {
   const sel = $("pcrDay");
   if (sel.options.length !== _pcrDays.length + 1) {
@@ -568,6 +575,8 @@ $("instrSel").addEventListener("change", (e) => {   // switch instrument → res
 $("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _trigPage = 0; fetchTable(); });
 $("trigStrat").addEventListener("change", (e) => { _trigStrat = e.target.value; _trigPage = 0; fetchTable(); });
 $("pcrDay").addEventListener("change", (e) => { _pcrDay = e.target.value; fetchPcrHistory(); });
+$("dlPcr").onclick = () => downloadCsv("summary");
+$("dlChain").onclick = () => downloadCsv("chain");
 $("trigPrev").onclick = () => { if (_trigPage > 0) { _trigPage--; renderTriggers(); } };
 $("trigNext").onclick = () => { _trigPage++; renderTriggers(); };
 $("chatForm").onsubmit = sendChat;
