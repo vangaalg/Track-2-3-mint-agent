@@ -61,6 +61,49 @@ from feeds.oi_summary_store import load_summary
 load_summary("NIFTY")   # growing PCR / max-pain / walls / bands time series
 ```
 
+---
+
+# Deploy — Cockpit (the live trading UI) on Railway
+
+Reach the cockpit from anywhere (phone/laptop) instead of `localhost:8000`. It runs as a
+**second Railway service** from this same repo, isolated from the recorder so a cockpit
+redeploy never disrupts the recording flywheel. It is **password-protected** (HTTP Basic
+over Railway's TLS), inherits the daily Breeze token from the recorder's shared data repo,
+and **persists its decision journal + learning memory** to a private repo.
+
+> Vercel/Netlify won't work — the cockpit is a long-running stateful server (in-memory
+> caches, the gated trigger queue, background pulls), not serverless functions.
+
+## 1. Create the service
+- Same Railway project → **New Service → Deploy from GitHub repo** → this repo, branch
+  `claude/dazzling-lamport-7d0je8`.
+- **Settings → Deploy → Custom Start Command:**
+  `uvicorn web.cockpit_service:app --host 0.0.0.0 --port $PORT`
+  (the recorder keeps the default `Procfile`; only this service overrides it).
+
+## 2. Environment variables (Railway → Variables)
+| Variable | Value |
+|---|---|
+| `COCKPIT_USER` / `COCKPIT_PASSWORD` | the login for the cockpit (you choose) — **required**, fail-closed |
+| `ANTHROPIC_API_KEY` | for Claude's read/sparring |
+| `BREEZE_API_KEY` / `BREEZE_API_SECRET` | your Breeze app creds |
+| `TWELVEDATA_API_KEY` | macro scorecard (optional) |
+| `RECORDER_TOKEN_SECRET` | guards the fallback `POST /token` |
+| `DATA_REPO_URL` | **the SAME** private data repo the recorder uses (read replica → inherits the token + OI store) |
+| `JOURNAL_REPO_URL` | a **separate** private repo for the journal, `https://<PAT>@github.com/vangaalg/mint-journal.git` |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |
+| `SYNC_EVERY_MIN` | optional, journal push cadence, default `30` |
+
+## 3. Use it
+- Open the service's HTTPS URL → the browser prompts for `COCKPIT_USER`/`COCKPIT_PASSWORD`
+  → the cockpit loads. `/healthz` stays open (for an uptime monitor); `/cockpit-status`
+  shows sync state + a token fallback form.
+- **Token:** you already POST today's Breeze token to the *recorder* each morning; the
+  cockpit pulls the shared data repo (~every 10 min) and picks it up automatically. If you
+  need it instantly, paste it on the cockpit's `/cockpit-status` page too.
+- **Journal:** every approve/reject commits to `JOURNAL_REPO_URL` (plus a periodic push),
+  so your track record + Claude's memory survive redeploys. `git clone` it to analyze.
+
 ## Notes / risks
 - **Token is manual by design** — Breeze has no refresh API. If a morning is missed, that day
   isn't recorded (logged, non-fatal); just post the token when you can.

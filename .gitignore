@@ -29,6 +29,8 @@ data/ohlcv/
 data/validate/
 # recorder's persisted daily Breeze token (restored from the private data repo, not here)
 data/recorder_state/
+# cockpit service's git-backed journal store (cloned from JOURNAL_REPO_URL at runtime)
+journal_store/
 
 # Results — keep human-readable reports, drop raw dumps + runtime logs/DB.
 results/*.csv

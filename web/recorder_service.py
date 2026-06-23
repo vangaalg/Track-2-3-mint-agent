@@ -21,46 +21,24 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from feeds import recorder
-from deploy import gitsync
+from deploy import gitsync, control
 
 STATUS: dict = {"started": None, "last_cycle": None, "saved": [], "macro": None,
                 "errors": [], "last_push": None}
 
-# Daily Breeze token persisted under the synced data/ tree (survives restarts).
-_TOKEN_PATH = Path("data") / "recorder_state" / "breeze_session.txt"
-
-
-def _save_token_file(token: str) -> None:
-    """Persist the token under data/ so a restart can restore it (best-effort)."""
-    try:
-        _TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _TOKEN_PATH.write_text(token.strip())
-    except Exception:
-        pass
-
-
-def _load_token_file() -> str | None:
-    try:
-        tok = _TOKEN_PATH.read_text().strip()
-        return tok or None
-    except Exception:
-        return None
+# Daily Breeze token persistence/restore is shared with the cockpit (deploy.control).
+_save_token_file = control.save_token_file
+_load_token_file = control.load_token_file
 
 
 def _restore_token() -> bool:
-    """On boot, if no token is in the env, restore the last persisted one. Returns
-    True when a token was restored."""
-    if os.environ.get("BREEZE_SESSION_TOKEN"):
-        return False
-    tok = _load_token_file()
-    if tok:
-        os.environ["BREEZE_SESSION_TOKEN"] = tok
+    """On boot, restore the persisted token if none is in the env (sets STATUS flag)."""
+    if control.restore_token():
         STATUS["token_restored"] = True
         return True
     return False

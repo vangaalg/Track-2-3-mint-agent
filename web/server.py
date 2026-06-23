@@ -9,6 +9,7 @@ globals so tests can inject mocks and run fully offline.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
@@ -67,7 +68,11 @@ STRATEGIES = [
     {"id": "condor", "label": "Expiry", "cfg": None, "kind": "nondirectional"},
 ]
 _STRAT = {s["id"]: s for s in STRATEGIES}
-JOURNAL_DB = store.DB_PATH   # full-context SQLite store (overridden in tests)
+# Journal paths honor env overrides so a deploy wrapper (web.cockpit_service) can point
+# them at a git-backed dir that persists across redeploys; defaults unchanged otherwise.
+JOURNAL_DB = os.environ.get("JOURNAL_DB", store.DB_PATH)   # full-context SQLite store
+DEFAULT_LOG = os.environ.get("DECISIONS_LOG", DEFAULT_LOG)  # append-only decision log
+AFTER_WRITE = None   # optional hook: deploy wrapper sets it to push the journal repo
 _STATIC = Path(__file__).parent / "static"
 
 # --- injectable seams (overridden in tests) -------------------------------- #
@@ -578,6 +583,11 @@ def _save_context_for(prop, decision: str, symbol: str, execution: dict | None,
         store.save_decision(payload, path=JOURNAL_DB)
     except Exception:
         pass
+    if AFTER_WRITE:                     # e.g. push the git-backed journal (deploy only)
+        try:
+            AFTER_WRITE()
+        except Exception:
+            pass
 
 
 @app.post("/api/decision")
