@@ -223,15 +223,18 @@ function renderTriggers(d, strat) {
     + (s.hit_rate != null ? ` · hit-rate ${(s.hit_rate * 100).toFixed(0)}%` : "");
   let h = condor
     ? "<thead><tr><th>Time</th><th>Short PE</th><th>Short CE</th><th>Credit</th><th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>"
-    : "<thead><tr><th>Time</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>";
+    : "<thead><tr><th>Time</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th><th>Action</th></tr></thead><tbody>";
   for (const t of (d.triggers || [])) {
     const pts = `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`;
     const rs = `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td>`;
+    // open trades get an Exit button; closed ones show the exit price; settled ones blank
+    const act = t.outcome === "open" ? `<td><button class="btn exit" data-exit-ts="${t.ts}">Exit</button></td>`
+      : t.outcome === "exit" ? `<td class="muted">@ ${n(t.exit)}</td>` : "<td></td>";
     h += condor
       ? `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.short_put}</td><td>${t.short_call}</td>`
         + `<td>${t.credit}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`
       : `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.direction}</td><td>${t.entry}</td>`
-        + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`;
+        + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}${act}</tr>`;
   }
   $("trigTbl").innerHTML = h + "</tbody>";
 }
@@ -239,6 +242,22 @@ function renderTriggers(d, strat) {
 // Chart engine (Lightweight Charts module + ⚙ indicator panel) lives in chart.js,
 // shared with the training page. `_triggers`, `chartTF`, `LW`, `initCharts`,
 // `renderLW`, `wireChartUI` are provided there.
+
+// Manually close an OPEN trigger at a price (defaults to the live spot) → realized P&L into
+// the track record; the row flips to "exit". You square off on your own broker (propose-only).
+async function exitTrigger(ts) {
+  const spot = lastPayload ? lastPayload.spot : null;
+  const ans = prompt("Exit at price?", spot != null ? n(spot) : "");
+  if (ans === null) return;                        // cancelled
+  const px = parseFloat(ans);
+  const fd = new FormData();
+  fd.append("strategy", currentStrat); fd.append("ts", ts);
+  if (!Number.isNaN(px)) fd.append("exit_px", px);
+  const r = await fetch("/api/exit", { method: "POST", body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert("Exit failed: " + (d.detail || r.statusText)); return; }
+  fetchTriggers(currentStrat); fetchRecord();       // refresh the table + track record
+}
 
 async function fetchChart() {
   initCharts();
@@ -335,6 +354,10 @@ $("rejectBtn").onclick = () => decide("reject");
 $("tokenBtn").onclick = () => { $("tokenForm").hidden = !$("tokenForm").hidden; };
 $("tokenSave").onclick = postToken;
 $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });
+$("trigTbl").addEventListener("click", (e) => {     // Exit buttons on open trigger rows
+  const b = e.target.closest("button[data-exit-ts]");
+  if (b) exitTrigger(b.dataset.exitTs);
+});
 $("chatForm").onsubmit = sendChat;
 document.querySelectorAll("#stratTabs button").forEach((b) =>
   b.addEventListener("click", () => setStrat(b.dataset.strat)));

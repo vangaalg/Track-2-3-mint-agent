@@ -7,7 +7,8 @@ import json
 import numpy as np
 import pandas as pd
 
-from journal.outcomes import grade_process, settle, settle_log, matrix_summary
+from journal.outcomes import (
+    grade_process, settle, settle_log, matrix_summary, manual_exit_outcome)
 from agent.memory import distill_memory
 
 
@@ -24,6 +25,18 @@ def _rec(decision, recommendation, **prop):
             "recommendation": recommendation}
     base.update(prop)
     return {"decision": decision, "proposal": base}
+
+
+def test_manual_exit_outcome_long_win_short_loss():
+    from analysis.trade1 import LOT_SIZE
+    long_p = {"direction": "long", "entry": 24000.0, "size_lots": 2}
+    o = manual_exit_outcome(long_p, 24050.0, "2026-06-23T13:00:00+05:30")
+    assert o["status"] == "win" and o["points"] == 50.0 and o["exit"] == 24050.0
+    assert o["rupees"] == round(50.0 * LOT_SIZE * 2, 0) and o["manual"] is True
+    # a short exited ABOVE entry is a loss (negative points)
+    short_p = {"direction": "short", "entry": 24000.0, "size_lots": 1}
+    o2 = manual_exit_outcome(short_p, 24030.0, None)
+    assert o2["status"] == "loss" and o2["points"] == -30.0
 
 
 def test_grade_process():

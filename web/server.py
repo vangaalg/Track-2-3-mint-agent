@@ -44,7 +44,9 @@ from agent.reason import explain_outcome
 from agent.chat import spar_turn
 from execution import breeze_exec
 from journal.log import log_decision, DEFAULT_LOG
-from journal.outcomes import settle_log, settle_store, matrix_summary, grade_training
+from journal.outcomes import (
+    settle_log, settle_store, matrix_summary, grade_training,
+    manual_exit_outcome, _matrix)
 from journal import store
 
 ANCHOR = "9h15min"
@@ -123,6 +125,8 @@ _state: dict = {
     "read": None, "analysed_bar": None,
     "chat": [],
     "queues": {}, "heads": {}, "actioned": {}, "reads": {},
+    # manual exits the trader took off the triggers table: overlay + store-row ids
+    "exits": {}, "records": {},
 }
 
 # --- training-mode state (separate from the live cockpit) ------------------- #
@@ -191,7 +195,7 @@ def _refresh(symbol: str, size: int) -> None:
             except Exception:
                 pass
         for s in STRATEGIES:        # cache today's triggers per strategy (throttled)
-            _state["queues"][s["id"]] = _strategy_queue(s["id"], snap, size)
+            _state["queues"][s["id"]] = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size))
 
 
 def _strategy_queue(sid: str, snap, size: int) -> dict:
@@ -200,6 +204,34 @@ def _strategy_queue(sid: str, snap, size: int) -> dict:
     if meta["kind"] == "nondirectional":
         return _condor_today(snap, size)
     return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size)
+
+
+def _apply_exits(sid: str, queue: dict) -> dict:
+    """Overlay the trader's MANUAL exits onto the replay rows (the replay itself stays a pure
+    measurement) and recompute the footer, so a closed trade shows on the table as `exit`."""
+    exits = _state.get("exits") or {}
+    rows = queue.get("triggers") or []
+    if not exits or not rows:
+        return queue
+    touched = False
+    for r in rows:
+        ex = exits.get((sid, r.get("ts")))
+        if ex:
+            r.update(outcome="exit", points=ex["points"], rupees=ex["rupees"],
+                     exit=ex["exit"], exit_ts=ex["exit_ts"])
+            touched = True
+    if touched:
+        wins = sum(1 for r in rows if r.get("outcome") == "win")
+        losses = sum(1 for r in rows if r.get("outcome") == "loss")
+        s = dict(queue.get("summary") or {})
+        s.update(wins=wins, losses=losses,
+                 open=sum(1 for r in rows if r.get("outcome") == "open"),
+                 exited=sum(1 for r in rows if r.get("outcome") == "exit"),
+                 net_points=round(sum(r.get("points", 0) or 0 for r in rows), 2),
+                 net_rupees=round(sum(r.get("rupees", 0) or 0 for r in rows), 0),
+                 hit_rate=(round(wins / (wins + losses), 2) if (wins + losses) else None))
+        queue["summary"] = s
+    return queue
 
 
 def _head_for(sid: str, queue: dict) -> dict | None:
@@ -546,7 +578,49 @@ def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1"):
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
     # replay_today now sizes each row by its own conviction (65-130 band), so the ₹
     # column matches the proposal; the condor (no conviction) keeps the flat size.
-    return _strategy_queue(strategy, _state["snap"], size)
+    return _apply_exits(strategy, _strategy_queue(strategy, _state["snap"], size))
+
+
+@app.post("/api/exit")
+def exit_trade(strategy: str = Form("trade1"), ts: str = Form(...),
+               exit_px: float | None = Form(None), symbol: str = Form("NIFTY")):
+    """Manually CLOSE an OPEN trigger at ``exit_px`` (default = the live spot): record the
+    realized P&L as a trade the trader took + closed (feeds the journal track-record) and overlay
+    the triggers table. Propose-only — you square off on your own broker."""
+    if strategy not in _STRAT:
+        raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
+    snap = _state["snap"]
+    if snap is None:
+        raise HTTPException(status_code=409, detail="no snapshot yet")
+    key = (strategy, ts)
+    if key in _state["exits"]:
+        raise HTTPException(status_code=409, detail="trade already exited")
+    q = _state["queues"].get(strategy) or _strategy_queue(strategy, snap, DEFAULT_SIZE)
+    trig = next((t for t in q.get("triggers", []) if t.get("ts") == ts), None)
+    if (trig is None or trig.get("outcome") != "open"
+            or trig.get("direction") not in ("long", "short")):
+        raise HTTPException(status_code=409, detail="no open trade at that trigger")
+    px = float(exit_px) if exit_px is not None else snap.spot
+    exit_ts = datetime.now().isoformat(timespec="seconds")
+    outcome = manual_exit_outcome(trig, px, exit_ts)
+    # persist: reuse the card-approved store row if it exists, else log the taken trade now
+    prop = _proposal_from_head(strategy, trig, snap, _state.get("table"))
+    rid = _state["records"].get(key)
+    if rid is None:
+        log_decision(prop, "approved", execution={"status": "manual"})
+        rid = _save_context_for(prop, "approved", symbol, {"status": "manual"})
+        _state["records"][key] = rid
+        _state["actioned"][key] = "approved"
+    if rid is not None:
+        store.update_outcome(rid, outcome, "good", _matrix("good", outcome["status"]),
+                             path=JOURNAL_DB)
+    if AFTER_WRITE:
+        try:
+            AFTER_WRITE()
+        except Exception:
+            pass
+    _state["exits"][key] = {k: outcome[k] for k in ("exit", "exit_ts", "points", "rupees")}
+    return {"ok": True, "outcome": outcome}
 
 
 @app.post("/api/analyse")
@@ -611,15 +685,17 @@ def _save_context_for(prop, decision: str, symbol: str, execution: dict | None,
         "macro": snap.macro, "oi_summary": snap.oi, "notes": snap.notes,
         "execution": execution,
     }
+    rid = None
     try:
-        store.save_decision(payload, path=JOURNAL_DB)
+        rid = store.save_decision(payload, path=JOURNAL_DB)
     except Exception:
-        pass
+        rid = None
     if AFTER_WRITE:                     # e.g. push the git-backed journal (deploy only)
         try:
             AFTER_WRITE()
         except Exception:
             pass
+    return rid
 
 
 @app.post("/api/decision")
@@ -643,7 +719,7 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
         result = breeze_exec.place(prop, live=live) if strategy == "trade1" else \
             {"status": "logged (propose-only)"}
         rec = log_decision(prop, "approved", execution=result)
-        _save_context_for(prop, "approved", symbol, result, label=label)
+        _state["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
         _state["actioned"][key] = "approved"
         return {"status": result.get("status"), "logged": rec["decision"]}
     rec = log_decision(prop, "rejected")

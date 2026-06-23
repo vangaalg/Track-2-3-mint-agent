@@ -427,6 +427,24 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       green (252). Completes the deferred "surface Claude's levels in the LIVE proposal" item (training reveal
       still pending).
 
+- [x] **Manual EXIT/CLOSE a 3-min trade from the triggers table (confirmed w/ trader).** The "Today's
+      triggers" table was read-only (pure `replay_today` measurement) — no way to close a trade you took.
+      Added an **Exit** button on every OPEN directional row: tap it → `prompt` for the exit price (defaults
+      to the live spot) → `POST /api/exit` records the realized P&L as a trade you took+closed and flips the
+      row to `exit`. New pure `journal.outcomes.manual_exit_outcome` (points by direction, win/loss by P&L
+      sign so it slots into the existing 2×2 via `_matrix`; same dict shape `settle` writes → `store.
+      update_outcome` persists it unchanged, `manual:True` flag + `exit`/`exit_ts`). `web/server.py`:
+      `_state["exits"]`/`["records"]`; `_apply_exits` overlays the manual closes onto the replay rows +
+      recomputes the footer (open/win/loss/**exited**/net) at both `_refresh` and `/api/triggers` (replay
+      itself untouched — still the unbiased measurement); `/api/exit` reuses `_proposal_from_head` +
+      `log_decision`/`save_decision` (via `_save_context_for`, now returns the row id) to log the taken trade,
+      then `update_outcome`; `/api/decision` caches the store id so a later Exit updates the SAME row (no
+      double-log). Propose-only (you square off on your broker). Frontend: `renderTriggers` Action column +
+      `exitTrigger` (delegated click). Decided w/ trader: exit any open trigger row, record-only realized
+      P&L. Tested in tests/test_outcomes.py (outcome math) + test_web_server.py (exit flips row + logs +
+      409 on re-exit/unknown + spot default). Suite green (256). In-memory overlay (durable truth = the
+      journal record); advances the pending "Phase 2 Slice 2: dynamic level management" (trailing still TBD).
+
 - [x] **Two specialist subagents (`.claude/agents/`, advisory personas).** `option-trader.md` (full
       option-strategy playbook → risk-defined, cost-aware, intraday-flat trades; grounded in the journal
       method — OI-wall S/R + ±37/72 bands, PCR/max-pain, macro — and the hard backtest truths: the 3-min

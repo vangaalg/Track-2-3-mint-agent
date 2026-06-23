@@ -58,7 +58,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "CHAT_COMPLETER", lambda system, history: "sparring reply")
     srv._state.update(snap=None, prop=None, chain=None, snap_at=0.0, oi_at=0.0,
                       read=None, analysed_bar=None, chat=[],
-                      queues={}, heads={}, actioned={}, reads={})
+                      queues={}, heads={}, actioned={}, reads={}, exits={}, records={})
     return TestClient(srv.app)
 
 
@@ -256,6 +256,53 @@ def test_claude_owns_levels_on_live_card(client, monkeypatch, tmp_path):
     rec = store.load_records(srv.JOURNAL_DB)[0]["proposal"]
     assert rec["entry"] == 24000.0 and rec["stop"] == 23970.0 and rec["target"] == 24030.0
     assert rec["rr_ratio"] == 1.0
+
+
+def test_manual_exit_closes_trigger_and_logs(client, monkeypatch, tmp_path):
+    """Exit an OPEN 3-min trigger at a price: the table row flips to 'exit' with realized P&L,
+    and a taken+closed trade lands in the journal store. A second exit is a 409."""
+    import journal.log as jlog
+    from journal import store
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    t = _open_trig(direction="long")              # entry 24000
+    _seed_heads(monkeypatch, trade1=[t])
+    client.get("/api/snapshot")                   # builds the queue
+    r = client.post("/api/exit", data={"strategy": "trade1", "ts": t["ts"], "exit_px": "24050"})
+    assert r.status_code == 200
+    out = r.json()["outcome"]
+    assert out["status"] == "win" and out["points"] == 50.0 and out["exit"] == 24050.0
+    # the triggers table now shows the row as exited with the realized points
+    rows = client.get("/api/triggers?strategy=trade1").json()
+    row = next(x for x in rows["triggers"] if x["ts"] == t["ts"])
+    assert row["outcome"] == "exit" and row["points"] == 50.0 and row["exit"] == 24050.0
+    # a live record was logged + settled with the manual exit
+    rec = store.load_records(srv.JOURNAL_DB)[0]
+    assert rec["outcome_status"] == "win" and rec["outcome_points"] == 50.0
+    assert (rec["outcome"] or {}).get("manual") is True
+    # exiting again is rejected
+    assert client.post("/api/exit",
+                       data={"strategy": "trade1", "ts": t["ts"], "exit_px": "24010"}).status_code == 409
+
+
+def test_manual_exit_defaults_to_spot(client, monkeypatch, tmp_path):
+    """Omitting exit_px closes at the live spot (a short above entry → loss)."""
+    import journal.log as jlog
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    t = _open_trig(direction="short")             # entry 24000; spot from synth feed > entry → loss
+    _seed_heads(monkeypatch, trade1=[t])
+    spot = client.get("/api/snapshot").json()["spot"]
+    out = client.post("/api/exit", data={"strategy": "trade1", "ts": t["ts"]}).json()["outcome"]
+    assert out["exit"] == round(spot, 2)
+    assert out["points"] == round(24000.0 - spot, 2)
+
+
+def test_manual_exit_unknown_trigger_409(client, monkeypatch):
+    _seed_heads(monkeypatch)
+    client.get("/api/snapshot")
+    r = client.post("/api/exit", data={"strategy": "trade1", "ts": "1999-01-01T00:00:00+05:30"})
+    assert r.status_code == 409
 
 
 def test_chat_round_trips(client):
