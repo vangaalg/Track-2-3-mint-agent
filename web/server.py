@@ -634,7 +634,8 @@ def chart(tf: str = "3min", bars: int = 200, symbol: str = "NIFTY"):
     if frame is None or frame.empty:
         raise HTTPException(status_code=404, detail=f"no frame for tf {tf!r}")
     data = _serialize_chart(frame, bars)
-    return {"tf": tf, "bars": data["bars"], "cpr": _daily_cpr(snap) or data["cpr"]}
+    return {"tf": tf, "symbol": symbol.upper(), "bars": data["bars"],
+            "cpr": _daily_cpr(snap) or data["cpr"]}
 
 
 @app.get("/api/oi-history")

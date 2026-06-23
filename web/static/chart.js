@@ -195,10 +195,13 @@ function renderLW(d) {
   const b = d.bars || [];
   if (!b.length) return;
   const ser = (k) => b.filter((r) => r[k] != null).map((r) => ({ time: _lwTime(r.t), value: r[k] }));
-  const fresh = LW.loadedTf !== chartTF;
+  // full redraw on a timeframe OR instrument change (else the incremental update appends the
+  // new instrument's bar onto the old series → a price-scale spike / overlap)
+  const fresh = LW.loadedTf !== chartTF || LW.loadedSym !== d.symbol;
   if (d.cpr) LW.lastCpr = d.cpr;
 
   if (fresh) {
+    LW.loadedSym = d.symbol;
     LW.candle.setData(b.map((r) => ({ time: _lwTime(r.t), open: r.o, high: r.h, low: r.l, close: r.c })));
     LW.bbU.setData(ser("bb_u")); LW.bbM.setData(ser("bb_m")); LW.bbL.setData(ser("bb_l"));
     LW.ema5.setData(ser("ema5")); LW.ema45.setData(ser("ema45"));
@@ -226,6 +229,16 @@ function renderLW(d) {
     shape: tg.direction === "long" ? "arrowUp" : "arrowDown",
     text: `${tg.direction[0].toUpperCase()} ${tg.outcome}`,
   })) : []);
+}
+
+// Wipe the chart (used when switching instruments) so stale data never lingers and the next
+// renderLW does a full redraw at the new instrument's price scale.
+function resetChart() {
+  if (!LW || !LW.candle) return;
+  [LW.candle, LW.bbU, LW.bbM, LW.bbL, LW.ema5, LW.ema45, LW.ema100, LW.ema200, LW.st,
+   LW.hist, LW.macdL, LW.sigL, LW.rsi].forEach((s) => { try { s.setData([]); } catch (e) {} });
+  try { LW.candle.setMarkers([]); } catch (e) {}
+  LW.loadedTf = null; LW.loadedSym = null;
 }
 
 // Wire the timeframe buttons + ⚙ panel. `onTF` is the page's data refetch for the new TF.

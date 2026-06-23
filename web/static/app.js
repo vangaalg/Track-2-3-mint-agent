@@ -104,6 +104,8 @@ function colourTile(id, spot, level) {
 
 function renderChart(d) {
   const c = d.chart, num = c.numbers || {}, lv = c.levels || {};
+  $("chartTitle").textContent = `🕯️ ${d.symbol || currentSymbol} — candles · BB · `
+    + "EMA 5/45/100/200 · Supertrend · CPR · MACD · RSI";
   $("spot").textContent = n(d.spot);
   $("mtf").textContent = (c.mtf_call || "—")
     + (c.mtf_confidence != null ? ` · 45EMA ${c.mtf_confidence}/5 ${mtfTicks(c.mtf_confidence_breakdown, c.mtf_call)}` : "");
@@ -568,6 +570,7 @@ $("instrSel").addEventListener("change", (e) => {   // switch instrument → res
   currentSymbol = e.target.value;
   _trigDate = null; _trigPage = 0; _triggers = []; currentHead = null;
   _pcrDay = "all"; _pcrDays = [];                  // PCR history follows the active instrument
+  resetChart();                                    // wipe the prior instrument's candles (no overlap)
   $("chatLog").innerHTML = "";
   $("dot").className = "dot"; $("meta").textContent = `loading ${currentSymbol}…`;
   poll();

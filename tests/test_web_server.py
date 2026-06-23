@@ -578,6 +578,7 @@ def test_chart_endpoint_per_timeframe(client, tf):
     client.get("/api/snapshot")
     d = client.get(f"/api/chart?tf={tf}&bars=50").json()
     assert d["tf"] == tf and d["bars"]
+    assert d["symbol"] == "NIFTY"        # lets the frontend redraw on an instrument switch
     row = d["bars"][-1]
     assert {"o", "h", "l", "c", "ema45", "bb_u", "macd", "rsi", "st"} <= set(row)
     # CPR is sourced from the daily frame, so pivot/tc/bc are always NUMERIC (not None).
