@@ -425,7 +425,9 @@ def test_record_endpoint_summarises_from_store(client, tmp_path, monkeypatch):
         "decision": "approved", "symbol": "NIFTY", "ts": "2024-01-01T09:18:00+05:30",
         "proposal": {"recommendation": "enter", "direction": "long", "entry": 24000.0,
                      "stop": 23980.0, "target": 24060.0, "size_lots": 75,
-                     "ts": "2024-01-01T09:18:00+05:30"}}, path=srv.JOURNAL_DB)
+                     "mtf_confidence": 3, "final_confidence": 4,
+                     "ts": "2024-01-01T09:18:00+05:30"},
+        "claude_read": {"confidence": 5}}, path=srv.JOURNAL_DB)
     store.update_outcome(rid, {"status": "win", "points": 60.0, "rupees": 4500.0, "manual": True},
                          "good", "deserved", path=srv.JOURNAL_DB)
     client.get("/api/snapshot")
@@ -434,6 +436,8 @@ def test_record_endpoint_summarises_from_store(client, tmp_path, monkeypatch):
     assert d["summary"]["cells"].get("deserved") == 1
     assert d["recent"][0]["process"] == "good"
     assert d["recent"][0]["outcome"]["status"] == "win"
+    # both confidence numbers surface for analysis: engine conviction + Claude's
+    assert d["recent"][0]["conviction"] == 4 and d["recent"][0]["confidence"] == 5
 
 
 def test_decision_persists_full_context(client, tmp_path, monkeypatch):

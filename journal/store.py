@@ -32,7 +32,7 @@ DB_PATH = "results/journal.db"
 _SCALAR_COLS = (
     "logged_at", "ts", "symbol", "kind", "decision", "recommendation", "direction",
     "entry", "stop", "target", "size_lots", "rr_ratio", "vehicle", "spot",
-    "confidence", "agrees_with_engine",
+    "confidence", "final_confidence", "agrees_with_engine",
     "process_grade", "matrix", "outcome_status", "outcome_points", "outcome_rupees",
     # Phase 2 — the trader's genuine/false trigger label + Claude's post-outcome reason.
     "trigger_label", "reason_why",
@@ -60,7 +60,7 @@ def init_db(path: str | Path = DB_PATH) -> None:
         "recommendation TEXT", "direction TEXT",
         "entry REAL", "stop REAL", "target REAL", "size_lots INTEGER",
         "rr_ratio REAL", "vehicle TEXT", "spot REAL",
-        "confidence INTEGER", "agrees_with_engine INTEGER",
+        "confidence INTEGER", "final_confidence INTEGER", "agrees_with_engine INTEGER",
         "process_grade TEXT", "matrix TEXT",
         "outcome_status TEXT", "outcome_points REAL", "outcome_rupees REAL",
         "trigger_label TEXT", "reason_why TEXT",
@@ -73,6 +73,8 @@ def init_db(path: str | Path = DB_PATH) -> None:
         for c in ("kind", "trigger_label", "reason_why"):
             if c not in have:
                 conn.execute(f"ALTER TABLE decisions ADD COLUMN {c} TEXT")
+        if "final_confidence" not in have:   # engine conviction (0-5) — for analysis
+            conn.execute("ALTER TABLE decisions ADD COLUMN final_confidence INTEGER")
 
 
 def save_decision(payload: dict, path: str | Path = DB_PATH) -> int:
@@ -98,6 +100,11 @@ def save_decision(payload: dict, path: str | Path = DB_PATH) -> int:
         "rr_ratio": prop.get("rr_ratio"), "vehicle": prop.get("vehicle"),
         "spot": payload.get("spot") if payload.get("spot") is not None else prop.get("spot"),
         "confidence": read.get("confidence"),
+        # Engine conviction (mtf 45-EMA alignment + OI boost, 0-5) — a queryable column
+        # so future analysis can correlate the agent's conviction with the outcome.
+        "final_confidence": (prop.get("final_confidence")
+                             if prop.get("final_confidence") is not None
+                             else prop.get("mtf_confidence")),
         "agrees_with_engine": (None if read.get("agrees_with_engine") is None
                                else int(bool(read.get("agrees_with_engine")))),
         # Live decisions settle later (None); training records carry their grade now.

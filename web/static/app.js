@@ -285,7 +285,7 @@ function renderTriggers() {
 
   let h = condor
     ? "<thead><tr><th>Time</th><th>Short PE</th><th>Short CE</th><th>Credit</th><th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>"
-    : "<thead><tr><th>Time</th><th>Strategy</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th><th>Action</th></tr></thead><tbody>";
+    : "<thead><tr><th>Time</th><th>Strategy</th><th>Dir</th><th>Conf</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th><th>Action</th></tr></thead><tbody>";
   for (const t of pageRows) {
     const pts = `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`;
     const rs = `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td>`;
@@ -296,7 +296,8 @@ function renderTriggers() {
     h += condor
       ? `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.short_put}</td><td>${t.short_call}</td>`
         + `<td>${t.credit}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`
-      : `<tr><td>${t.ts.slice(11, 16)}</td><td class="muted">${t.strategy_label || ""}</td><td>${t.direction}</td><td>${t.entry}</td>`
+      : `<tr><td>${t.ts.slice(11, 16)}</td><td class="muted">${t.strategy_label || ""}</td><td>${t.direction}</td>`
+        + `<td class="conf">${t.mtf_confidence != null ? t.mtf_confidence + "/5" : "—"}</td><td>${t.entry}</td>`
         + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}${act}</tr>`;
   }
   $("trigTbl").innerHTML = h + "</tbody>";
@@ -349,10 +350,13 @@ function renderRecord(d) {
   $("recSummary").innerHTML = `${s.n_settled || 0} settled · net `
     + `<b class="${s.net_points >= 0 ? "win-txt" : "loss-txt"}">${s.net_points >= 0 ? "+" : ""}${s.net_points || 0} pts `
     + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees || 0})</b> · graded by process, not P&L`;
-  let h = "<thead><tr><th>Time</th><th>Decision</th><th>Process</th><th>Outcome</th><th>Pts</th><th>Cell</th></tr></thead><tbody>";
+  let h = "<thead><tr><th>Time</th><th>Decision</th><th>Conf</th><th>Process</th><th>Outcome</th><th>Pts</th><th>Cell</th></tr></thead><tbody>";
   for (const r of (d.recent || []).slice().reverse()) {
     const o = r.outcome || {}, t = r.ts ? r.ts.slice(11, 16) : "—";
-    h += `<tr><td>${t}</td><td>${r.decision || "—"} ${r.direction || ""}</td><td>${r.process || "—"}</td>`
+    // engine conviction (0-5) + Claude's confidence (C1-5) at decision time
+    const conf = (r.conviction != null ? r.conviction + "/5" : "—")
+      + (r.confidence != null ? ` · C${r.confidence}` : "");
+    h += `<tr><td>${t}</td><td>${r.decision || "—"} ${r.direction || ""}</td><td class="conf">${conf}</td><td>${r.process || "—"}</td>`
       + `<td class="${o.status || ""}">${o.status || "—"}</td>`
       + `<td class="${(o.points || 0) >= 0 ? "win" : "loss"}">${o.points != null ? (o.points >= 0 ? "+" : "") + o.points : "—"}</td>`
       + `<td>${r.matrix || "—"}</td></tr>`;
@@ -404,7 +408,8 @@ async function decide(action) {
   const d = await r.json();
   if (!r.ok) { $("decisionMsg").textContent = "⚠ " + (d.detail || "decision failed"); return; }
   const verb = action === "approve" ? "Approved" : action === "skip" ? "Skipped" : "Rejected";
-  $("decisionMsg").textContent = `${verb} ${currentStrat} ${(acted.ts || "").slice(11, 16)}`
+  const conv = acted.mtf_confidence != null ? ` · conviction ${acted.mtf_confidence}/5` : "";
+  $("decisionMsg").textContent = `${verb} ${currentStrat} ${(acted.ts || "").slice(11, 16)}` + conv
     + (action === "skip" ? " · not recorded"
        : ` · logged ${d.logged} · ${d.status || "—"}` + (lbl ? ` · trigger ${lbl.value}` : ""));
   advanceTo(d.next_head);        // instant swap to the next pending trigger (if any)

@@ -15,7 +15,8 @@ def _payload(decision="approved", direction="long"):
         "proposal": {"instrument": "NIFTY", "ts": "2024-01-01T09:18:00+05:30",
                      "direction": direction, "recommendation": "enter",
                      "entry": 24000.0, "stop": 23980.0, "target": 24060.0,
-                     "size_lots": 75, "rr_ratio": 3.0, "vehicle": "NIFTY 23700 CE"},
+                     "size_lots": 75, "rr_ratio": 3.0, "vehicle": "NIFTY 23700 CE",
+                     "mtf_confidence": 3, "final_confidence": 4},
         "claude_read": {"agrees_with_engine": True, "chart_analysis": "ca",
                         "oi_analysis": "oa", "where_moving": "wm", "right_trade": "rt",
                         "challenge": "ch", "recommendation": "enter", "confidence": 4,
@@ -53,6 +54,32 @@ def test_save_and_load_round_trips(tmp_path):
     assert r["chain"][0]["call_oi"] == 9e6
     assert r["macro"]["india_vix"]["price"] == 13.2
     assert r["macro"]["us30_dow"]["change_pct"] == 0.3
+
+
+def test_engine_conviction_is_a_queryable_column(tmp_path):
+    db = tmp_path / "journal.db"
+    store.save_decision(_payload(), path=db)
+    r = store.load_records(db)[0]
+    # engine conviction (final_confidence) stored separately from Claude's confidence
+    assert r["final_confidence"] == 4 and r["confidence"] == 4
+
+
+def test_final_confidence_falls_back_to_mtf(tmp_path):
+    db = tmp_path / "journal.db"
+    p = _payload()
+    p["proposal"]["final_confidence"] = None        # not boosted yet
+    store.save_decision(p, path=db)
+    assert store.load_records(db)[0]["final_confidence"] == 3   # falls back to mtf_confidence
+
+
+def test_final_confidence_column_migrates_onto_old_db(tmp_path):
+    import sqlite3
+    db = tmp_path / "journal.db"
+    store.init_db(db)                                  # full current schema…
+    with sqlite3.connect(db) as c:                    # …then simulate a pre-column DB
+        c.execute("ALTER TABLE decisions DROP COLUMN final_confidence")
+    store.save_decision(_payload(), path=db)          # init_db migrates the column back in
+    assert store.load_records(db)[0]["final_confidence"] == 4
 
 
 def test_load_missing_db_is_empty(tmp_path):

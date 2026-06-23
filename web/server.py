@@ -579,6 +579,9 @@ def record():
             "recent": [{"decision": r.get("decision"), "process": r.get("process_grade"),
                         "matrix": r.get("matrix"), "ts": r.get("ts"),
                         "direction": r.get("direction"),
+                        # conviction = engine (mtf+OI, 0-5); confidence = Claude's read (1-5)
+                        "conviction": r.get("final_confidence"),
+                        "confidence": r.get("confidence"),
                         "outcome": r.get("outcome")} for r in recent]}
 
 
