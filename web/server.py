@@ -30,7 +30,7 @@ from feeds.breeze_oi import make_chain_fetcher
 from feeds.oi import chain_table, summarise_chain
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
-from feeds import oi_store
+from feeds import oi_store, oi_summary_store
 from feeds.instruments import (
     INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT)
 from analysis.trade1 import (
@@ -58,7 +58,8 @@ VIZ_POINTS = 1000
 PULL_TTL = 60          # chart/snapshot re-pull cadence (s)
 OI_TTL = 300           # option chain + macro cadence (s)
 LOG_OI = True          # persist each fresh chain to feeds.oi_store (the flywheel)
-DEFAULT_SIZE = 75
+DEFAULT_SIZE = 1       # flat lot count for non-conviction paths (condor); directional tabs
+                       # recompute via size_for_confidence (1-2 lots)
 # THE active resolver: the trader's journal 3-min strategy (trio + 2-close confirm,
 # trigger-only — HTF is trend context, not a gate). Live cockpit + training both use it.
 RESOLVER_CFG = journal_mtf_config()
@@ -77,6 +78,7 @@ _STRAT = {s["id"]: s for s in STRATEGIES}
 # them at a git-backed dir that persists across redeploys; defaults unchanged otherwise.
 JOURNAL_DB = os.environ.get("JOURNAL_DB", store.DB_PATH)   # full-context SQLite store
 DEFAULT_LOG = os.environ.get("DECISIONS_LOG", DEFAULT_LOG)  # append-only decision log
+OI_SUMMARY_ROOT = os.environ.get("OI_SUMMARY_ROOT")        # recorder's PCR/OI time series (None=default)
 AFTER_WRITE = None   # optional hook: deploy wrapper sets it to push the journal repo
 _STATIC = Path(__file__).parent / "static"
 
@@ -630,6 +632,22 @@ def chart(tf: str = "3min", bars: int = 200, symbol: str = "NIFTY"):
     return {"tf": tf, "bars": data["bars"], "cpr": _daily_cpr(snap) or data["cpr"]}
 
 
+@app.get("/api/oi-history")
+def oi_history(symbol: str = "NIFTY", day: str | None = None):
+    """The recorder's PCR / max-pain / wall+band time series for one instrument — for the
+    cockpit's PCR-over-time line graph + table. ``day`` (a YYYY-MM-DD) filters to one recorded
+    session; omitted / "all" returns the full accumulated history. Empty when the recorder
+    hasn't run yet (the time series lives on the trader's open-network machine)."""
+    df = oi_summary_store.load_summary(symbol.upper(), root=OI_SUMMARY_ROOT)
+    if df is None or df.empty:
+        return {"symbol": symbol.upper(), "rows": [], "days": []}
+    days = sorted({str(t)[:10] for t in df.index}, reverse=True)   # recorded sessions, newest-first
+    if day and day != "all":
+        df = df[[str(t)[:10] == day for t in df.index]]
+    rows = json.loads(df.reset_index().to_json(orient="records"))  # NaN -> null
+    return {"symbol": symbol.upper(), "rows": rows, "days": days}
+
+
 @app.get("/api/record")
 def record(symbol: str = "NIFTY"):
     """Settle the decision log against today's bars and return the 2x2 track record FOR THE
@@ -700,7 +718,7 @@ def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | Non
     non-directional instrument — is browsed on its own tab. ``date`` browses a prior session
     from the multi-day live pull; ``dates`` lists what's available (NEWEST first) for the toggle.
 
-    replay_today sizes each row by its own conviction (65-130 band), so the ₹ column matches
+    replay_today sizes each row by its own conviction (1-2 lot band), so the ₹ column matches
     the proposal; the condor (no conviction) keeps the flat size."""
     _active.set(symbol.upper())
     snap = _st()["snap"]

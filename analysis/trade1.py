@@ -9,7 +9,7 @@ Per the journal's Trade-1 rulebook:
   * entry  — at the read's anchor (here: current spot, the EMA-anchored trigger)
   * stop   — structure: nearest of 45-EMA / Supertrend / CPR band beyond price
   * target — next CPR level or OI wall in the trade's direction, else R-multiple
-  * size   — normal 65-130 lots (default 75)
+  * size   — 1 or 2 lots (conviction picks within the band; multiplier 65 NIFTY / 30 BankNifty)
   * vehicle— a deep-ITM option (~0.8-1.0 delta), the trader's ₹600-700 signature
 """
 
@@ -22,11 +22,11 @@ from analysis import discipline
 # LOT_SIZE = the NIFTY contract multiplier (trader-confirmed 65). Other instruments
 # override it via feeds.instruments (e.g. Bank Nifty = 30), threaded by the cockpit.
 LOT_SIZE = 65
-DEFAULT_SIZE_LOTS = 75
+DEFAULT_SIZE_LOTS = 1
 R_MULTIPLE = 1.5           # MINIMUM reward:risk — structural targets are floored to this
 ITM_OFFSET = 300           # points in-the-money for the deep-ITM strike
 STRIKE_STEP = 50
-SIZE_BAND = (65, 130)      # journal's normal lot band; MTF confidence picks within it
+SIZE_BAND = (1, 2)         # number of LOTS — conviction (MTF + OI boost) picks 1 or 2 lots
 
 
 def size_for_confidence(conf: int, lo: int = SIZE_BAND[0], hi: int = SIZE_BAND[1],
@@ -185,7 +185,7 @@ def build_directional_proposal(
     direction = read["mtf_call"]
     lv = read["levels"]
 
-    # MTF 45-EMA conviction scales the size across the journal band (65-130 lots).
+    # MTF 45-EMA conviction scales the size across the journal band (1-2 lots).
     mtf_conf = read.get("mtf_confidence")
     if mtf_conf is not None:
         size_lots = size_for_confidence(mtf_conf)

@@ -129,9 +129,9 @@ instruments:
 # is PROPOSE-ONLY: nothing fires without your tap, and an approved order is still
 # DRY-RUN unless `live` is on AND EXECUTION_LIVE=1 is set in the environment.
 execution:
-  lot_size: 75                  # NIFTY contract multiplier
-  normal_size_lots: [65, 130]   # the journal's discipline band
-  default_size_lots: 75
+  lot_size: 65                  # NIFTY contract multiplier (Bank Nifty = 30; see feeds/instruments.py)
+  normal_size_lots: [1, 2]      # discipline band = NUMBER OF LOTS; conviction picks 1 or 2
+  default_size_lots: 1
   live: false                   # dashboard toggle default; live also needs EXECUTION_LIVE=1
   # Breeze order key must be Trade+View with WITHDRAW DISABLED (SEBI non-algo).
 

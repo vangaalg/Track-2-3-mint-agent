@@ -282,7 +282,7 @@ def replay_today(
 
         outcome, exit_px, points = simulate_trade(
             direction, entry, stop, target, high[i + 1:], low[i + 1:], close[-1])
-        # ₹ is sized by THIS trigger's conviction (65-130 band), matching the live
+        # ₹ is sized by THIS trigger's conviction (1-2 lot band), matching the live
         # proposal — not a flat lot count — so the table and the proposal agree.
         row_lots = size_for_confidence(int(conf.iloc[i]))
         triggers.append({

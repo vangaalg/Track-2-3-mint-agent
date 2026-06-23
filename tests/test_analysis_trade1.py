@@ -35,7 +35,7 @@ def test_flat_read_stands_down():
 
 
 def test_clean_long_enters_with_valid_levels():
-    prop = propose_trade1(_snapshot("long"), size_lots=75)
+    prop = propose_trade1(_snapshot("long"), size_lots=2)   # in-band (1-2 lots)
     assert prop.recommendation is Recommendation.ENTER
     assert prop.stop < prop.entry < prop.target          # long geometry
     assert prop.rr_ratio is not None and prop.rr_ratio > 0
@@ -45,7 +45,7 @@ def test_clean_long_enters_with_valid_levels():
 
 
 def test_clean_short_enters_mirrored():
-    prop = propose_trade1(_snapshot("short"), size_lots=75)
+    prop = propose_trade1(_snapshot("short"), size_lots=2)   # in-band (1-2 lots)
     assert prop.recommendation is Recommendation.ENTER
     assert prop.target < prop.entry < prop.stop          # short geometry
     assert " PE " in prop.vehicle
@@ -58,9 +58,10 @@ def test_oversize_is_blocked_even_on_clean_read():
 
 
 def test_mtf_confidence_scales_size_across_band():
-    lo, hi = SIZE_BAND
+    lo, hi = SIZE_BAND                              # (1, 2) lots
     assert size_for_confidence(0) == lo and size_for_confidence(5) == hi
-    assert lo < size_for_confidence(3) < hi
+    # the 1->2 lot threshold: low conviction stays at 1, conf>=3 steps up to 2
+    assert size_for_confidence(2) == lo and size_for_confidence(3) == hi
     # Full HTF agreement -> top of the band; none -> bottom.
     full = propose_trade1(_snapshot("long", conf=5), size_lots=75)
     none = propose_trade1(_snapshot("long", conf=0), size_lots=75)
@@ -88,12 +89,12 @@ def test_apply_strike_rewrites_vehicle():
 
 
 def test_apply_oi_boost_agree_resizes_up():
-    prop = propose_trade1(_snapshot("long", conf=3), size_lots=75)   # mtf 3 -> 104 lots
+    prop = propose_trade1(_snapshot("long", conf=2), size_lots=75)   # mtf 2 -> 1 lot
     base_lots, base_risk = prop.size_lots, prop.rupee_risk
-    apply_oi_boost(prop, "bullish")                # OI agrees with a long -> +1
-    assert prop.oi_confidence_boost == 1 and prop.final_confidence == 4
+    apply_oi_boost(prop, "bullish")                # OI agrees with a long -> +1 (conf 3 -> 2 lots)
+    assert prop.oi_confidence_boost == 1 and prop.final_confidence == 3
     assert prop.oi_bias == "bullish"
-    assert prop.size_lots == size_for_confidence(4) > base_lots
+    assert prop.size_lots == size_for_confidence(3) > base_lots
     assert prop.rupee_risk > base_risk             # risk follows the bigger size
 
 

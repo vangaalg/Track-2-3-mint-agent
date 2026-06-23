@@ -521,6 +521,20 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       lot-size test updates; suite green (278). NOTE: Bank Nifty's live Breeze chain (CNXBAN + monthly last-Tue)
       needs open-network verification; NSE-50 option stocks slot into the same registry later.
 
+- [x] **Sizing band fixed to 1-2 LOTS + PCR-over-time view (line graph + table).** (1) The trader clarified
+      "65-130 meant 1 lot or 2 lot" — `SIZE_BAND` was the NUMBER OF LOTS the conviction picks within, so the
+      agent was sizing 65-130 *lots*. Fixed: `analysis.trade1.SIZE_BAND = (1, 2)` (conf 0-2 → 1 lot, 3-5 → 2),
+      `DEFAULT_SIZE_LOTS = 1`, `web.server.DEFAULT_SIZE = 1`, and `analysis.discipline.NORMAL_SIZE_*` band → (1, 2)
+      (the size-discipline gate that turns ENTER→STAND_DOWN outside the band — it had its OWN 65/130). ₹ = points ×
+      lot_size(65/30) × lots(1-2). Docs/prompt/config synced (SPARRING_PROMPT, JOURNAL_EXTRACTION, config.example).
+      (2) **PCR-over-time:** new `GET /api/oi-history?symbol=&day=` serves the recorder's `feeds.oi_summary_store`
+      series (ts/spot/pcr/max_pain/atm/walls/bands; `OI_SUMMARY_ROOT` env seam, default `data/oi_summary`), with a
+      newest-first `days` list + per-session filter. Cockpit OI card gains a PCR-over-time block: a day picker
+      (all-days / each session), a dual-axis Plotly line (PCR on the left axis; max-pain/spot/call-wall/put-shelf/
+      ±bands on the right), and a collapsible data table — per active instrument; honest "no history yet" empty
+      state (recorder runs on the trader's machine; sandbox dir empty). Tested in test_web_server (oi-history
+      serve/filter/empty/per-instrument) + test_analysis_trade1/discipline band updates; suite green (281).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

@@ -69,7 +69,7 @@ logged days validate them") — and are registered at the bottom.
 | **Dial 3 — OI-wall behaviour** (call wall / put shelf growing vs unwinding) | OI/options | Open-interest data; "wall as support/resistance" is an options-layer read. |
 | **Vehicle map** (iron fly / condor / ITM-ATM delta / cheap-OTM bans) | options/execution | Instrument selection + expiry mechanics, not a directional chart read. |
 | **Discipline contract** — 4-line / 6-line pre-trade check, "route the click through the check" | execution/discipline | Behavioural guardrail for the live agent, not a signal. |
-| **Size discipline** — normal 65–130 lots, "I strongly believe = warning light", the 1,040 stand-down | execution/discipline | Position sizing / risk, not a chart feature. |
+| **Size discipline** — normal 1–2 lots, "I strongly believe = warning light", the 1,040 stand-down | execution/discipline | Position sizing / risk, not a chart feature. |
 | **Scale-in template** (declared vs discovered martingale) | execution | Order-management protocol. |
 | **Declaration protocol** + **bucket independence** | execution | Workflow between trader and the sparring agent. |
 | **Macro scorecard** (GIFT, Brent, Dow, USD/INR, US VIX) + **Branch-1/2 weekly bias** | macro/geopolitical | Explicitly an excluded layer in `CLAUDE.md`. |

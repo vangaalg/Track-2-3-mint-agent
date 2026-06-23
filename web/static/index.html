@@ -87,6 +87,15 @@
       <div class="row small" id="walls">—</div>
       <div id="oichart" class="chart"></div>
       <div class="tablewrap"><table id="chainTbl"></table></div>
+
+      <!-- PCR over time (recorder's OI summary series) -->
+      <div class="pcrhdr">📉 PCR over time
+        <select id="pcrDay" title="recorded session"><option value="all">All days</option></select>
+      </div>
+      <div id="pcrChart" class="chart"></div>
+      <div id="pcrEmpty" class="row small muted" hidden></div>
+      <details id="pcrTblWrap"><summary>PCR table</summary>
+        <div class="tablewrap"><table id="pcrTbl"></table></div></details>
     </section>
 
     <!-- Proposal + Claude -->

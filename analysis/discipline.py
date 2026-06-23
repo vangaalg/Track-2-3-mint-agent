@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from analysis.proposal import Recommendation, SIX_LINES
 
-# Normal size band (lots) from the journal's size-discipline rule. Outside this
-# band the check fails unless explicitly flagged a high-quality wall/support edge.
-NORMAL_SIZE_LO, NORMAL_SIZE_HI = 65, 130
+# Normal size band (number of LOTS) from the journal's size-discipline rule. Outside this
+# band the check fails unless explicitly flagged a high-quality wall/support edge. Keep in
+# sync with analysis.trade1.SIZE_BAND (1-2 lots; conviction picks within it).
+NORMAL_SIZE_LO, NORMAL_SIZE_HI = 1, 2
 
 
 def evaluate(checklist: dict[str, str], direction: str, size_lots: int | None) -> tuple[Recommendation, list[str]]:

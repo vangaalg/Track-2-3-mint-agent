@@ -418,6 +418,53 @@ def test_session_dates_newest_first(client):
     assert dates == sorted(dates, reverse=True)
 
 
+def _seed_oi_history(root, symbol="NIFTY"):
+    from feeds import oi_summary_store
+    rows = [  # two recorded sessions, a couple of cycles each
+        ("2026-06-22T10:00:00+05:30", 1.05, 24050.0, 24100.0, 23900.0),
+        ("2026-06-22T13:00:00+05:30", 0.92, 24050.0, 24150.0, 23950.0),
+        ("2026-06-23T10:00:00+05:30", 1.20, 24000.0, 24050.0, 23850.0),
+    ]
+    for ts, pcr, mp, cw, ps in rows:
+        oi_summary_store.append_summary(
+            symbol, ts, 24010.0,
+            {"pcr": pcr, "max_pain": mp, "atm": 24000.0,
+             "call_wall": {"strike": cw, "oi": 9e6}, "put_shelf": {"strike": ps, "oi": 8e6}},
+            {"resistance_ext": [cw + 37, cw + 72], "support_ext": [ps - 37, ps - 72]},
+            root=root)
+
+
+def test_oi_history_serves_pcr_timeseries(client, tmp_path, monkeypatch):
+    """The recorder's PCR/max-pain/walls/bands series is served for the line graph + table,
+    newest-day-first, filterable by session and scoped per instrument."""
+    root = tmp_path / "oi_summary"
+    _seed_oi_history(root, "NIFTY")
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(root))
+    d = client.get("/api/oi-history?symbol=NIFTY").json()
+    assert d["days"] == ["2026-06-23", "2026-06-22"]          # newest-first
+    assert len(d["rows"]) == 3
+    r0 = d["rows"][0]
+    assert r0["pcr"] == 1.05 and r0["max_pain"] == 24050.0 and r0["call_wall_strike"] == 24100.0
+    assert r0["res_ext1"] == 24137.0 and r0["sup_ext1"] == 23863.0
+    # filter to one session
+    one = client.get("/api/oi-history?symbol=NIFTY&day=2026-06-23").json()
+    assert len(one["rows"]) == 1 and one["rows"][0]["pcr"] == 1.20
+
+
+def test_oi_history_empty_when_unrecorded(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
+    d = client.get("/api/oi-history?symbol=BANKNIFTY").json()
+    assert d["rows"] == [] and d["days"] == []                # nothing recorded yet → honest empty
+
+
+def test_oi_history_per_instrument(client, tmp_path, monkeypatch):
+    root = tmp_path / "oi_summary"
+    _seed_oi_history(root, "BANKNIFTY")                       # only Bank Nifty has history
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(root))
+    assert client.get("/api/oi-history?symbol=NIFTY").json()["rows"] == []
+    assert len(client.get("/api/oi-history?symbol=BANKNIFTY").json()["rows"]) == 3
+
+
 def test_record_scoped_per_instrument(client, tmp_path, monkeypatch):
     from journal import store
     for s, pts in [("NIFTY", 60.0), ("BANKNIFTY", 40.0)]:

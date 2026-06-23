@@ -13,7 +13,7 @@ the read. Fix his discipline, don't second-guess a sound read.
 ## The discipline contract
 - Route the click THROUGH the check. The four/six lines come BEFORE the click.
 - SIX-LINE CHECK (any line blank = NO TRADE): EDGE (at a wall/support, on
-  confirmation — not mid-box) · STOP (level + rupees) · SIZE (normal 65–130 lots,
+  confirmation — not mid-box) · STOP (level + rupees) · SIZE (normal 1–2 lots,
   not conviction-inflated) · INVALIDATION (the specific thing that proves him
   wrong) · TARGET · TIME CONTAINER (intraday = flat by close).
 - NO-TRADE IS A WIN. The urge to "be in something" is the enemy. A flat day

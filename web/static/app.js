@@ -15,6 +15,7 @@ const TRIG_PAGE = 10;
 let _trigStrat = "all", _trigDate = null, _trigPage = 0;
 let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null;
 let _trigDates = [], _trigStrats = [];
+let _pcrDay = "all", _pcrDays = [];          // PCR-over-time: recorded session picker
 
 async function poll() {
   try {
@@ -26,7 +27,7 @@ async function poll() {
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchRecord(); fetchTable();
+    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory();
     // Reveal the token form when the feed reports a Breeze/token/OI problem in its notes.
     flagTokenNeeded(/token|session|breeze|oi:/i.test((d.notes || []).join(" ")));
     // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
@@ -167,6 +168,72 @@ function renderOI(d) {
       + `<td class="${ps}">${lakh(r.put_oi)}</td><td>${n(r.put_ltp)}</td><td>${n(r.put_extrinsic)}</td></tr>`;
   }
   $("chainTbl").innerHTML = h + "</tbody>";
+}
+
+// PCR / max-pain / walls+bands over time (the recorder's oi_summary series), per instrument.
+async function fetchPcrHistory() {
+  try {
+    const d = await (await fetch(`/api/oi-history?symbol=${sym()}&day=${_pcrDay}`)).json();
+    if (d.days) { _pcrDays = d.days; populatePcrDays(); }
+    renderPcr(d.rows || []);
+  } catch (e) { /* keep last */ }
+}
+
+function populatePcrDays() {
+  const sel = $("pcrDay");
+  if (sel.options.length !== _pcrDays.length + 1) {
+    sel.innerHTML = `<option value="all">All days</option>`
+      + _pcrDays.map((x) => `<option value="${x}">${x}</option>`).join("");
+  }
+  sel.value = _pcrDay;
+}
+
+function renderPcr(rows) {
+  if (!rows.length) {                          // nothing recorded yet (recorder runs live)
+    $("pcrChart").style.display = "none";
+    $("pcrEmpty").hidden = false;
+    $("pcrEmpty").textContent = "No OI history recorded yet for " + currentSymbol
+      + " — the recorder accumulates it live (pull the data repo).";
+    $("pcrTbl").innerHTML = "";
+    return;
+  }
+  $("pcrChart").style.display = ""; $("pcrEmpty").hidden = true;
+  const allDays = _pcrDay === "all";
+  const x = rows.map((r) => allDays ? (r.ts || "").slice(5, 16).replace("T", " ")
+                                    : (r.ts || "").slice(11, 16));
+  const lvl = (key, name, color, dash) => ({
+    type: "scatter", mode: "lines", name, x, y: rows.map((r) => r[key]), yaxis: "y2",
+    line: { color, width: 1, dash: dash || "solid" }, connectgaps: true,
+  });
+  Plotly.react("pcrChart", [
+    { type: "scatter", mode: "lines", name: "PCR", x, y: rows.map((r) => r.pcr),
+      line: { color: "#e45756", width: 2 }, hovertemplate: "PCR %{y:.2f}<extra></extra>" },
+    lvl("max_pain", "Max-pain", "#b07d2b"),
+    lvl("spot", "Spot", "#9aa0b4"),
+    lvl("call_wall_strike", "Call wall", "#e45756", "dot"),
+    lvl("put_shelf_strike", "Put shelf", "#54a24b", "dot"),
+    lvl("res_ext1", "Res band", "#e45756", "dash"),
+    lvl("res_ext2", "Res band", "#e45756", "dash"),
+    lvl("sup_ext1", "Sup band", "#54a24b", "dash"),
+    lvl("sup_ext2", "Sup band", "#54a24b", "dash"),
+  ], {
+    height: 230, showlegend: true, legend: { orientation: "h", font: { size: 9 }, y: -0.25 },
+    margin: { l: 40, r: 44, t: 8, b: 36 }, paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+    font: { color: "#555", size: 10 },
+    xaxis: { type: "category", tickangle: -45, nticks: 10, automargin: true },
+    yaxis: { title: "PCR", zeroline: false },
+    yaxis2: { title: "Price / strikes", overlaying: "y", side: "right", zeroline: false },
+  }, { displayModeBar: false, responsive: true });
+
+  // table beneath the graph
+  let h = "<thead><tr><th>Time</th><th>PCR</th><th>Max-pain</th><th>Call wall</th>"
+    + "<th>Put shelf</th><th>Res bands</th><th>Sup bands</th></tr></thead><tbody>";
+  for (const r of rows.slice().reverse()) {              // newest first
+    h += `<tr><td>${(r.ts || "").slice(5, 16).replace("T", " ")}</td><td class="conf">${n(r.pcr)}</td>`
+      + `<td>${n(r.max_pain, 0)}</td><td>${n(r.call_wall_strike, 0)}</td><td>${n(r.put_shelf_strike, 0)}</td>`
+      + `<td>${n(r.res_ext1, 0)} / ${n(r.res_ext2, 0)}</td><td>${n(r.sup_ext1, 0)} / ${n(r.sup_ext2, 0)}</td></tr>`;
+  }
+  $("pcrTbl").innerHTML = h + "</tbody>";
 }
 
 // The calm idle state — no flickering ENTER/STAND-DOWN between triggers.
@@ -479,12 +546,14 @@ $("trigTbl").addEventListener("click", (e) => {     // Exit buttons on open trig
 $("instrSel").addEventListener("change", (e) => {   // switch instrument → reset per-instrument view
   currentSymbol = e.target.value;
   _trigDate = null; _trigPage = 0; _triggers = []; currentHead = null;
+  _pcrDay = "all"; _pcrDays = [];                  // PCR history follows the active instrument
   $("chatLog").innerHTML = "";
   $("dot").className = "dot"; $("meta").textContent = `loading ${currentSymbol}…`;
   poll();
 });
 $("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _trigPage = 0; fetchTable(); });
 $("trigStrat").addEventListener("change", (e) => { _trigStrat = e.target.value; _trigPage = 0; fetchTable(); });
+$("pcrDay").addEventListener("change", (e) => { _pcrDay = e.target.value; fetchPcrHistory(); });
 $("trigPrev").onclick = () => { if (_trigPage > 0) { _trigPage--; renderTriggers(); } };
 $("trigNext").onclick = () => { _trigPage++; renderTriggers(); };
 $("chatForm").onsubmit = sendChat;
