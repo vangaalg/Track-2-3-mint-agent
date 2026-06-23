@@ -20,7 +20,8 @@ def test_token_requires_secret(monkeypatch):
         assert r.status_code == 403
 
 
-def test_token_sets_env_and_status_renders(monkeypatch):
+def test_token_sets_env_and_status_renders(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)                          # keep the persisted token under tmp
     with _client(monkeypatch) as c:
         r = c.post("/token", data={"token": "tok123", "secret": "s3cret"})
         assert r.status_code == 200 and r.json()["ok"] is True

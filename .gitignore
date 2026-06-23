@@ -27,6 +27,8 @@ data/*.json
 data/ohlcv/
 # pasted chart exports for trigger validation (throwaway)
 data/validate/
+# recorder's persisted daily Breeze token (restored from the private data repo, not here)
+data/recorder_state/
 
 # Results — keep human-readable reports, drop raw dumps + runtime logs/DB.
 results/*.csv
