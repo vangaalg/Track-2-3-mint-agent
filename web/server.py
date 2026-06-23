@@ -198,12 +198,34 @@ def _refresh(symbol: str, size: int) -> None:
             _state["queues"][s["id"]] = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size))
 
 
-def _strategy_queue(sid: str, snap, size: int) -> dict:
-    """Today's discrete triggers for one strategy (replay_today / condor proxy)."""
+def _strategy_queue(sid: str, snap, size: int, session_date=None) -> dict:
+    """One session's discrete triggers for a strategy (replay_today / condor proxy).
+    ``session_date`` browses a previous day (default = the latest session)."""
     meta = _STRAT[sid]
     if meta["kind"] == "nondirectional":
-        return _condor_today(snap, size)
-    return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size)
+        return _condor_today(snap, size, session_date=session_date)
+    return replay_today(snap.feats, snap.frames, cfg=meta["cfg"], size_lots=size,
+                        session_date=session_date)
+
+
+def _session_dates(snap) -> list[str]:
+    """Distinct session dates available in the live frame (for the date toggle)."""
+    f = snap.frames.get("3min") if snap is not None else None
+    if f is None or f.empty:
+        return []
+    return [str(d) for d in sorted({ts.date() for ts in f.index})]
+
+
+def _rows_summary(rows: list[dict]) -> dict:
+    """Footer over an arbitrary set of trigger rows (used by the merged 'all' view)."""
+    wins = sum(1 for r in rows if r.get("outcome") == "win")
+    losses = sum(1 for r in rows if r.get("outcome") == "loss")
+    return {"n": len(rows), "wins": wins, "losses": losses,
+            "open": sum(1 for r in rows if r.get("outcome") == "open"),
+            "exited": sum(1 for r in rows if r.get("outcome") == "exit"),
+            "net_points": round(sum(r.get("points", 0) or 0 for r in rows), 2),
+            "net_rupees": round(sum(r.get("rupees", 0) or 0 for r in rows), 0),
+            "hit_rate": (round(wins / (wins + losses), 2) if (wins + losses) else None)}
 
 
 def _apply_exits(sid: str, queue: dict) -> dict:
@@ -530,15 +552,20 @@ def chart(tf: str = "3min", bars: int = 200):
 
 @app.get("/api/record")
 def record():
-    """Settle the decision log against today's bars and return the 2x2 track record."""
+    """Settle the decision log against today's bars and return the 2x2 track record.
+
+    The track record is summarised from the durable SQLite STORE (not the JSONL log): the
+    store is git-synced + survives Railway restarts, and the trader's manual /api/exit
+    closes write their realized outcome there — the ephemeral JSONL would read 0."""
     frames = _state["snap"].frames if _state["snap"] is not None else {}
-    decisions = settle_log(DEFAULT_LOG, frames)
+    settle_log(DEFAULT_LOG, frames)        # keep the local JSONL settled (back-compat)
+    settled = []
     try:
-        settled = settle_store(frames, path=JOURNAL_DB)   # grade the rich store too (same 2x2)
+        settled = settle_store(frames, path=JOURNAL_DB)   # grade the rich store (same 2x2)
         _settle_reasons(settled)                            # post-mortem newly-resolved trades
     except Exception:
         pass
-    recent = decisions[-12:]
+    recent = settled[-12:]
     posts = []     # settled live trades that carry a Claude post-mortem
     try:
         for r in store.load_records(JOURNAL_DB, kind="live", limit=20):
@@ -548,18 +575,21 @@ def record():
                               "outcome": r.get("outcome_status"), "reason_why": r.get("reason_why")})
     except Exception:
         pass
-    return {"summary": matrix_summary(decisions), "posts": posts[-8:],
+    return {"summary": matrix_summary(settled), "posts": posts[-8:],
             "recent": [{"decision": r.get("decision"), "process": r.get("process_grade"),
-                        "matrix": r.get("matrix"), "ts": (r.get("proposal") or {}).get("ts"),
-                        "direction": (r.get("proposal") or {}).get("direction"),
+                        "matrix": r.get("matrix"), "ts": r.get("ts"),
+                        "direction": r.get("direction"),
                         "outcome": r.get("outcome")} for r in recent]}
 
 
-def _condor_today(snap, size: int) -> dict:
-    """Today's expiry-day condor setups in a replay_today-compatible shape."""
+def _condor_today(snap, size: int, session_date=None) -> dict:
+    """One session's expiry-day condor setups in a replay_today-compatible shape."""
     trigs = list_condor_triggers(snap.feats.get("3min"), snap.frames.get("3min"),
                                  expiry_weekday=EXPIRY_WEEKDAY, size_lots=size, lot_size=LOT_SIZE)
-    today = str(snap.frames["3min"].index[-1].date()) if "3min" in snap.frames else None
+    if session_date is not None:
+        today = str(pd.Timestamp(session_date).date())
+    else:
+        today = str(snap.frames["3min"].index[-1].date()) if "3min" in snap.frames else None
     trigs = [t for t in trigs if t["date"] == today]
     wins = sum(1 for t in trigs if t["outcome"] == "win")
     losses = sum(1 for t in trigs if t["outcome"] == "loss")
@@ -571,14 +601,40 @@ def _condor_today(snap, size: int) -> dict:
 
 
 @app.get("/api/triggers")
-def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1"):
-    if _state["snap"] is None:
+def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | None = None):
+    """Today's (or ``date``'s) triggers. ``strategy="all"`` merges every DIRECTIONAL
+    strategy into one table (each row tagged with its strategy); the condor — a different,
+    non-directional instrument — is browsed on its own tab. ``date`` browses a prior session
+    from the multi-day live pull; ``dates`` lists what's available for the toggle.
+
+    replay_today sizes each row by its own conviction (65-130 band), so the ₹ column matches
+    the proposal; the condor (no conviction) keeps the flat size."""
+    snap = _state["snap"]
+    if snap is None:
         raise HTTPException(status_code=409, detail="no snapshot yet")
-    if strategy not in _STRAT:
+    if strategy != "all" and strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
-    # replay_today now sizes each row by its own conviction (65-130 band), so the ₹
-    # column matches the proposal; the condor (no conviction) keeps the flat size.
-    return _apply_exits(strategy, _strategy_queue(strategy, _state["snap"], size))
+    dates = _session_dates(snap)
+    sd = date or (dates[-1] if dates else None)
+    strat_list = [{"id": s["id"], "label": s["label"]} for s in STRATEGIES]
+    if strategy == "all":
+        merged: list[dict] = []
+        for s in STRATEGIES:
+            if s["kind"] == "nondirectional":
+                continue                       # condor has its own shape/tab
+            q = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size, session_date=sd))
+            for r in q.get("triggers", []):
+                merged.append({**r, "strategy": s["id"], "strategy_label": s["label"]})
+        merged.sort(key=lambda r: r.get("ts") or "")
+        return {"session": sd, "triggers": merged, "last": merged[-1] if merged else None,
+                "summary": _rows_summary(merged), "dates": dates, "strategy": "all",
+                "strategies": strat_list}
+    q = _apply_exits(strategy, _strategy_queue(strategy, snap, size, session_date=sd))
+    meta = _STRAT[strategy]
+    for r in q.get("triggers", []):
+        r["strategy"], r["strategy_label"] = strategy, meta["label"]
+    q.update(dates=dates, strategy=strategy, strategies=strat_list)
+    return q
 
 
 @app.post("/api/exit")

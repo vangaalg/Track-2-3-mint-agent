@@ -19,6 +19,16 @@ h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(
 .tile { background:var(--tile); border:1px solid var(--line); border-radius:8px; padding:6px 8px; }
 .tile .k { display:block; font-size:11px; color:var(--muted); }
 .tile .v { display:block; font-size:15px; font-weight:600; }
+/* spot vs the level: green above, red below */
+.tile.up { background:rgba(46,158,75,.14); border-color:var(--green); }
+.tile.up .v { color:var(--green); }
+.tile.down { background:rgba(226,59,59,.12); border-color:var(--red); }
+.tile.down .v { color:var(--red); }
+.trigctrls { display:flex; gap:14px; align-items:center; margin:2px 0 6px; }
+.trigctrls select { background:var(--tile); border:1px solid var(--line); border-radius:6px;
+  color:var(--txt); padding:3px 6px; margin-left:4px; }
+.trigpager { display:flex; gap:10px; align-items:center; margin-top:8px; }
+.trigpager .btn:disabled { opacity:.4; cursor:default; }
 .row { margin:4px 0; } .row.small { font-size:12px; }
 
 .price { margin:0 12px 12px; }

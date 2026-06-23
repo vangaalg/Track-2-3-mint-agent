@@ -62,14 +62,18 @@
     <section class="card" id="chartCard">
       <h2>📈 Chart</h2>
       <div class="tiles">
-        <div class="tile"><span class="k">Spot</span><span class="v" id="spot">—</span></div>
+        <div class="tile" id="tileSpot"><span class="k">Spot</span><span class="v" id="spot">—</span></div>
         <div class="tile"><span class="k">MTF read</span><span class="v" id="mtf">—</span></div>
         <div class="tile"><span class="k">RSI</span><span class="v" id="rsi">—</span></div>
         <div class="tile"><span class="k">MACD hist</span><span class="v" id="macd">—</span></div>
-        <div class="tile"><span class="k">Supertrend</span><span class="v" id="st">—</span></div>
-        <div class="tile"><span class="k">CPR pivot</span><span class="v" id="cpr">—</span></div>
+        <div class="tile" id="tileEma5"><span class="k">EMA 5</span><span class="v" id="ema5">—</span></div>
+        <div class="tile" id="tileEma45"><span class="k">EMA 45</span><span class="v" id="ema45">—</span></div>
+        <div class="tile" id="tileEma100"><span class="k">EMA 100</span><span class="v" id="ema100">—</span></div>
+        <div class="tile" id="tileEma200"><span class="k">EMA 200</span><span class="v" id="ema200">—</span></div>
+        <div class="tile" id="tileSt"><span class="k">Supertrend</span><span class="v" id="st">—</span></div>
+        <div class="tile" id="tileCpr"><span class="k">CPR pivot</span><span class="v" id="cpr">—</span></div>
       </div>
-      <div class="row" id="emas">EMA 5/45/100/200: —</div>
+      <div class="row muted small" id="tilelegend">🟢 spot above · 🔴 spot below</div>
       <div class="row muted" id="cprband">CPR TC/BC: —</div>
       <div class="row muted" id="macro">Macro: —</div>
       <details id="diag"><summary>Feed diagnostics</summary><div id="notes"></div></details>
@@ -122,12 +126,21 @@
     </section>
   </main>
 
-  <!-- Today's triggers (intraday replay) -->
+  <!-- Triggers (intraday replay — all strategies, browseable by day) -->
   <section class="card triggers" id="trigCard">
-    <h2 id="trigTitle">📛 Today's triggers — if you'd traded each</h2>
+    <h2 id="trigTitle">📛 Triggers — if you'd traded each</h2>
+    <div class="row trigctrls">
+      <label class="small muted">Day <select id="trigDate"></select></label>
+      <label class="small muted">Strategy <select id="trigStrat"></select></label>
+    </div>
     <div id="trigLast" class="trig-last">—</div>
     <div id="trigSummary" class="row small muted">—</div>
     <div class="tablewrap"><table id="trigTbl"></table></div>
+    <div class="row trigpager">
+      <button id="trigPrev" class="btn">‹ Prev</button>
+      <span id="trigPage" class="small muted">—</span>
+      <button id="trigNext" class="btn">Next ›</button>
+    </div>
   </section>
 
   <!-- Track record (process x outcome 2x2 — the learning loop) -->

@@ -234,8 +234,14 @@ def replay_today(
     cfg: MTFDirectionalConfig | None = None,
     size_lots: int = DEFAULT_SIZE_LOTS,
     lot_size: int = LOT_SIZE,
+    session_date=None,
 ) -> dict:
-    """Replay the latest session's Trade-1 triggers and their outcomes."""
+    """Replay one session's Trade-1 triggers and their outcomes.
+
+    ``session_date`` (a ``date`` or ``YYYY-MM-DD`` string) picks which session to replay;
+    default ``None`` = the latest session in the frame (back-compat). Lets the cockpit
+    browse previous days from the multi-day live pull.
+    """
     cfg = cfg or MTFDirectionalConfig()
     empty = {"session": None, "triggers": [], "last": None,
              "summary": {"n": 0, "wins": 0, "losses": 0, "open": 0,
@@ -247,7 +253,7 @@ def replay_today(
     if calls.empty:
         return empty
 
-    today = calls.index[-1].date()
+    today = calls.index[-1].date() if session_date is None else pd.Timestamp(session_date).date()
     in_day = pd.Index([ts.date() == today for ts in calls.index])
     calls = calls[in_day.values]
     conf, _ = mtf_ema45_confidence(feats_by_tf, calls)

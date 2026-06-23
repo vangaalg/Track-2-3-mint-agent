@@ -21,14 +21,30 @@ bad-process win* never trains the agent to repeat it — Session 002):
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from analysis.triggers import simulate_trade
+from analysis.triggers import _resolve_intraday
 from journal.log import DEFAULT_LOG
 from analysis.trade1 import LOT_SIZE
+
+_IST = timezone(timedelta(hours=5, minutes=30))
+_SESSION_CLOSE = time(15, 30)
+
+
+def _session_live(ts) -> bool:
+    """True while the trade's OWN session is still in progress, so an unresolved trade
+    stays ``open`` instead of being marked-to-close. False once 15:30 IST has passed for
+    that date (or the date is already in the past) — then ``settle`` auto marks-to-close."""
+    d = pd.Timestamp(ts).date()
+    now = datetime.now(_IST)
+    if d < now.date():
+        return False
+    if d > now.date():            # future-dated (shouldn't happen) — treat as live
+        return True
+    return now.time() < _SESSION_CLOSE
 
 _MATRIX = {
     ("good", "win"): "deserved", ("good", "loss"): "accept",
@@ -94,19 +110,23 @@ def settle(decisions: list[dict], frames_by_tf: dict[str, pd.DataFrame],
         if None in (entry, stop, target) or direction not in ("long", "short") or bars is None:
             r["matrix"] = _matrix(r["process_grade"], None)
             continue
-        fwd = bars[bars.index > pd.Timestamp(ts)]
-        if fwd.empty:                              # not enough data yet
-            r["matrix"] = _matrix(r["process_grade"], None)
+        # Session-bounded resolution (no cross-day leak) + auto mark-to-close at 15:30:
+        # a trade that hits neither stop nor target is exited "eod" at its own session's
+        # close — kept "open" only while that session is still live.
+        outcome, exit_px, points, exit_ts = _resolve_intraday(
+            bars, ts, direction, entry, stop, target)
+        if outcome == "eod" and _session_live(ts):
+            r["matrix"] = _matrix(r["process_grade"], None)   # still open today — wait
             continue
-        outcome, exit_px, points = simulate_trade(
-            direction, entry, stop, target,
-            fwd["high"].to_numpy(), fwd["low"].to_numpy(), fwd["close"].iloc[-1])
+        status = outcome if outcome in ("win", "loss") else ("win" if points >= 0 else "loss")
         size = p.get("size_lots") or 75
-        r["outcome"] = {"status": outcome, "exit": exit_px, "points": points,
+        r["outcome"] = {"status": status, "exit": exit_px, "points": points,
                         "rupees": round(points * lot_size * size, 0),
+                        "eod": outcome == "eod",
+                        "exit_ts": exit_ts.isoformat() if exit_ts is not None else None,
                         "settled_at": datetime.now(timezone.utc).isoformat()}
-        r["matrix"] = _matrix(r["process_grade"], outcome)
-        changed = outcome != "open" or changed     # only "real" settlements persist
+        r["matrix"] = _matrix(r["process_grade"], status)
+        changed = True
     return decisions, changed
 
 

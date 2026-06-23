@@ -80,6 +80,28 @@ def test_replay_no_session_data():
     assert out["summary"]["n"] == 0 and out["triggers"] == []
 
 
+def test_replay_today_session_date_picks_a_prior_day(monkeypatch):
+    import analysis.triggers as trig
+    # two sessions; each has a LONG entry on its 3rd bar
+    day1 = pd.date_range("2024-01-02 09:15", periods=6, freq="3min", tz="Asia/Kolkata")
+    day2 = pd.date_range("2024-01-03 09:15", periods=6, freq="3min", tz="Asia/Kolkata")
+    idx = day1.append(day2)
+    c = np.array([100, 100, 100, 100.5, 101.5, 103] * 2, float)
+    frames = pd.DataFrame({"open": c, "high": c + 1, "low": c - 1, "close": c,
+                           "volume": 100.0}, index=idx)
+    feats = frames.assign(ema_45=99.0, supertrend=98.0, cpr_pivot=99.5,
+                          cpr_tc=102.0, cpr_bc=97.0)
+    calls = pd.Series(["flat", "flat", "long", "long", "long", "long"] * 2, index=idx)
+    monkeypatch.setattr(trig, "resolve_direction_mtf", lambda f, c: calls)
+
+    latest = replay_today({"3min": feats}, {"3min": frames}, cfg=_StubMTF())
+    assert latest["session"] == "2024-01-03"            # default = latest session
+    prior = replay_today({"3min": feats}, {"3min": frames}, cfg=_StubMTF(),
+                         session_date="2024-01-02")
+    assert prior["session"] == "2024-01-02" and prior["summary"]["n"] == 1
+    assert prior["last"]["ts"].startswith("2024-01-02")
+
+
 def test_rr_floor_pushes_close_long_target_out():
     # Structural resist only 2 pts above entry, stop 20 below -> floored to 1.5R.
     stop, target, rr = trade1_levels("long", 100.0,

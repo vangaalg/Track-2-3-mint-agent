@@ -7,6 +7,13 @@ const lakh = (x) => (x === null || x === undefined) ? "—" : (x / 1e5).toFixed(
 let analysing = false, lastPayload = null, currentStrat = "trade1", currentHead = null;
 const STRAT_LABEL = { trade1: "3-min", cpr_st: "CPR-ST", orb: "ORB", condor: "Expiry condor" };
 
+// Triggers table (independent of the chart/decision tabs): merged across strategies,
+// browseable by day, paginated 10/page.
+const TRIG_PAGE = 10;
+let _trigStrat = "all", _trigDate = null, _trigPage = 0;
+let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null;
+let _trigDates = [], _trigStrats = [];
+
 async function poll() {
   try {
     const r = await fetch(`/api/snapshot?symbol=${SYMBOL}`);
@@ -16,7 +23,7 @@ async function poll() {
     $("dot").className = "dot live";
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchRecord();
+    fetchChart(); fetchRecord(); fetchTable();
     // Reveal the token form when the feed reports a Breeze/token/OI problem in its notes.
     flagTokenNeeded(/token|session|breeze|oi:/i.test((d.notes || []).join(" ")));
     // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
@@ -62,7 +69,6 @@ function renderStrategy() {
   $("stratNote").hidden = (currentStrat === "trade1");
   if (currentStrat !== "trade1") $("stratNote").textContent =
     "Mechanical chart trigger — Claude + OI auto-read and sized after the trigger. Propose-only: place it yourself (not auto-executed).";
-  $("trigTitle").textContent = `📛 ${STRAT_LABEL[currentStrat]} — today's triggers`;
 
   if (!head) { renderWatching(); }
   else if (currentStrat === "condor") { renderCondor((d.proposals || {}).condor || {}); $("decision").hidden = false; }
@@ -73,7 +79,7 @@ function renderStrategy() {
   if (rd) renderRead(rd);
   else $("readBox").innerHTML = `<span class="muted">${head ? "Analysing this trigger… (or press Analyse)" : "No active trigger — watching."}</span>`;
 
-  fetchTriggers(currentStrat);
+  fetchMarkers(currentStrat);     // chart ▲/▼ overlay follows the active tab (table is independent)
 }
 
 function setStrat(strat) {
@@ -83,6 +89,15 @@ function setStrat(strat) {
   renderStrategy();
 }
 
+// Green when spot is above the level, red when below, neutral on missing data.
+function colourTile(id, spot, level) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.remove("up", "down");
+  if (spot == null || level == null || Number.isNaN(spot) || Number.isNaN(level)) return;
+  el.classList.add(spot >= level ? "up" : "down");
+}
+
 function renderChart(d) {
   const c = d.chart, num = c.numbers || {}, lv = c.levels || {};
   $("spot").textContent = n(d.spot);
@@ -90,7 +105,15 @@ function renderChart(d) {
     + (c.mtf_confidence != null ? ` · 45EMA ${c.mtf_confidence}/5 ${mtfTicks(c.mtf_confidence_breakdown, c.mtf_call)}` : "");
   $("rsi").textContent = n(num.rsi_14); $("macd").textContent = n(num.macd_hist);
   $("st").textContent = n(num.supertrend); $("cpr").textContent = n(lv.cpr_pivot);
-  $("emas").textContent = `EMA 5/45/100/200: ${n(num.ema_5)} / ${n(num.ema_45)} / ${n(num.ema_100)} / ${n(num.ema_200)}`;
+  $("ema5").textContent = n(num.ema_5); $("ema45").textContent = n(num.ema_45);
+  $("ema100").textContent = n(num.ema_100); $("ema200").textContent = n(num.ema_200);
+  // Colour each level tile by spot vs that level (green above, red below). Spot tile
+  // follows the master 45-EMA regime (the at-a-glance long/short bias).
+  const sp = d.spot;
+  colourTile("tileEma5", sp, num.ema_5); colourTile("tileEma45", sp, num.ema_45);
+  colourTile("tileEma100", sp, num.ema_100); colourTile("tileEma200", sp, num.ema_200);
+  colourTile("tileSt", sp, num.supertrend); colourTile("tileCpr", sp, lv.cpr_pivot);
+  colourTile("tileSpot", sp, num.ema_45);
   $("cprband").textContent = `CPR TC/BC: ${n(lv.cpr_tc)} / ${n(lv.cpr_bc)}`;
   if (d.macro) $("macro").textContent = "Macro: " + Object.entries(d.macro)
     .map(([k, v]) => `${k} ${v && v.change_pct != null ? v.change_pct.toFixed(2) + "%" : "—"}`).join(" · ");
@@ -192,18 +215,49 @@ function renderRead(rd) {
     + `<p><b>⚔️ Challenge:</b> ${rd.challenge}</p><p><b>⚠️ Risk:</b> ${rd.key_risk}</p>`;
 }
 
-async function fetchTriggers(strat) {
+// Chart ▲/▼ overlay follows the active CHART tab (independent of the table filter).
+async function fetchMarkers(strat) {
   try {
-    // no size param — the server sizes each row by its own conviction (matches the card)
-    const d = await (await fetch(`/api/triggers?strategy=${strat || currentStrat}`)).json();
-    renderTriggers(d, strat || currentStrat);
+    const d = await (await fetch(`/api/triggers?strategy=${strat}`)).json();
+    _triggers = (d.triggers || []).filter((t) => t.direction === "long" || t.direction === "short");
   } catch (e) { /* keep last */ }
 }
 
-function renderTriggers(d, strat) {
-  _triggers = (strat === currentStrat || !strat) ? (d.triggers || []) : _triggers;
-  const condor = strat === "condor";
-  const s = d.summary || {}, last = d.last;
+// The triggers TABLE: merged across strategies (filter), browseable by day, paginated.
+async function fetchTable() {
+  try {
+    let url = `/api/triggers?strategy=${_trigStrat}`;
+    if (_trigDate) url += `&date=${_trigDate}`;
+    const d = await (await fetch(url)).json();
+    _trigRows = d.triggers || [];
+    _trigSummary = d.summary || {};
+    _trigLast = d.last; _trigSession = d.session;
+    if (d.dates) _trigDates = d.dates;
+    if (d.strategies) _trigStrats = d.strategies;
+    if (_trigDate === null && _trigDates.length) _trigDate = _trigDates[_trigDates.length - 1];
+    populateTrigSelectors();
+    renderTriggers();
+  } catch (e) { /* keep last */ }
+}
+
+function populateTrigSelectors() {
+  const ds = $("trigDate");
+  if (ds.options.length !== _trigDates.length) {
+    ds.innerHTML = _trigDates.map((x) => `<option value="${x}">${x}</option>`).join("");
+  }
+  ds.value = _trigDate || "";
+  const ss = $("trigStrat");
+  if (ss.options.length !== _trigStrats.length + 1) {
+    ss.innerHTML = `<option value="all">All</option>`
+      + _trigStrats.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
+  }
+  ss.value = _trigStrat;
+}
+
+function renderTriggers() {
+  const condor = _trigStrat === "condor";
+  const s = _trigSummary, last = _trigLast;
+  const latest = _trigDates.length ? _trigDates[_trigDates.length - 1] : null;
   if (last) {
     const oc = last.outcome, t = last.ts.slice(11, 16);
     $("trigLast").className = "trig-last " + oc;
@@ -215,28 +269,40 @@ function renderTriggers(d, strat) {
         + `${last.points >= 0 ? "+" : ""}${last.points} pts (${last.rupees >= 0 ? "+" : ""}₹${last.rupees})`;
   } else {
     $("trigLast").className = "trig-last";
-    $("trigLast").textContent = `No triggers yet today (${d.session || "—"}).`;
+    $("trigLast").textContent = `No triggers on ${_trigSession || "—"}.`;
   }
   $("trigSummary").innerHTML = `${s.n || 0} triggers · ${s.wins || 0}W / ${s.losses || 0}L / ${s.open || 0} open`
+    + (s.exited ? ` / ${s.exited} exited` : "")
     + ` · net <b class="${s.net_points >= 0 ? "win-txt" : "loss-txt"}">${s.net_points >= 0 ? "+" : ""}${s.net_points || 0} pts `
     + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees || 0})</b> if all taken`
     + (s.hit_rate != null ? ` · hit-rate ${(s.hit_rate * 100).toFixed(0)}%` : "");
+
+  const total = _trigRows.length;
+  const pages = Math.max(1, Math.ceil(total / TRIG_PAGE));
+  if (_trigPage >= pages) _trigPage = pages - 1;
+  if (_trigPage < 0) _trigPage = 0;
+  const pageRows = _trigRows.slice(_trigPage * TRIG_PAGE, _trigPage * TRIG_PAGE + TRIG_PAGE);
+
   let h = condor
     ? "<thead><tr><th>Time</th><th>Short PE</th><th>Short CE</th><th>Credit</th><th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>"
-    : "<thead><tr><th>Time</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th><th>Action</th></tr></thead><tbody>";
-  for (const t of (d.triggers || [])) {
+    : "<thead><tr><th>Time</th><th>Strategy</th><th>Dir</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th><th>Action</th></tr></thead><tbody>";
+  for (const t of pageRows) {
     const pts = `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`;
     const rs = `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td>`;
-    // open trades get an Exit button; closed ones show the exit price; settled ones blank
-    const act = t.outcome === "open" ? `<td><button class="btn exit" data-exit-ts="${t.ts}">Exit</button></td>`
+    // Exit only the live session's open trades (past days are read-only replay).
+    const canExit = t.outcome === "open" && _trigDate === latest;
+    const act = canExit ? `<td><button class="btn exit" data-exit-ts="${t.ts}" data-strat="${t.strategy || ""}">Exit</button></td>`
       : t.outcome === "exit" ? `<td class="muted">@ ${n(t.exit)}</td>` : "<td></td>";
     h += condor
       ? `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.short_put}</td><td>${t.short_call}</td>`
         + `<td>${t.credit}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`
-      : `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.direction}</td><td>${t.entry}</td>`
+      : `<tr><td>${t.ts.slice(11, 16)}</td><td class="muted">${t.strategy_label || ""}</td><td>${t.direction}</td><td>${t.entry}</td>`
         + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}${act}</tr>`;
   }
   $("trigTbl").innerHTML = h + "</tbody>";
+  $("trigPage").textContent = total ? `page ${_trigPage + 1}/${pages} · ${total} triggers` : "no triggers";
+  $("trigPrev").disabled = _trigPage <= 0;
+  $("trigNext").disabled = _trigPage >= pages - 1;
 }
 
 // Chart engine (Lightweight Charts module + ⚙ indicator panel) lives in chart.js,
@@ -245,18 +311,18 @@ function renderTriggers(d, strat) {
 
 // Manually close an OPEN trigger at a price (defaults to the live spot) → realized P&L into
 // the track record; the row flips to "exit". You square off on your own broker (propose-only).
-async function exitTrigger(ts) {
+async function exitTrigger(ts, strat) {
   const spot = lastPayload ? lastPayload.spot : null;
   const ans = prompt("Exit at price?", spot != null ? n(spot) : "");
   if (ans === null) return;                        // cancelled
   const px = parseFloat(ans);
   const fd = new FormData();
-  fd.append("strategy", currentStrat); fd.append("ts", ts);
+  fd.append("strategy", strat || currentStrat); fd.append("ts", ts);
   if (!Number.isNaN(px)) fd.append("exit_px", px);
   const r = await fetch("/api/exit", { method: "POST", body: fd });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { alert("Exit failed: " + (d.detail || r.statusText)); return; }
-  fetchTriggers(currentStrat); fetchRecord();       // refresh the table + track record
+  fetchTable(); fetchRecord();                      // refresh the table + track record
 }
 
 async function fetchChart() {
@@ -323,7 +389,7 @@ function advanceTo(nextHead) {
   else renderWatching();
   $("readBox").innerHTML = currentHead
     ? "<span class='muted'>Analysing this trigger…</span>" : "";
-  fetchTriggers(currentStrat); fetchRecord();        // table + track record reflect the action
+  fetchMarkers(currentStrat); fetchTable(); fetchRecord();   // chart, table + track record reflect the action
   if (currentHead) analyse();                        // load Claude's read without blocking the card
 }
 
@@ -371,8 +437,12 @@ $("tokenSave").onclick = postToken;
 $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });
 $("trigTbl").addEventListener("click", (e) => {     // Exit buttons on open trigger rows
   const b = e.target.closest("button[data-exit-ts]");
-  if (b) exitTrigger(b.dataset.exitTs);
+  if (b) exitTrigger(b.dataset.exitTs, b.dataset.strat);
 });
+$("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _trigPage = 0; fetchTable(); });
+$("trigStrat").addEventListener("change", (e) => { _trigStrat = e.target.value; _trigPage = 0; fetchTable(); });
+$("trigPrev").onclick = () => { if (_trigPage > 0) { _trigPage--; renderTriggers(); } };
+$("trigNext").onclick = () => { _trigPage++; renderTriggers(); };
 $("chatForm").onsubmit = sendChat;
 document.querySelectorAll("#stratTabs button").forEach((b) =>
   b.addEventListener("click", () => setStrat(b.dataset.strat)));

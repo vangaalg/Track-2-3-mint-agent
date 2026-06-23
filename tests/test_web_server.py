@@ -79,7 +79,7 @@ def _seed_heads(monkeypatch, trade1=None, sid="trade1", trigs=None):
     q = {"session": "2024-01-01", "triggers": rows, "last": rows[-1] if rows else None,
          "summary": {**empty["summary"], "n": len(rows), "open": len(rows)}}
     monkeypatch.setattr(srv, "_strategy_queue",
-                        lambda s, snap, size: q if s == sid else dict(empty))
+                        lambda s, snap, size, session_date=None: q if s == sid else dict(empty))
     return rows
 
 
@@ -129,9 +129,35 @@ def test_triggers_per_strategy(client):
     for sid in ("trade1", "cpr_st", "orb"):
         r = client.get(f"/api/triggers?strategy={sid}").json()
         assert "summary" in r and "triggers" in r
+        assert isinstance(r["dates"], list) and r["dates"]          # date toggle options
+        assert r["strategy"] == sid and any(s["id"] == "trade1" for s in r["strategies"])
+        for t in r["triggers"]:
+            assert t["strategy"] == sid and t["strategy_label"]
     cond = client.get("/api/triggers?strategy=condor").json()
     assert "summary" in cond and isinstance(cond["triggers"], list)
     assert client.get("/api/triggers?strategy=bogus").status_code == 404
+
+
+def test_triggers_all_merges_directional_strategies(client):
+    client.get("/api/snapshot")
+    d = client.get("/api/triggers?strategy=all").json()
+    assert d["strategy"] == "all" and isinstance(d["dates"], list)
+    sids = {t["strategy"] for t in d["triggers"]}
+    assert "condor" not in sids                       # non-directional has its own tab
+    assert sids.issubset({"trade1", "cpr_st", "orb"})
+    ts = [t["ts"] for t in d["triggers"]]
+    assert ts == sorted(ts)                           # merged rows ordered by time
+    for t in d["triggers"]:
+        assert t["strategy_label"] and "direction" in t
+
+
+def test_triggers_date_filter_selects_a_session(client):
+    client.get("/api/snapshot")
+    dates = client.get("/api/triggers?strategy=all").json()["dates"]
+    assert len(dates) >= 1
+    d = client.get(f"/api/triggers?strategy=all&date={dates[0]}").json()
+    assert d["session"] == dates[0]
+    assert all(t["ts"].startswith(dates[0]) for t in d["triggers"])
 
 
 def test_analyse_returns_four_part_read(client, monkeypatch):
@@ -391,20 +417,23 @@ def test_triggers_endpoint_shape(client):
     assert isinstance(d["triggers"], list)
 
 
-def test_record_endpoint_settles_and_grades(client, tmp_path, monkeypatch):
-    import json as _json
-    from journal.outcomes import grade_process
-    log = tmp_path / "d.jsonl"
-    log.write_text(_json.dumps({
-        "decision": "approved",
+def test_record_endpoint_summarises_from_store(client, tmp_path, monkeypatch):
+    """The 2x2 track record is summarised from the durable STORE (where manual exits + the
+    settled outcomes land) — not the ephemeral JSONL log, which reads 0 on Railway."""
+    from journal import store
+    rid = store.save_decision({
+        "decision": "approved", "symbol": "NIFTY", "ts": "2024-01-01T09:18:00+05:30",
         "proposal": {"recommendation": "enter", "direction": "long", "entry": 24000.0,
                      "stop": 23980.0, "target": 24060.0, "size_lots": 75,
-                     "ts": "2024-01-01T09:18:00+05:30"}}) + "\n")
-    monkeypatch.setattr(srv, "DEFAULT_LOG", str(log))
+                     "ts": "2024-01-01T09:18:00+05:30"}}, path=srv.JOURNAL_DB)
+    store.update_outcome(rid, {"status": "win", "points": 60.0, "rupees": 4500.0, "manual": True},
+                         "good", "deserved", path=srv.JOURNAL_DB)
     client.get("/api/snapshot")
     d = client.get("/api/record").json()
-    assert "cells" in d["summary"] and isinstance(d["recent"], list)
+    assert d["summary"]["n_settled"] == 1
+    assert d["summary"]["cells"].get("deserved") == 1
     assert d["recent"][0]["process"] == "good"
+    assert d["recent"][0]["outcome"]["status"] == "win"
 
 
 def test_decision_persists_full_context(client, tmp_path, monkeypatch):
