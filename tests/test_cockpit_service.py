@@ -107,6 +107,33 @@ def test_breeze_token_endpoint_requires_auth(monkeypatch):
     assert c.post("/api/breeze-token", data={"token": "x"}).status_code == 401
 
 
+def test_get_breeze_token_prefills_and_reports_connection(monkeypatch, tmp_path):
+    """GET returns the last token (full, to prefill the field) + connection state so the
+    banner only opens when actually disconnected."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BREEZE_SESSION_TOKEN", "lasttok42")
+    c = _client(monkeypatch)
+    import web.cockpit_service as cs
+    cs._BREEZE_CACHE.update(ts=0.0, result="")              # force a fresh probe
+
+    monkeypatch.setattr(cs, "_probe_breeze", lambda: "connected")
+    r = c.get("/api/breeze-token", auth=("trader", "pw"))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["token"] == "lasttok42" and body["connected"] is True
+
+    # a failed probe → not connected (cockpit will re-open the banner)
+    cs._BREEZE_CACHE.update(ts=0.0, result="")
+    monkeypatch.setattr(cs, "_probe_breeze", lambda: "token set, but probe failed: boom")
+    body2 = c.get("/api/breeze-token", auth=("trader", "pw")).json()
+    assert body2["connected"] is False and "boom" in body2["status"]
+
+
+def test_get_breeze_token_requires_auth(monkeypatch):
+    c = _client(monkeypatch)
+    assert c.get("/api/breeze-token").status_code == 401
+
+
 def test_breeze_token_recorder_inprocess(monkeypatch, tmp_path):
     """Combined service: no RECORDER_URL, but the in-process recorder is running, so the token
     endpoint reports it's covered locally (not a misconfiguration)."""

@@ -162,6 +162,17 @@ def set_breeze_token(token: str = Form(...)):
             "recorder": _recorder_target(token)}
 
 
+@app.get("/api/breeze-token")
+def get_breeze_token():
+    """Last-known Breeze token + connection state, so the cockpit can PREFILL the token
+    field (visibly active + replaceable) and open the banner only when actually
+    disconnected — not on every benign OI note. Behind HTTP Basic; the full token is
+    returned by design (single-user cockpit). Uses the cached probe — no handshake per GET."""
+    tok = os.environ.get("BREEZE_SESSION_TOKEN") or control.load_token_file() or ""
+    status = _breeze_status()
+    return {"token": tok, "connected": status == "connected", "status": status}
+
+
 @app.get("/healthz")
 def healthz():
     return JSONResponse(STATUS)

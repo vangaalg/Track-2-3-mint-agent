@@ -13,7 +13,7 @@ import os
 import time
 from contextvars import ContextVar
 from dataclasses import asdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -270,12 +270,22 @@ def _strategy_queue(sid: str, snap, size: int, session_date=None, lot_size: int 
                         lot_size=lot, session_date=session_date, one_position=True)
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _session_dates(snap) -> list[str]:
-    """Distinct session dates in the live frame (NEWEST first — for the date toggle)."""
+    """Distinct session dates in the live frame (NEWEST first — for the date toggle).
+
+    Today (IST) is prepended on weekdays even when the frame has no bars yet (pre-market),
+    so the toggle defaults to TODAY with an honest empty state instead of silently falling
+    back to yesterday. During market hours today populates from the live pull as usual.
+    """
     f = snap.frames.get("3min") if snap is not None else None
-    if f is None or f.empty:
-        return []
-    return [str(d) for d in sorted({ts.date() for ts in f.index}, reverse=True)]
+    dates = set() if f is None or f.empty else {ts.date() for ts in f.index}
+    ist_today = datetime.now(_IST).date()
+    if ist_today.weekday() < 5:               # Mon–Fri only (avoid an empty weekend "today")
+        dates.add(ist_today)
+    return [str(d) for d in sorted(dates, reverse=True)]
 
 
 def _rows_summary(rows: list[dict]) -> dict:

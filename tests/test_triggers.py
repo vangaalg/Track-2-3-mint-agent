@@ -139,6 +139,12 @@ def test_replay_today_session_date_picks_a_prior_day(monkeypatch):
     assert prior["session"] == "2024-01-02" and prior["summary"]["n"] == 1
     assert prior["last"]["ts"].startswith("2024-01-02")
 
+    # A session with NO bars (e.g. TODAY pre-market) returns an empty result, not an error.
+    empty = replay_today({"3min": feats}, {"3min": frames}, cfg=_StubMTF(),
+                         session_date="2024-01-09")
+    assert empty["session"] == "2024-01-09" and empty["summary"]["n"] == 0
+    assert empty["triggers"] == [] and empty["last"] is None
+
 
 def test_rr_floor_pushes_close_long_target_out():
     # Structural resist only 2 pts above entry, stop 20 below -> floored to 1.5R.

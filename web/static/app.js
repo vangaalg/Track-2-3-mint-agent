@@ -22,6 +22,9 @@ async function poll() {
     const r = await fetch(`/api/snapshot?symbol=${sym()}`);
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const d = await r.json();
+    // Drop a stale snapshot for an instrument we've already switched away from (a slow
+    // in-flight response must not flash the wrong instrument's OI/proposal/notes/title).
+    if (d.symbol && d.symbol !== currentSymbol) return;
     lastPayload = d;
     $("dot").className = "dot live";
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
@@ -29,8 +32,8 @@ async function poll() {
     renderChart(d); renderOI(d); renderStrategy();
     fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory();
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
-    // Reveal the token form when the feed reports a Breeze/token/OI problem in its notes.
-    flagTokenNeeded(/token|session|breeze|oi:/i.test((d.notes || []).join(" ")));
+    // The token banner is driven by the real Breeze connection state (refreshTokenStatus),
+    // NOT by benign OI notes — so a valid token no longer re-prompts on every refresh.
     // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
     // (all four tabs); the frozen head carries its cached read.
   } catch (e) {
@@ -43,6 +46,19 @@ async function poll() {
 function flagTokenNeeded(needed) {
   $("tokenBtn").classList.toggle("warn", !!needed);
   if (needed) $("tokenForm").hidden = false;
+}
+
+// Pull the last-known Breeze token + connection state: PREFILL the field so the active
+// token is visible/replaceable, and open the banner only when actually disconnected.
+async function refreshTokenStatus() {
+  try {
+    const r = await fetch("/api/breeze-token");
+    if (!r.ok) return;                 // GET only exists on the deployed cockpit
+    const d = await r.json();
+    const f = $("tokenInput");
+    if (d.token && document.activeElement !== f) f.value = d.token;   // don't clobber typing
+    flagTokenNeeded(!d.connected);     // re-prompt ONLY when Breeze is truly disconnected
+  } catch (e) { /* offline / non-cockpit host — leave the banner as-is */ }
 }
 
 // POST today's Breeze token to the cockpit (applies it here; the in-process recorder picks
@@ -58,8 +74,9 @@ async function postToken() {
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const d = await r.json();
     $("tokenMsg").textContent = `cockpit: ${d.cockpit}  ·  recorder: ${d.recorder}`;
-    $("tokenInput").value = "";
+    // keep the saved token in the field (visibly active + replaceable) — don't blank it
     poll();                    // pick up the freshly authenticated feed
+    refreshTokenStatus();      // refresh connection state + re-prefill
   } catch (e) {
     $("tokenMsg").textContent = "failed: " + e.message;
   }
@@ -410,7 +427,7 @@ function renderTriggers() {
         + `${last.points >= 0 ? "+" : ""}${last.points} pts (${last.rupees >= 0 ? "+" : ""}₹${last.rupees})`;
   } else {
     $("trigLast").className = "trig-last";
-    $("trigLast").textContent = `No triggers on ${_trigSession || "—"}.`;
+    $("trigLast").textContent = `No triggers on ${_trigSession || "—"} yet — market opens 09:15 IST.`;
   }
   $("trigSummary").innerHTML = `${s.n || 0} triggers · ${s.wins || 0}W / ${s.losses || 0}L / ${s.open || 0} open`
     + (s.exited ? ` / ${s.exited} exited` : "")
@@ -637,3 +654,4 @@ document.querySelectorAll("#stratTabs button").forEach((b) =>
   b.addEventListener("click", () => setStrat(b.dataset.strat)));
 wireChartUI(fetchChart);          // timeframe buttons + ⚙ indicator panel (chart.js)
 poll(); setInterval(poll, POLL_MS);
+refreshTokenStatus(); setInterval(refreshTokenStatus, 60000);   // token prefill + connection state

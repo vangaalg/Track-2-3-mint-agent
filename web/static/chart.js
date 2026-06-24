@@ -194,6 +194,11 @@ function initCharts() {
 function renderLW(d) {
   const b = d.bars || [];
   if (!b.length) return;
+  // Drop a stale in-flight payload for an instrument we've already switched away from — an
+  // old /api/chart response (e.g. NIFTY) must never paint onto the new instrument's chart
+  // (that race left old candles + one new-instrument bar = a giant price-scale spike).
+  // `typeof` guards the /train page, where chart.js runs without a `currentSymbol` global.
+  if (d.symbol && typeof currentSymbol !== "undefined" && d.symbol !== currentSymbol) return;
   const ser = (k) => b.filter((r) => r[k] != null).map((r) => ({ time: _lwTime(r.t), value: r[k] }));
   // full redraw on a timeframe OR instrument change (else the incremental update appends the
   // new instrument's bar onto the old series → a price-scale spike / overlap)
@@ -221,6 +226,7 @@ function renderLW(d) {
     up(LW.ema5, "ema5"); up(LW.ema45, "ema45"); up(LW.ema100, "ema100"); up(LW.ema200, "ema200"); up(LW.st, "st");
     if (last.hist != null) LW.hist.update({ time: t, value: last.hist, color: last.hist >= 0 ? "#26a69a" : "#ef5350" });
     up(LW.macdL, "macd"); up(LW.sigL, "signal"); up(LW.rsi, "rsi");
+    redrawCpr();           // keep CPR price-lines current on same-TF polls (not just full redraws)
   }
   // triggers are 3-min signals — only mark them on the 3m chart
   LW.candle.setMarkers(chartTF === "3min" ? _triggers.map((tg) => ({

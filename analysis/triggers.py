@@ -296,11 +296,11 @@ def replay_today(
     today = calls.index[-1].date() if session_date is None else pd.Timestamp(session_date).date()
     in_day = pd.Index([ts.date() == today for ts in calls.index])
     calls = calls[in_day.values]
+    if len(calls) < 2:           # no (or one) bar for this session — e.g. TODAY pre-market
+        return {**empty, "session": str(today)}
     conf, _ = mtf_ema45_confidence(feats_by_tf, calls)
     bars = frames_by_tf["3min"].reindex(calls.index)
     feats = feats_by_tf["3min"].reindex(calls.index)
-    if len(calls) < 2:
-        return {**empty, "session": str(today)}
 
     c = calls.to_numpy()
     high, low, close = bars["high"].to_numpy(), bars["low"].to_numpy(), bars["close"].to_numpy()

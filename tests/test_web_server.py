@@ -445,6 +445,31 @@ def test_session_dates_newest_first(client):
     assert dates == sorted(dates, reverse=True)
 
 
+def test_session_dates_prepends_today_on_weekday(monkeypatch):
+    """The date toggle includes TODAY (IST) on a weekday even when the frame has no bars yet
+    (pre-market), so it defaults to today instead of silently showing yesterday."""
+    import web.server as server
+    from types import SimpleNamespace
+    from datetime import datetime as real_dt, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    idx = pd.date_range("2024-01-02 09:15", periods=10, freq="3min", tz="Asia/Kolkata")
+    snap = SimpleNamespace(frames={"3min": pd.DataFrame({"close": range(10)}, index=idx)})
+
+    class _Mon:
+        @staticmethod
+        def now(tz=None): return real_dt(2026, 6, 22, 10, 0, tzinfo=ist)   # a Monday
+    monkeypatch.setattr(server, "datetime", _Mon)
+    dates = server._session_dates(snap)
+    assert dates[0] == "2026-06-22"                 # today prepended, newest-first
+    assert "2024-01-02" in dates                    # frame's own session still listed
+
+    class _Sat:
+        @staticmethod
+        def now(tz=None): return real_dt(2026, 6, 20, 10, 0, tzinfo=ist)   # a Saturday
+    monkeypatch.setattr(server, "datetime", _Sat)
+    assert "2026-06-20" not in server._session_dates(snap)   # no empty weekend "today"
+
+
 def _seed_oi_history(root, symbol="NIFTY"):
     from feeds import oi_summary_store
     rows = [  # two recorded sessions, a couple of cycles each
