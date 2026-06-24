@@ -949,26 +949,64 @@ def trigger_read(strategy: str = "trade1", ts: str = "", symbol: str = "NIFTY"):
 
 @app.get("/api/pending")
 def pending(size: int = DEFAULT_SIZE, symbol: str = "NIFTY"):
-    """TODAY's directional triggers the trader hasn't decided on yet (the live inbox), each with
-    its Claude read — so a trigger that fired while they weren't looking is HELD until actioned.
-    Always today's session, independent of the table's date/strategy filter."""
-    _active.set(symbol.upper())
-    snap = _st()["snap"]
-    if snap is None:
-        raise HTTPException(status_code=409, detail="no snapshot yet")
-    dates = _session_dates(snap)
-    sd = dates[0] if dates else None
-    rows: list[dict] = []
-    for s in STRATEGIES:
-        if s["kind"] == "nondirectional":
+    """The unified cross-instrument inbox — anything needing a decision ANYWHERE, so a trigger
+    that fired on an instrument you weren't watching is HELD until actioned. Aggregates:
+      • INDEX triggers — today's un-actioned directional triggers across the primary indices
+        (NIFTY + Bank Nifty), each with its cached Claude read; inline decide.
+      • STOCK focus-candidates — the scanner's highlighted NSE-50 stocks (trigger ∧ OI ∧ Claude
+        agree); Focus to act on them.
+    `_refresh` does data pulls only (NO Claude call), so non-active instruments cost at most an
+    occasional pull, never tokens."""
+    prev = _active.get()
+    index_rows: list[dict] = []
+    try:
+        for inst in instrument_list():                 # primary indices only (NIFTY, BANKNIFTY)
+            sym = inst["id"]
+            try:
+                _refresh(sym, size)                    # TTL-cached; active = cache-hit; no Claude
+            except Exception:
+                pass                                   # a bad pull (e.g. Bank Nifty) never blanks the rest
+            _active.set(sym)
+            snap = _st()["snap"]
+            if snap is None:
+                continue
+            sd = _session_dates(snap)
+            sd = sd[0] if sd else None
+            rows: list[dict] = []
+            for s in STRATEGIES:
+                if s["kind"] == "nondirectional":
+                    continue
+                q = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size, session_date=sd))
+                for r in q.get("triggers", []):
+                    rows.append({**r, "strategy": s["id"], "strategy_label": s["label"],
+                                 "symbol": sym, "symbol_label": inst["label"], "kind": "index"})
+            _enrich_trigger_rows(rows)                  # uses this instrument's cached reads/actioned
+            index_rows += [r for r in rows if not r.get("actioned")]
+    finally:
+        _active.set(prev)
+
+    stock_rows: list[dict] = []                         # the scanner's "focus here" set (no extra tokens)
+    for r in (_SCAN.get("rows") or []):
+        if not r.get("highlight") or not r.get("trigger"):
             continue
-        q = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size, session_date=sd))
-        for r in q.get("triggers", []):
-            rows.append({**r, "strategy": s["id"], "strategy_label": s["label"]})
-    _enrich_trigger_rows(rows)
-    rows = [r for r in rows if not r.get("actioned")]      # the inbox = still-undecided
-    rows.sort(key=lambda r: r.get("ts") or "")
-    return {"session": sd, "rows": rows, "count": len(rows)}
+        t = r["trigger"]
+        cl = r.get("claude")
+        stock_rows.append({
+            "symbol": r["symbol"], "symbol_label": r["symbol"], "kind": "stock",
+            "strategy": "trade1", "strategy_label": "3-min", "ts": t.get("ts"),
+            "direction": t.get("direction"), "entry": t.get("entry"),
+            "stop": t.get("stop"), "target": t.get("target"), "rr": t.get("rr"),
+            "mtf_confidence": t.get("mtf_confidence"), "highlight": True,
+            "pcr": r.get("pcr"), "oi_bias": r.get("oi_bias"),
+            "read": ({"recommendation": cl.get("recommendation"),
+                      "confidence": cl.get("confidence")} if cl else None),
+            "claude_full": r.get("claude_full"),
+        })
+
+    rows = index_rows + stock_rows
+    rows.sort(key=lambda r: (not r.get("highlight"), r.get("ts") or ""))   # highlights first, then by ts
+    return {"rows": rows, "count": len(rows), "index_count": len(index_rows),
+            "stock_count": len(stock_rows), "scan_at": _SCAN.get("at")}
 
 
 @app.post("/api/reask")

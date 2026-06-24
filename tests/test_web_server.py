@@ -780,17 +780,50 @@ def test_decision_acts_on_non_head_trigger_by_ts(client, monkeypatch, tmp_path):
 def test_pending_inbox_holds_undecided_triggers(client, monkeypatch):
     """The live inbox lists today's undecided directional triggers (each with its read) and
     drops a row as soon as it's actioned — so a trigger missed live is held until decided."""
+    monkeypatch.setattr(srv, "instrument_list",          # scope to one index for this test
+                        lambda: [{"id": "NIFTY", "label": "NIFTY"}])
+    monkeypatch.setattr(srv, "_SCAN", {"rows": [], "at": 0.0})   # no scanner stocks here
     t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
     t2 = _open_trig(ts="2024-01-01T10:00:00+05:30", direction="short")
     _seed_heads(monkeypatch, trade1=[t1, t2])
     client.get("/api/snapshot")
     d = client.get("/api/pending").json()
     assert d["count"] == 2 and {r["ts"] for r in d["rows"]} == {t1["ts"], t2["ts"]}
+    assert all(r["symbol"] == "NIFTY" and r["kind"] == "index" for r in d["rows"])
     head_row = next(r for r in d["rows"] if r["ts"] == t1["ts"])
     assert head_row["read"]["recommendation"] == "stand_down"   # the head's auto-read rides along
     client.post("/api/decision", data={"action": "skip", "strategy": "trade1", "ts": t2["ts"]})
     d2 = client.get("/api/pending").json()
     assert d2["count"] == 1 and d2["rows"][0]["ts"] == t1["ts"]  # actioned row left the inbox
+
+
+def test_pending_inbox_is_cross_instrument(client, monkeypatch):
+    """The inbox aggregates BOTH indices (NIFTY + Bank Nifty) AND the scanner's highlighted
+    stocks — anything to act on anywhere — so a Bank Nifty / stock trigger isn't missed while
+    watching NIFTY. A Bank-Nifty row decides on its OWN instrument."""
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    _seed_heads(monkeypatch, trade1=[t1])               # same mocked queue for every index symbol
+    monkeypatch.setattr(srv, "_SCAN", {"at": 1.0, "rows": [{   # one highlighted scanner stock
+        "symbol": "ACME", "spot": 1234.5, "highlight": True, "pcr": 0.9, "oi_bias": "bullish",
+        "trigger": {"direction": "long", "entry": 1230.0, "stop": 1220.0, "target": 1250.0,
+                    "rr": 2.0, "mtf_confidence": 4, "ts": "2024-01-01T11:00:00+05:30"},
+        "claude": {"recommendation": "enter", "confidence": 4},
+        "claude_full": {"recommendation": "enter", "confidence": 4, "chart_analysis": "x"},
+    }]})
+    client.get("/api/snapshot")                          # builds NIFTY (active); pending builds the rest
+    d = client.get("/api/pending").json()
+    assert d["index_count"] == 2 and d["stock_count"] == 1 and d["count"] == 3
+    idx = {r["symbol"] for r in d["rows"] if r["kind"] == "index"}
+    assert idx == {"NIFTY", "BANKNIFTY"}
+    stock = next(r for r in d["rows"] if r["kind"] == "stock")
+    assert stock["symbol"] == "ACME" and stock["highlight"] and stock["claude_full"]
+    assert d["rows"][0]["kind"] == "stock"               # highlights sort first
+    # decide the Bank-Nifty row on its OWN instrument → it leaves the inbox, NIFTY stays
+    client.post("/api/decision",
+                data={"action": "skip", "strategy": "trade1", "ts": t1["ts"], "symbol": "BANKNIFTY"})
+    d2 = client.get("/api/pending").json()
+    assert d2["index_count"] == 1
+    assert {r["symbol"] for r in d2["rows"] if r["kind"] == "index"} == {"NIFTY"}
 
 
 def test_trigger_read_persists_and_survives_restart(client, monkeypatch):

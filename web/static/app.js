@@ -650,11 +650,11 @@ $("trigTbl").addEventListener("click", (e) => {     // per-row actions on the tr
   if (ds) discussTrigger(ds.dataset.discuss, ds.dataset.strat);
 });
 
-// Approve / reject / skip ANY trigger by ts (logged by date with Claude's read), then refresh.
-async function decideTrigger(ts, strat, action) {
+// Approve / reject / skip ANY trigger by ts on a given instrument (defaults to the active one).
+async function decideTrigger(ts, strat, action, symbol) {
   const fd = new FormData();
   fd.append("action", action); fd.append("strategy", strat || "trade1");
-  fd.append("ts", ts); fd.append("symbol", currentSymbol);
+  fd.append("ts", ts); fd.append("symbol", symbol || currentSymbol);
   const r = await fetch("/api/decision", { method: "POST", body: fd });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { alert(action[0].toUpperCase() + action.slice(1) + " failed: " + (d.detail || r.statusText)); return; }
@@ -662,35 +662,35 @@ async function decideTrigger(ts, strat, action) {
 }
 
 // Append a "🔄 re-ask Claude" button under the current read for a trigger.
-function _reaskButton(ts, strat) {
+function _reaskButton(ts, strat, symbol) {
   const b = document.createElement("button");
   b.className = "btn"; b.style.marginTop = "6px"; b.textContent = "🔄 re-ask Claude";
-  b.onclick = () => reaskTrigger(ts, strat);
+  b.onclick = () => reaskTrigger(ts, strat, symbol);
   $("readBox").appendChild(b);
 }
 
-// Show Claude's full saved read for a trigger + a re-ask button.
-async function discussTrigger(ts, strat) {
+// Show Claude's full saved read for a trigger + a re-ask button (cross-instrument via symbol).
+async function discussTrigger(ts, strat, symbol) {
   try {
     const rd = await (await fetch(
-      `/api/trigger-read?strategy=${strat || "trade1"}&ts=${encodeURIComponent(ts)}&symbol=${sym()}`)).json();
+      `/api/trigger-read?strategy=${strat || "trade1"}&ts=${encodeURIComponent(ts)}&symbol=${symbol || currentSymbol}`)).json();
     if (rd && rd.recommendation) renderRead(rd);
     else $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger yet.</span>";
   } catch (e) { $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger.</span>"; }
-  _reaskButton(ts, strat);
+  _reaskButton(ts, strat, symbol);
   $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 // Re-run Claude on demand for a trigger (fresh take); updates the read + table + inbox.
-async function reaskTrigger(ts, strat) {
+async function reaskTrigger(ts, strat, symbol) {
   $("readBox").insertAdjacentHTML("beforeend", "<div class='muted'>re-asking Claude…</div>");
   const fd = new FormData();
-  fd.append("strategy", strat || "trade1"); fd.append("ts", ts); fd.append("symbol", currentSymbol);
+  fd.append("strategy", strat || "trade1"); fd.append("ts", ts); fd.append("symbol", symbol || currentSymbol);
   try {
     const r = await fetch("/api/reask", { method: "POST", body: fd });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
-    renderRead(d); _reaskButton(ts, strat);
+    renderRead(d); _reaskButton(ts, strat, symbol);
     fetchTable(); fetchPending();
   } catch (e) { $("readBox").insertAdjacentHTML("beforeend", `<div class='muted'>re-ask failed: ${e.message}</div>`); }
 }
@@ -716,30 +716,48 @@ async function fetchPending() {
   } catch (e) { /* keep last */ }
 }
 
+let _pendingRows = [];                               // last inbox rows (for the stock 💬 lookup)
+
 function renderPending(rows, count) {
   const card = $("pendingCard");
+  _pendingRows = rows || [];
   if (!count) { card.hidden = true; _seenPending.clear(); return; }
   card.hidden = false;
   $("pendingHdr").textContent = `🔔 Pending triggers — decide each (${count})`;
-  let fresh = false;                                  // alert once per genuinely-new trigger
-  for (const r of rows) if (!_seenPending.has(r.ts)) { _seenPending.add(r.ts); fresh = true; }
+  let fresh = false;                                  // alert once per genuinely-new item (per instrument+ts)
+  for (const r of rows) { const k = (r.symbol || "") + "|" + (r.ts || ""); if (!_seenPending.has(k)) { _seenPending.add(k); fresh = true; } }
   if (fresh) { card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash"); beep(); }
-  let h = "<thead><tr><th>Time</th><th>Strategy</th><th>Trade</th><th>Claude</th><th>Decide</th></tr></thead><tbody>";
+  let h = "<thead><tr><th>Time</th><th>Symbol</th><th>Strategy</th><th>Trade</th><th>Claude</th><th>Action</th></tr></thead><tbody>";
   for (const r of rows) {
     const rd = r.read;
     const cl = rd && rd.recommendation
       ? `<span class="${rd.recommendation === "enter" ? "win-txt" : "loss-txt"}">${rd.recommendation === "enter" ? "ENTER" : "stand"}${rd.confidence != null ? " C" + rd.confidence : ""}</span>`
       : "<span class='muted'>…</span>";
-    h += `<tr><td>${r.ts.slice(11, 16)}</td><td class="muted">${r.strategy_label || ""}</td>`
-      + `<td>${r.direction} @ ${r.entry} <span class="muted">SL ${n(r.stop)} / TP ${n(r.target)}</span></td>`
-      + `<td>${cl}</td>`
-      + `<td class="trigact">`
-      + `<button class="btn ok" title="Approve / take" data-pdecide="approve" data-ts="${r.ts}" data-strat="${r.strategy || ""}">✓</button>`
-      + `<button class="btn no" title="Reject / stand down" data-pdecide="reject" data-ts="${r.ts}" data-strat="${r.strategy || ""}">✗</button>`
-      + `<button class="btn" title="Skip (not recorded)" data-pdecide="skip" data-ts="${r.ts}" data-strat="${r.strategy || ""}">⤼</button>`
-      + `<button class="btn" title="Discuss with Claude" data-pdiscuss="${r.ts}" data-strat="${r.strategy || ""}">💬</button></td></tr>`;
+    const sy = r.symbol || "", st = r.strategy || "";
+    const sym = `${r.highlight ? "🟢 " : ""}<b>${r.symbol_label || sy}</b>`;
+    let act;
+    if (r.kind === "stock") {                          // screener candidate — focus the stock to act
+      act = `<button class="btn csv" title="Open this stock's cockpit" data-focus="${sy}">Focus</button>`
+        + `<button class="btn" title="Claude's read" data-sdiscuss="${sy}|${r.ts}">💬</button>`;
+    } else {                                           // index trigger — decide inline on its instrument
+      const a = (lbl, t, act2) => `<button class="btn ${act2 === "approve" ? "ok" : act2 === "reject" ? "no" : ""}" title="${t}" data-pdecide="${act2}" data-ts="${r.ts}" data-strat="${st}" data-sym="${sy}">${lbl}</button>`;
+      act = a("✓", "Approve / take", "approve") + a("✗", "Reject / stand down", "reject")
+        + a("⤼", "Skip (not recorded)", "skip")
+        + `<button class="btn" title="Discuss with Claude" data-pdiscuss="${r.ts}" data-strat="${st}" data-sym="${sy}">💬</button>`;
+    }
+    h += `<tr><td>${(r.ts || "").slice(11, 16)}</td><td>${sym}</td><td class="muted">${r.strategy_label || ""}</td>`
+      + `<td>${r.direction} @ ${n(r.entry)} <span class="muted">SL ${n(r.stop)} / TP ${n(r.target)}</span></td>`
+      + `<td>${cl}</td><td class="trigact">${act}</td></tr>`;
   }
   $("pendingTbl").innerHTML = h + "</tbody>";
+}
+
+// Show a scanner stock's full read (already in the row — no server round-trip).
+function discussStock(key) {
+  const r = _pendingRows.find(x => ((x.symbol || "") + "|" + (x.ts || "")) === key);
+  if (r && r.claude_full) renderRead(r.claude_full);
+  else $("readBox").innerHTML = "<span class='muted'>No saved read for this stock.</span>";
+  $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 // Switch the whole cockpit to an instrument (index dropdown OR a scanner stock).
 function focusInstrument(symbolName) {
@@ -761,11 +779,15 @@ $("scanAuto").addEventListener("change", (e) => {
   localStorage.setItem("scanAuto", e.target.checked ? "1" : "0");
   if (e.target.checked) fetchScanner();              // refresh immediately when re-enabled
 });
-$("pendingTbl").addEventListener("click", (e) => {  // inbox row actions
+$("pendingTbl").addEventListener("click", (e) => {  // inbox row actions (cross-instrument)
   const d = e.target.closest("button[data-pdecide]");
-  if (d) { decideTrigger(d.dataset.ts, d.dataset.strat, d.dataset.pdecide); return; }
+  if (d) { decideTrigger(d.dataset.ts, d.dataset.strat, d.dataset.pdecide, d.dataset.sym); return; }
+  const f = e.target.closest("button[data-focus]");
+  if (f) { focusInstrument(f.dataset.focus); return; }          // stock → load its cockpit
+  const s = e.target.closest("button[data-sdiscuss]");
+  if (s) { discussStock(s.dataset.sdiscuss); return; }          // stock → show its scanner read
   const c = e.target.closest("button[data-pdiscuss]");
-  if (c) discussTrigger(c.dataset.pdiscuss, c.dataset.strat);
+  if (c) discussTrigger(c.dataset.pdiscuss, c.dataset.strat, c.dataset.sym);
 });
 $("scanTbl").addEventListener("click", (e) => {     // scanner row actions
   const f = e.target.closest("button[data-focus]");

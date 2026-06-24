@@ -656,6 +656,25 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       simulated restart, re-ask reruns + 409 on unknown ts. Suite green (311). DEFERRED: per-trigger
       isolated chat context for 💬; scanner reads persisted across restart.
 
+- [x] **Pending inbox made CROSS-INSTRUMENT (confirmed w/ trader — it was a NIFTY duplicate).** The
+      trader flagged the new 🔔 panel duplicated the NIFTY triggers already in the table below. Fix:
+      `/api/pending` now aggregates **anything to act on ANYWHERE** — (1) INDEX triggers across the
+      primary indices (NIFTY + Bank Nifty via `instrument_list()`): per index `_refresh` (TTL-cached,
+      **no Claude call** → zero extra tokens), collect today's un-actioned directional triggers,
+      `_enrich_trigger_rows` per-instrument (its own cached reads), tag `symbol`/`kind:"index"`; each
+      index instrument refreshed inside the loop with `_active` saved/restored, per-index try/except so
+      a Bank-Nifty pull failure never blanks NIFTY. (2) STOCK focus-candidates from the scanner
+      `_SCAN` highlights (trigger ∧ OI ∧ Claude agree) → `kind:"stock"` rows with **Focus** +
+      💬(`claude_full`), no inline decide (focus the stock to act). Returns `index_count`/`stock_count`,
+      highlights-first. Frontend `renderPending`: a **Symbol** column; index rows decide inline with
+      `data-sym` so the action hits the RIGHT instrument (`decideTrigger`/`discussTrigger`/`reaskTrigger`
+      gained a `symbol` arg, default `currentSymbol`); stock rows Focus (`focusInstrument`) + show the
+      scanner read client-side; alert key = `symbol|ts`. The NIFTY table below keeps its distinct job
+      (per-instrument replay + P&L). Tested: cross-instrument aggregation (2 indices + 1 stock), a
+      Bank-Nifty row decides on its own instrument + drops, single-instrument scoping. Suite green (312).
+      NOTE: Bank Nifty's live Breeze chain/expiry still needs open-network verification (try/except
+      isolates it); stock rows = highlights only (easy to widen to all triggers).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
