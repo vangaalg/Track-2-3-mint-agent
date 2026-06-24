@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from feeds import db
+
 DATA_DIR = Path("data/oi")
 _FMT = "%Y%m%dT%H%M%S"
 
@@ -27,8 +29,14 @@ def _ist_naive(ts) -> pd.Timestamp:
 
 
 def save_chain(symbol: str, ts, spot, chain: pd.DataFrame,
-               base: str | Path = DATA_DIR) -> Path:
-    """Persist one chain snapshot. Idempotent per (symbol, minute)."""
+               base: str | Path = DATA_DIR):
+    """Persist one chain snapshot. Idempotent per (symbol, minute).
+
+    Routes to Postgres when DATABASE_URL is configured (returns None), else writes one
+    parquet per snapshot under ``data/oi/<symbol>/`` (returns the Path).
+    """
+    if db.enabled():
+        return db.oi_chain_save(symbol, ts, spot, chain)
     d = Path(base) / symbol
     d.mkdir(parents=True, exist_ok=True)
     t = _ist_naive(ts)
@@ -62,6 +70,8 @@ def load_nearest(symbol: str, ts, base: str | Path = DATA_DIR,
     (e.g. from a different session) is never silently shown as "as-of". Default None
     keeps the unbounded behaviour.
     """
+    if db.enabled():
+        return db.oi_chain_nearest(symbol, ts, max_age_min)
     target = _ist_naive(ts)
     best, best_t = None, None
     for t, f in list_snapshots(symbol, base):
@@ -74,3 +84,24 @@ def load_nearest(symbol: str, ts, base: str | Path = DATA_DIR,
     if max_age_min is not None and (target - best_t).total_seconds() > max_age_min * 60:
         return None
     return pd.read_parquet(best)
+
+
+def load_history(symbol: str, day: str | None = None,
+                 base: str | Path = DATA_DIR) -> pd.DataFrame | None:
+    """All per-strike chain snapshots for ``symbol`` (optionally one ``day`` YYYY-MM-DD)
+    concatenated into one frame (ts·spot·strike·call/put OI+LTP). Postgres-backed when
+    configured, else concatenates the parquet snapshots."""
+    if db.enabled():
+        return db.oi_chain_history(symbol, day)
+    snaps = list_snapshots(symbol, base)
+    if day and day != "all":
+        snaps = [(t, f) for t, f in snaps if str(t.date()) == day]
+    frames = []
+    for _, f in snaps:
+        try:
+            frames.append(pd.read_parquet(f))
+        except Exception:
+            continue
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True)

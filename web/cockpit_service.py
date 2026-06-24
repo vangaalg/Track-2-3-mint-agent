@@ -52,12 +52,12 @@ import pandas as pd
 import web.server as server
 from web.server import app as cockpit             # the cockpit FastAPI app (routes + static)
 from deploy import control, gitsync
-from feeds import recorder
+from feeds import recorder, db
 
 STATUS: dict = {"started": None, "last_push": None, "last_pull": None,
                 "token_restored": False, "errors": [],
                 "last_cycle": None, "saved": [], "macro": None, "recorder": "off",
-                "scanner": "off", "last_scan": None, "highlights": None}
+                "scanner": "off", "last_scan": None, "highlights": None, "db": "off"}
 
 @asynccontextmanager
 async def lifespan(app):
@@ -257,6 +257,17 @@ def _scanner_thread() -> None:
 
 def _start_background() -> None:
     STATUS["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    # Durable time-series store: when DATABASE_URL is set (Railway Postgres), create the
+    # schema up front so the first OI/macro write can't fail on a missing table — and so
+    # /healthz shows the DB is reachable. Unset => parquet fallback (no-op here).
+    if db.enabled():
+        try:
+            db.init_schema()
+            STATUS["db"] = "connected"
+        except Exception as exc:
+            STATUS["db"] = f"error: {exc}"
+    else:
+        STATUS["db"] = "parquet (no DATABASE_URL)"
     # Shared data repo = READ-WRITE: this combined service is the SOLE writer (cockpit reads
     # the token + OI store, and the in-process recorder writes fresh OI/macro). One writer →
     # no two-service conflict.

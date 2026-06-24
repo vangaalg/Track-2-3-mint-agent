@@ -82,10 +82,29 @@ SEPARATE private repo.
   command is needed**. (If you previously set a custom start command to this same line, that's
   fine too — you can clear it.)
 
+## 1b. Add Railway Postgres (durable OI/PCR/macro store) — recommended
+The OI chain, the **PCR/max-pain time series**, and macro now persist to Postgres instead of
+parquet-in-git. This removes the ≤30-min git-sync loss window and means a redeploy never loses
+intraday OI (which can't be backfilled). The journal still uses SQLite in the journal repo.
+
+1. Railway project → **New → Database → Add PostgreSQL**.
+2. Open your cockpit **service → Variables → Reference** the Postgres plugin's **`DATABASE_URL`**
+   (Railway exposes it as a shared variable — add a reference so the cockpit sees it). The
+   private-network URL is fine and fastest.
+3. Redeploy. On boot the service **creates the tables itself** (`oi_chain`, `oi_summary`,
+   `macro`) — no migration step. `/healthz` then shows `db: connected` (or `db: parquet (no
+   DATABASE_URL)` if it isn't wired). The schema is idempotent, so restarts are safe.
+4. To browse the data: Railway → the Postgres plugin → **Data** tab, or connect any SQL client
+   with the `DATABASE_URL` and `SELECT * FROM oi_summary ORDER BY ts;`.
+
+> The data repo (`DATA_REPO_URL`) is still used for the **daily Breeze token** file; OI/macro no
+> longer go there once `DATABASE_URL` is set. Leave `DATA_REPO_URL` configured for the token.
+
 ## 2. Environment variables (Railway → Variables)
 | Variable | Value |
 |---|---|
 | `COCKPIT_USER` / `COCKPIT_PASSWORD` | the login for the cockpit (you choose) — **required**, fail-closed |
+| `DATABASE_URL` | **Railway Postgres** — the durable OI/PCR/macro store (see §1b). Auto-injected when you reference the Postgres plugin. If unset, the OI/macro stores fall back to parquet-in-the-data-repo (the old ≤30-min loss window). |
 | `ANTHROPIC_API_KEY` | for Claude's read/sparring |
 | `BREEZE_API_KEY` / `BREEZE_API_SECRET` | your Breeze app creds |
 | `BREEZE_SESSION_TOKEN` | today's token (you'll refresh it daily in the cockpit) |
@@ -116,7 +135,9 @@ SEPARATE private repo.
   (amber button) whenever the feed looks unauthenticated. The response shows
   `cockpit: connected · recorder: in-process (combined service)`.
 - **Recorder:** `/cockpit-status` (or `/healthz`) shows `recorder: running`, a fresh
-  `last cycle`, and `saved: ['NIFTY', …]` advancing every 15 min.
+  `last cycle`, and `saved: ['NIFTY', …]` advancing every 15 min. `db: connected` confirms the
+  Postgres store is wired (the cockpit ALSO writes a PCR summary row whenever it fetches OI, so
+  the series fills even before the recorder's next cycle).
 - **Journal:** every approve/reject commits to `JOURNAL_REPO_URL` (plus a periodic push),
   so your track record + Claude's memory survive redeploys. `git clone` it to analyze.
 
@@ -127,8 +148,10 @@ SEPARATE private repo.
   the recorder. Avoid redeploying during market hours.
 - **Breeze from a Railway IP** — verify the first `connected` probe. If Breeze blocks the cloud
   IP, fall back to a small always-on box you control (same Procfile/command).
-- **Data-loss window** ≤ `SYNC_EVERY_MIN` (default 30 min) if the container dies between pushes
-  (the token is also pushed eagerly on entry).
+- **Data-loss window** — with `DATABASE_URL` set, OI/PCR/macro land in Postgres immediately, so
+  there is **no loss window** for the flywheel (rows survive any redeploy/crash). Only the daily
+  token file rides the data repo's `SYNC_EVERY_MIN` (default 30 min) cadence, and it's pushed
+  eagerly on entry. Without `DATABASE_URL` the old ≤30-min parquet window applies.
 - **Secrets in the data repo** — API key/secret live only in env, never the repo. The one
   exception is the **daily Breeze session token**: it's persisted under `data/recorder_state/`
   so it survives restarts (a deliberate tradeoff — the token expires daily and the data repo is

@@ -582,6 +582,30 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       egress-locked sandbox can't verify them; confirm on the open-network machine. Exact per-stock F&O lot sizes
       still to be filled into the registry for ₹ (scanner is points-based for now).
 
+- [x] **Durable time-series store on Railway Postgres (`feeds/db.py`) + cockpit writes the PCR row.**
+      Root-caused the trader's "PCR table blank, OI only at 15:27": the PCR/max-pain series was
+      written ONLY by the recorder loop (never the cockpit), and the recorder wasn't running through
+      the day (ties to the Railway auto-deploy gap) — the single 15:27 chain was a lone cockpit OI
+      fetch (`web/server.py` saved the chain but NOT the summary). Two fixes. (1) **Postgres backend:**
+      new `feeds/db.py` — when `DATABASE_URL` is set, the three time-series stores (`oi_store` chain,
+      `oi_summary_store` PCR series, `macro_store`) read+write Postgres instead of parquet-in-git
+      (tables `oi_chain`/`oi_summary`/`macro`, lazy idempotent schema, upsert-on-conflict, ts as IST
+      iso to match the parquet shape so `/api/oi-history`+`/api/oi-download` are unchanged). Unset →
+      parquet fallback (local/offline/sandbox + the whole suite). Removes the ≤30-min git-sync
+      loss window (intraday OI can't be backfilled) and survives redeploys. Connection factory is
+      injectable (`set_connect`) → offline round-trip tests with a fake in-memory conn (no real PG).
+      `oi_store.load_history` centralizes the chain-concat (was inline in `web._chain_history_df`).
+      Schema inits on boot in `cockpit_service._start_background` → `/healthz` shows `db: connected`.
+      (2) **Cockpit-writes-summary gap closed:** `web/server.py._refresh` now appends the PCR summary
+      (`summarise_chain`+`wall_levels`+`offsets_for`) alongside the chain on each fresh OI bucket, so
+      the series fills whenever EITHER the cockpit OR the recorder is live. Decided w/ trader: Railway
+      Postgres (same code as Supabase — just the `DATABASE_URL`; weighed both). `psycopg2-binary` dep;
+      DEPLOY.md §1b (add the Postgres plugin, reference `DATABASE_URL`). Tested in tests/test_db_store.py
+      (6: summary/chain/nearest/macro round-trips + dedup + enabled-toggle). Suite green (304). REMAINING
+      cause is OPERATIONAL: the service must run continuously through the session (fix Railway auto-deploy
+      + enter the token ~09:10) for a full-day series — Postgres just makes what IS recorded durable.
+      Journal SQLite → Postgres is a deferred follow-on (lower-frequency, already in the journal repo).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

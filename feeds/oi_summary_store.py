@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from feeds import db
+
 STORE_DIR = Path("data/oi_summary")
 
 
@@ -23,6 +25,8 @@ def store_path(symbol: str, root: str | Path | None = None) -> Path:
 
 
 def load_summary(symbol: str, root: str | Path | None = None) -> pd.DataFrame | None:
+    if db.enabled():
+        return db.oi_summary_load(symbol)
     path = store_path(symbol, root)
     if not path.exists():
         return None
@@ -54,7 +58,10 @@ def _row(ts, spot, summary: dict, levels: dict) -> dict:
 def append_summary(symbol: str, ts, spot, summary: dict, levels: dict,
                    root: str | Path | None = None) -> pd.DataFrame:
     """Append one summary row, dedup on ts (newest wins), persist, return combined."""
-    new = pd.DataFrame([_row(ts, spot, summary, levels)]).set_index("ts")
+    row = _row(ts, spot, summary, levels)
+    if db.enabled():
+        return db.oi_summary_append(symbol, row)
+    new = pd.DataFrame([row]).set_index("ts")
     existing = load_summary(symbol, root)
     combined = new if existing is None else pd.concat([existing, new])
     combined = combined[~combined.index.duplicated(keep="last")].sort_index()

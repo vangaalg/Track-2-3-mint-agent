@@ -28,6 +28,7 @@ from indicators.directional import (
 from feeds.snapshot import build_snapshot, build_snapshot_at
 from feeds.breeze_oi import make_chain_fetcher
 from feeds.oi import chain_table, summarise_chain
+from feeds.oi_levels import wall_levels
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store, oi_summary_store, scanner
@@ -230,11 +231,17 @@ def _refresh(symbol: str, size: int) -> None:
         _st()["props"] = props
         _st()["table"] = table
         _st()["snap_at"] = now
-        # log the chain snapshot (the OI flywheel) once per fresh OI bucket
+        # log the chain snapshot (the OI flywheel) once per fresh OI bucket — BOTH the raw
+        # per-strike chain AND the compact PCR/max-pain/walls summary row, so the PCR-over-time
+        # series fills whenever the cockpit is live, not only when the recorder loop runs.
         if LOG_OI and chain is not None and not chain.empty \
                 and _st().get("oi_logged_at") != _st()["oi_at"]:
             try:
                 oi_store.save_chain(symbol, snap.ts, snap.spot, chain)
+                summary = summarise_chain(chain, snap.spot)
+                levels = wall_levels(summary, offsets_for(inst, snap.spot))
+                oi_summary_store.append_summary(symbol, snap.ts, snap.spot, summary, levels,
+                                                root=OI_SUMMARY_ROOT)
                 _st()["oi_logged_at"] = _st()["oi_at"]
             except Exception:
                 pass
@@ -675,18 +682,9 @@ def _chain_history_df(sym: str, day: str | None):
     """Concatenate the recorder's per-strike chain snapshots for ``sym`` (optionally one
     ``day``) into a single frame: ts·spot·strike·call/put OI+LTP, one row per strike/cycle."""
     base = OI_ROOT or oi_store.DATA_DIR
-    snaps = oi_store.list_snapshots(sym, base=base)
-    if day and day != "all":
-        snaps = [(t, f) for t, f in snaps if str(t.date()) == day]
-    frames = []
-    for _, f in snaps:
-        try:
-            frames.append(pd.read_parquet(f))
-        except Exception:
-            continue
-    if not frames:
+    df = oi_store.load_history(sym, day, base=base)
+    if df is None or df.empty:
         return None
-    df = pd.concat(frames, ignore_index=True)
     cols = [c for c in ("ts", "spot", "strike", "call_oi", "put_oi", "call_ltp", "put_ltp")
             if c in df.columns] + [c for c in df.columns
                                    if c not in ("ts", "spot", "strike", "call_oi", "put_oi",

@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from feeds import db
+
 STORE_DIR = Path("data/macro")
 
 
@@ -31,6 +33,8 @@ def _flatten(macro: dict | None, ts) -> dict:
 
 
 def load_macro(root: str | Path | None = None) -> pd.DataFrame | None:
+    if db.enabled():
+        return db.macro_load()
     path = store_path(root)
     if not path.exists():
         return None
@@ -40,7 +44,10 @@ def load_macro(root: str | Path | None = None) -> pd.DataFrame | None:
 
 def append_macro(macro: dict | None, ts, root: str | Path | None = None) -> pd.DataFrame:
     """Append one macro snapshot, dedup on ts (newest wins), persist, return combined."""
-    new = pd.DataFrame([_flatten(macro, ts)]).set_index("ts")
+    row = _flatten(macro, ts)
+    if db.enabled():
+        return db.macro_append(row)
+    new = pd.DataFrame([row]).set_index("ts")
     existing = load_macro(root)
     combined = new if existing is None else pd.concat([existing, new])
     combined = combined[~combined.index.duplicated(keep="last")].sort_index()
