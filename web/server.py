@@ -148,6 +148,9 @@ def _new_state() -> dict:
         "read": None, "analysed_bar": None,
         "chat": [],
         "queues": {}, "heads": {}, "actioned": {}, "reads": {},
+        # durable read persistence: (sid,ts) already written to the journal; a per-refresh
+        # cache of reads loaded back from the store (survives a restart) + its stamp.
+        "read_saved": set(), "stored_reads": {}, "stored_reads_at": 0.0,
         # manual exits the trader took off the triggers table: overlay + store-row ids
         "exits": {}, "records": {},
         # one-position-at-a-time: the open APPROVED trade per strategy (auto-flattened on a new one)
@@ -554,7 +557,24 @@ def _run_head_read(sid: str, head: dict) -> dict:
         cached["claude_target"], cached["claude_stop"], cached["claude_rr"] = tgt, stp, rr
     _st()["reads"][(sid, head["ts"])] = cached
     _st()["read"] = read              # back-compat for _save_context_for / chat
+    _persist_trigger_read(sid, head, prop, cached)   # durable: survives a restart
     return cached
+
+
+def _persist_trigger_read(sid: str, head: dict, prop, cached: dict) -> None:
+    """Persist a frozen trigger read to the journal store (kind='trigger_read') so the table
+    still shows what Claude said after a Railway restart. Written once per (sid, ts) — a re-ask
+    discards the guard key first, so it writes a fresh row that the fallback then prefers."""
+    key = (sid, head.get("ts"))
+    if key in _st()["read_saved"]:
+        return
+    try:
+        store.save_trigger_read(
+            (getattr(_st().get("snap"), "instrument", None) or _active.get()).upper(),
+            sid, head.get("ts"), cached, path=JOURNAL_DB)
+        _st()["read_saved"].add(key)
+    except Exception:
+        pass                          # persistence is best-effort; never break the read
 
 
 def _run_read(sid: str = "trade1") -> dict:
@@ -828,15 +848,34 @@ def _condor_today(snap, size: int, session_date=None, lot_size: int | None = Non
                         "hit_rate": round(wins / (wins + losses), 2) if (wins + losses) else None}}
 
 
+def _stored_reads() -> dict:
+    """Per-refresh cache of PERSISTED trigger reads (kind='trigger_read') for the active
+    instrument, indexed by (strategy, ts) — the post-restart fallback so the table still shows
+    Claude's verdict after a Railway redeploy (when the in-memory cache is empty). Newest row
+    wins (load_records is id-ascending), so a re-ask's fresh row takes precedence."""
+    st, now = _st(), time.time()
+    if st.get("stored_reads") and now - st.get("stored_reads_at", 0.0) < 30:
+        return st["stored_reads"]
+    out: dict = {}
+    try:
+        for rec in store.load_trigger_reads(_active.get().upper(), path=JOURNAL_DB):
+            out[(rec["strategy"], rec["ts"])] = rec["read"]   # newest last → latest wins
+    except Exception:
+        out = {}
+    st["stored_reads"], st["stored_reads_at"] = out, now
+    return out
+
+
 def _enrich_trigger_rows(rows: list[dict]) -> None:
     """Attach each trigger's auto-computed Claude read + actioned status (in place), so the
     triggers table can show Claude's verdict and offer Approve/Reject/Discuss per row — the
     decision the trader missed in the live 3-min window. Reads are the same per-(strategy,ts)
-    cache the head auto-fills as each trigger fires; a row stays read even after it resolves."""
-    reads, actioned = _st().get("reads", {}), _st().get("actioned", {})
+    cache the head auto-fills as each trigger fires; a row stays read even after it resolves.
+    Falls back to the persisted read (``_stored_reads``) when the in-memory cache misses."""
+    reads, actioned, stored = _st().get("reads", {}), _st().get("actioned", {}), _stored_reads()
     for r in rows:
         key = (r.get("strategy"), r.get("ts"))
-        cached = reads.get(key)
+        cached = reads.get(key) or stored.get(key)
         r["read"] = {
             "recommendation": cached.get("recommendation"),
             "confidence": cached.get("confidence"),
@@ -902,10 +941,53 @@ def trigger_read(strategy: str = "trade1", ts: str = "", symbol: str = "NIFTY"):
     """Claude's full saved read for one trigger (cached as it fired) — for the table's
     💬 Discuss action. 404 until the trigger has been auto-read."""
     _active.set(symbol.upper())
-    cached = _st().get("reads", {}).get((strategy, ts))
+    cached = _st().get("reads", {}).get((strategy, ts)) or _stored_reads().get((strategy, ts))
     if cached is None:
         raise HTTPException(status_code=404, detail="no read for this trigger yet")
     return cached
+
+
+@app.get("/api/pending")
+def pending(size: int = DEFAULT_SIZE, symbol: str = "NIFTY"):
+    """TODAY's directional triggers the trader hasn't decided on yet (the live inbox), each with
+    its Claude read — so a trigger that fired while they weren't looking is HELD until actioned.
+    Always today's session, independent of the table's date/strategy filter."""
+    _active.set(symbol.upper())
+    snap = _st()["snap"]
+    if snap is None:
+        raise HTTPException(status_code=409, detail="no snapshot yet")
+    dates = _session_dates(snap)
+    sd = dates[0] if dates else None
+    rows: list[dict] = []
+    for s in STRATEGIES:
+        if s["kind"] == "nondirectional":
+            continue
+        q = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size, session_date=sd))
+        for r in q.get("triggers", []):
+            rows.append({**r, "strategy": s["id"], "strategy_label": s["label"]})
+    _enrich_trigger_rows(rows)
+    rows = [r for r in rows if not r.get("actioned")]      # the inbox = still-undecided
+    rows.sort(key=lambda r: r.get("ts") or "")
+    return {"session": sd, "rows": rows, "count": len(rows)}
+
+
+@app.post("/api/reask")
+def reask(strategy: str = Form("trade1"), ts: str = Form(...), symbol: str = Form("NIFTY")):
+    """Re-run Claude for a trigger ON DEMAND (the trader wants a fresh take). Recomputes against
+    the live snapshot, overwrites the cached read, and persists a fresh trigger_read row."""
+    _active.set(symbol.upper())
+    if strategy not in _STRAT:
+        raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
+    trig = next((t for t in _st().get("queues", {}).get(strategy, {}).get("triggers", [])
+                 if t.get("ts") == ts), None)
+    if trig is None:
+        raise HTTPException(status_code=409, detail="trigger not found — refresh and re-read")
+    _st()["read_saved"].discard((strategy, ts))            # force a fresh persisted row
+    _st()["stored_reads_at"] = 0.0                         # invalidate the stored-read cache
+    try:
+        return _run_head_read(strategy, trig)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Claude unavailable: {exc}")
 
 
 @app.post("/api/exit")

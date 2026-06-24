@@ -174,6 +174,7 @@ def load_records(path: str | Path = DB_PATH, limit: int | None = None,
     p = Path(path)
     if not p.exists():
         return []
+    init_db(path)            # the file may exist with only the trigger_reads table — ensure decisions
     clauses, params = [], []
     if kind == "live":
         clauses.append("(kind='live' OR kind IS NULL)")
@@ -190,3 +191,41 @@ def load_records(path: str | Path = DB_PATH, limit: int | None = None,
              f"LIMIT {int(limit)}) ORDER BY id")
     with _connect(path) as conn:
         return [_row_to_dict(r) for r in conn.execute(q, params).fetchall()]
+
+
+# --------------------------------------------------------------------------- #
+# Trigger reads — Claude's frozen per-trigger read (separate table so it never
+# pollutes the decisions/track-record queries). Survives a restart.
+# --------------------------------------------------------------------------- #
+def init_trigger_reads(path: str | Path = DB_PATH) -> None:
+    with _connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS trigger_reads ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, logged_at TEXT, symbol TEXT, "
+            "strategy TEXT, ts TEXT, read_json TEXT)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_treads_sym ON trigger_reads(symbol)")
+
+
+def save_trigger_read(symbol: str, strategy: str, ts: str, read: dict | None,
+                      path: str | Path = DB_PATH) -> None:
+    """Append one frozen trigger read. Re-asks append a fresh row (load returns latest-wins)."""
+    init_trigger_reads(path)
+    with _connect(path) as conn:
+        conn.execute(
+            "INSERT INTO trigger_reads (logged_at, symbol, strategy, ts, read_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), symbol, strategy, ts,
+             json.dumps(read) if read is not None else None))
+
+
+def load_trigger_reads(symbol: str, path: str | Path = DB_PATH) -> list[dict]:
+    """All persisted reads for ``symbol`` (newest last), each ``{strategy, ts, read}``."""
+    if not Path(path).exists():
+        return []
+    init_trigger_reads(path)
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT strategy, ts, read_json FROM trigger_reads WHERE symbol=? ORDER BY id",
+            (symbol,)).fetchall()
+    return [{"strategy": r["strategy"], "ts": r["ts"],
+             "read": json.loads(r["read_json"]) if r["read_json"] else None} for r in rows]

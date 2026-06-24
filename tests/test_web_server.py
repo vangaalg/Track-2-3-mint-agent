@@ -59,7 +59,7 @@ def client(monkeypatch, tmp_path):
     srv._state.update(snap=None, prop=None, chain=None, snap_at=0.0, oi_at=0.0,
                       read=None, analysed_bar=None, chat=[],
                       queues={}, heads={}, actioned={}, reads={}, exits={}, records={},
-                      position={})
+                      position={}, read_saved=set(), stored_reads={}, stored_reads_at=0.0)
     return TestClient(srv.app)
 
 
@@ -775,3 +775,51 @@ def test_decision_acts_on_non_head_trigger_by_ts(client, monkeypatch, tmp_path):
     assert head["ts"] == t1["ts"]                                # live head still t1
     assert any(rec["proposal"]["ts"] == t2["ts"]                 # t2's frozen levels were logged
                for rec in store.load_records(srv.JOURNAL_DB))
+
+
+def test_pending_inbox_holds_undecided_triggers(client, monkeypatch):
+    """The live inbox lists today's undecided directional triggers (each with its read) and
+    drops a row as soon as it's actioned — so a trigger missed live is held until decided."""
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    t2 = _open_trig(ts="2024-01-01T10:00:00+05:30", direction="short")
+    _seed_heads(monkeypatch, trade1=[t1, t2])
+    client.get("/api/snapshot")
+    d = client.get("/api/pending").json()
+    assert d["count"] == 2 and {r["ts"] for r in d["rows"]} == {t1["ts"], t2["ts"]}
+    head_row = next(r for r in d["rows"] if r["ts"] == t1["ts"])
+    assert head_row["read"]["recommendation"] == "stand_down"   # the head's auto-read rides along
+    client.post("/api/decision", data={"action": "skip", "strategy": "trade1", "ts": t2["ts"]})
+    d2 = client.get("/api/pending").json()
+    assert d2["count"] == 1 and d2["rows"][0]["ts"] == t1["ts"]  # actioned row left the inbox
+
+
+def test_trigger_read_persists_and_survives_restart(client, monkeypatch):
+    """Each auto-read is persisted; after a restart (in-memory cache gone) the table still
+    shows Claude's verdict via the stored-read fallback."""
+    from journal import store
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    _seed_heads(monkeypatch, trade1=[t1])
+    client.get("/api/snapshot")                       # auto-read → persisted
+    saved = store.load_trigger_reads("NIFTY", path=srv.JOURNAL_DB)
+    assert any(s["strategy"] == "trade1" and s["ts"] == t1["ts"] for s in saved)
+    st = srv._st("NIFTY")                             # simulate a restart
+    st["reads"] = {}; st["stored_reads"] = {}; st["stored_reads_at"] = 0.0
+    rows = client.get("/api/triggers?strategy=trade1").json()["triggers"]
+    row = next(r for r in rows if r["ts"] == t1["ts"])
+    assert row["read"] is not None and row["read"]["recommendation"] == "stand_down"
+
+
+def test_reask_reruns_claude_for_a_trigger(client, monkeypatch):
+    """Re-ask re-runs Claude for a trigger on demand (fresh verdict overwrites the cache);
+    an unknown ts is a 409."""
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    _seed_heads(monkeypatch, trade1=[t1])
+    client.get("/api/snapshot")
+    assert srv._st("NIFTY")["reads"][("trade1", t1["ts"])]["recommendation"] == "stand_down"
+    monkeypatch.setattr(srv, "READ_COMPLETER", lambda system, user: ClaudeRead(
+        agrees_with_engine=True, chart_analysis="c", oi_analysis="o", where_moving="w",
+        right_trade="r", challenge="ch", recommendation="enter", confidence=5, key_risk="k"))
+    r = client.post("/api/reask", data={"strategy": "trade1", "ts": t1["ts"]})
+    assert r.status_code == 200 and r.json()["recommendation"] == "enter"
+    assert srv._st("NIFTY")["reads"][("trade1", t1["ts"])]["recommendation"] == "enter"
+    assert client.post("/api/reask", data={"strategy": "trade1", "ts": "nope"}).status_code == 409

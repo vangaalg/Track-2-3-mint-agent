@@ -81,6 +81,10 @@ td.conf { font-weight:600; white-space:nowrap; }
 .scanhdr h2 { margin:0; }
 .pending-badge { background:var(--amber); color:#1a1a1a; border-radius:10px; padding:1px 8px;
   font-weight:600; font-size:11px; margin-right:6px; }
+#pendingCard { border:1px solid var(--amber); }
+#pendingCard h2 { color:var(--amber); }
+@keyframes flashpulse { 0% { box-shadow:0 0 0 0 rgba(214,160,43,.55); } 100% { box-shadow:0 0 0 14px rgba(214,160,43,0); } }
+.flash { animation: flashpulse .8s ease-out 2; }
 .trigact { white-space:nowrap; }
 .trigact .btn { padding:2px 7px; margin-right:3px; }
 .btn.ok { background:rgba(46,158,75,.22); border-color:var(--green); }

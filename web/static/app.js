@@ -17,6 +17,7 @@ let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null, _t
 let _trigDates = [], _trigStrats = [];
 let _pcrDay = "all", _pcrDays = [];          // PCR-over-time: recorded session picker
 let _scanRows = [];                          // last scanner rows (for the 💬 full-read lookup)
+let _seenPending = new Set();                // pending trigger ts already alerted (one beep each)
 
 async function poll() {
   try {
@@ -31,7 +32,7 @@ async function poll() {
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory();
+    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending();
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
     // The token banner is driven by the real Breeze connection state (refreshTokenStatus),
     // NOT by benign OI notes — so a valid token no longer re-prompts on every refresh.
@@ -649,18 +650,26 @@ $("trigTbl").addEventListener("click", (e) => {     // per-row actions on the tr
   if (ds) discussTrigger(ds.dataset.discuss, ds.dataset.strat);
 });
 
-// Approve / reject ANY trigger row by ts (logged by date with Claude's read), then refresh.
+// Approve / reject / skip ANY trigger by ts (logged by date with Claude's read), then refresh.
 async function decideTrigger(ts, strat, action) {
   const fd = new FormData();
   fd.append("action", action); fd.append("strategy", strat || "trade1");
   fd.append("ts", ts); fd.append("symbol", currentSymbol);
   const r = await fetch("/api/decision", { method: "POST", body: fd });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) { alert((action === "approve" ? "Approve" : "Reject") + " failed: " + (d.detail || r.statusText)); return; }
-  fetchTable(); fetchRecord();
+  if (!r.ok) { alert(action[0].toUpperCase() + action.slice(1) + " failed: " + (d.detail || r.statusText)); return; }
+  fetchTable(); fetchRecord(); fetchPending();        // the inbox drops the decided row
 }
 
-// Show Claude's full saved read for a trigger and jump to the chat to discuss it.
+// Append a "🔄 re-ask Claude" button under the current read for a trigger.
+function _reaskButton(ts, strat) {
+  const b = document.createElement("button");
+  b.className = "btn"; b.style.marginTop = "6px"; b.textContent = "🔄 re-ask Claude";
+  b.onclick = () => reaskTrigger(ts, strat);
+  $("readBox").appendChild(b);
+}
+
+// Show Claude's full saved read for a trigger + a re-ask button.
 async function discussTrigger(ts, strat) {
   try {
     const rd = await (await fetch(
@@ -668,7 +677,69 @@ async function discussTrigger(ts, strat) {
     if (rd && rd.recommendation) renderRead(rd);
     else $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger yet.</span>";
   } catch (e) { $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger.</span>"; }
+  _reaskButton(ts, strat);
   $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// Re-run Claude on demand for a trigger (fresh take); updates the read + table + inbox.
+async function reaskTrigger(ts, strat) {
+  $("readBox").insertAdjacentHTML("beforeend", "<div class='muted'>re-asking Claude…</div>");
+  const fd = new FormData();
+  fd.append("strategy", strat || "trade1"); fd.append("ts", ts); fd.append("symbol", currentSymbol);
+  try {
+    const r = await fetch("/api/reask", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    renderRead(d); _reaskButton(ts, strat);
+    fetchTable(); fetchPending();
+  } catch (e) { $("readBox").insertAdjacentHTML("beforeend", `<div class='muted'>re-ask failed: ${e.message}</div>`); }
+}
+
+// One-shot alert tone for a fresh trigger (best-effort; browsers may gate audio on a gesture).
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = "sine"; o.frequency.value = 880;
+    g.gain.setValueAtTime(0.12, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+    o.start(); o.stop(ctx.currentTime + 0.25);
+  } catch (e) { /* audio blocked until a user gesture — silent is fine */ }
+}
+
+// Live pending-trigger inbox: poll today's undecided triggers, alert on a new one.
+async function fetchPending() {
+  try {
+    const d = await (await fetch(`/api/pending?symbol=${sym()}`)).json();
+    renderPending(d.rows || [], d.count || 0);
+  } catch (e) { /* keep last */ }
+}
+
+function renderPending(rows, count) {
+  const card = $("pendingCard");
+  if (!count) { card.hidden = true; _seenPending.clear(); return; }
+  card.hidden = false;
+  $("pendingHdr").textContent = `🔔 Pending triggers — decide each (${count})`;
+  let fresh = false;                                  // alert once per genuinely-new trigger
+  for (const r of rows) if (!_seenPending.has(r.ts)) { _seenPending.add(r.ts); fresh = true; }
+  if (fresh) { card.classList.remove("flash"); void card.offsetWidth; card.classList.add("flash"); beep(); }
+  let h = "<thead><tr><th>Time</th><th>Strategy</th><th>Trade</th><th>Claude</th><th>Decide</th></tr></thead><tbody>";
+  for (const r of rows) {
+    const rd = r.read;
+    const cl = rd && rd.recommendation
+      ? `<span class="${rd.recommendation === "enter" ? "win-txt" : "loss-txt"}">${rd.recommendation === "enter" ? "ENTER" : "stand"}${rd.confidence != null ? " C" + rd.confidence : ""}</span>`
+      : "<span class='muted'>…</span>";
+    h += `<tr><td>${r.ts.slice(11, 16)}</td><td class="muted">${r.strategy_label || ""}</td>`
+      + `<td>${r.direction} @ ${r.entry} <span class="muted">SL ${n(r.stop)} / TP ${n(r.target)}</span></td>`
+      + `<td>${cl}</td>`
+      + `<td class="trigact">`
+      + `<button class="btn ok" title="Approve / take" data-pdecide="approve" data-ts="${r.ts}" data-strat="${r.strategy || ""}">✓</button>`
+      + `<button class="btn no" title="Reject / stand down" data-pdecide="reject" data-ts="${r.ts}" data-strat="${r.strategy || ""}">✗</button>`
+      + `<button class="btn" title="Skip (not recorded)" data-pdecide="skip" data-ts="${r.ts}" data-strat="${r.strategy || ""}">⤼</button>`
+      + `<button class="btn" title="Discuss with Claude" data-pdiscuss="${r.ts}" data-strat="${r.strategy || ""}">💬</button></td></tr>`;
+  }
+  $("pendingTbl").innerHTML = h + "</tbody>";
 }
 // Switch the whole cockpit to an instrument (index dropdown OR a scanner stock).
 function focusInstrument(symbolName) {
@@ -689,6 +760,12 @@ $("scanAuto").checked = localStorage.getItem("scanAuto") !== "0";   // restore t
 $("scanAuto").addEventListener("change", (e) => {
   localStorage.setItem("scanAuto", e.target.checked ? "1" : "0");
   if (e.target.checked) fetchScanner();              // refresh immediately when re-enabled
+});
+$("pendingTbl").addEventListener("click", (e) => {  // inbox row actions
+  const d = e.target.closest("button[data-pdecide]");
+  if (d) { decideTrigger(d.dataset.ts, d.dataset.strat, d.dataset.pdecide); return; }
+  const c = e.target.closest("button[data-pdiscuss]");
+  if (c) discussTrigger(c.dataset.pdiscuss, c.dataset.strat);
 });
 $("scanTbl").addEventListener("click", (e) => {     // scanner row actions
   const f = e.target.closest("button[data-focus]");

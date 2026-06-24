@@ -638,6 +638,24 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       hard to see because they're tied to the fleeting head — the actionable-triggers table (above) now
       shows each trigger's read + 💬 Discuss, so index analysis is visible per row going forward.
 
+- [x] **Live pending-trigger inbox + durable read persistence + re-ask button (confirmed w/ trader).**
+      Trader missed every live trigger (the decision card only shows the fleeting open head). Built
+      BOTH the actionable table (prior) AND a live inbox + froze/saved reads. (1) **Inbox:** `GET
+      /api/pending` returns TODAY's directional un-actioned triggers (reuses `_strategy_queue`+
+      `_enrich_trigger_rows`, filters `not actioned`), always today regardless of the table's filter;
+      frontend `#pendingCard` holds each fresh trigger with ✓ approve / ✗ reject / ⤼ skip / 💬, a
+      flash + one-shot Web-Audio beep on a new ts (`_seenPending`), hidden at count 0. (2) **Durable
+      reads:** new `journal.store` `trigger_reads` table (separate from `decisions` so it never
+      pollutes `load_records`) — `save_trigger_read`/`load_trigger_reads`; `_run_head_read` persists
+      each read once per `(sid,ts)` (`_st()["read_saved"]`), `_enrich_trigger_rows`+`/api/trigger-read`
+      fall back to `_stored_reads()` (30s-cached, newest-wins) so the table shows Claude's verdict
+      after a Railway restart. `load_records` now `init_db`s (the file can exist with only
+      trigger_reads). (3) **Re-ask:** `POST /api/reask` finds the trigger by ts + re-runs
+      `_run_head_read` (fresh verdict overwrites cache, writes a fresh persisted row); a 🔄 button under
+      the read (Discuss panel). Tested: inbox holds/drops on action, read persists + survives a
+      simulated restart, re-ask reruns + 409 on unknown ts. Suite green (311). DEFERRED: per-trigger
+      isolated chat context for 💬; scanner reads persisted across restart.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
