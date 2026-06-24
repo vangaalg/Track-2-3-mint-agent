@@ -32,9 +32,11 @@
   <section class="card" id="scanCard">
     <div class="scanhdr">
       <h2>🔭 Scanner — NSE-50 · trigger + OI + Claude</h2>
+      <label class="small" title="auto-refresh the scan in this view"><input type="checkbox" id="scanAuto" checked /> auto</label>
       <button id="scanRefresh" class="btn csv">⟳ Rescan</button>
       <span id="scanStatus" class="muted small"></span>
     </div>
+    <div class="small muted">🟡 trigger (watch) · 🟢 trigger + OI + Claude agree (focus here)</div>
     <div class="tablewrap"><table id="scanTbl"></table></div>
   </section>
 

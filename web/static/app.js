@@ -27,7 +27,8 @@ async function poll() {
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchScanner();
+    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory();
+    if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
     // Reveal the token form when the feed reports a Breeze/token/OI problem in its notes.
     flagTokenNeeded(/token|session|breeze|oi:/i.test((d.notes || []).join(" ")));
     // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
@@ -198,7 +199,8 @@ function renderScanner(d) {
   }
   for (const r of rows) {
     const tg = r.trigger, cl = r.claude || {};
-    h += `<tr class="${r.highlight ? "scanhit" : ""}"><td><b>${r.symbol}</b></td><td>${n(r.spot)}</td>`
+    // two tiers: green (scanhit) = full agreement (focus); yellow (scanwatch) = trigger only
+    h += `<tr class="${r.highlight ? "scanhit" : "scanwatch"}"><td><b>${r.symbol}</b></td><td>${n(r.spot)}</td>`
       + `<td>${tg.direction} @ ${n(tg.entry)} <span class="muted">SL ${n(tg.stop)} / TP ${n(tg.target)}</span></td>`
       + `<td class="conf">${tg.mtf_confidence != null ? tg.mtf_confidence + "/5" : "—"}</td>`
       + `<td>${r.oi_bias || "—"}</td>`
@@ -617,6 +619,11 @@ $("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _t
 $("trigStrat").addEventListener("change", (e) => { _trigStrat = e.target.value; _trigPage = 0; fetchTable(); });
 $("pcrDay").addEventListener("change", (e) => { _pcrDay = e.target.value; fetchPcrHistory(); });
 $("scanRefresh").onclick = scanRescan;
+$("scanAuto").checked = localStorage.getItem("scanAuto") !== "0";   // restore the toggle
+$("scanAuto").addEventListener("change", (e) => {
+  localStorage.setItem("scanAuto", e.target.checked ? "1" : "0");
+  if (e.target.checked) fetchScanner();              // refresh immediately when re-enabled
+});
 $("scanTbl").addEventListener("click", (e) => {     // Focus → load that stock's full cockpit
   const b = e.target.closest("button[data-focus]");
   if (b) focusInstrument(b.dataset.focus);
