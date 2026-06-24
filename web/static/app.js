@@ -16,6 +16,7 @@ let _trigStrat = "all", _trigDate = null, _trigPage = 0;
 let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null, _trigPending = 0;
 let _trigDates = [], _trigStrats = [];
 let _pcrDay = "all", _pcrDays = [];          // PCR-over-time: recorded session picker
+let _scanRows = [];                          // last scanner rows (for the 💬 full-read lookup)
 
 async function poll() {
   try {
@@ -204,6 +205,7 @@ async function scanRescan() {
 
 function renderScanner(d) {
   const rows = (d.rows || []).filter((r) => r.trigger);     // only stocks with a live trigger
+  _scanRows = rows;                                         // stash for the 💬 full-read lookup
   const t = d.at ? new Date(d.at * 1000).toLocaleTimeString() : "—";
   $("scanStatus").innerHTML = d.scanning ? "scanning…"
     : `${d.highlights || 0} ✅ agree · ${d.triggers || 0} triggers · last ${t}`
@@ -222,7 +224,9 @@ function renderScanner(d) {
       + `<td class="conf">${tg.mtf_confidence != null ? tg.mtf_confidence + "/5" : "—"}</td>`
       + `<td>${r.oi_bias || "—"}</td>`
       + `<td>${cl.recommendation || "—"}${cl.confidence != null ? " · C" + cl.confidence : ""}</td>`
-      + `<td><button class="btn csv" data-focus="${r.symbol}">Focus</button></td></tr>`;
+      + `<td>`
+      + (r.claude_full ? `<button class="btn" data-scanread="${r.symbol}" title="Read Claude's full analysis">💬</button> ` : "")
+      + `<button class="btn csv" data-focus="${r.symbol}">Focus</button></td></tr>`;
   }
   $("scanTbl").innerHTML = h + "</tbody>";
 }
@@ -686,9 +690,17 @@ $("scanAuto").addEventListener("change", (e) => {
   localStorage.setItem("scanAuto", e.target.checked ? "1" : "0");
   if (e.target.checked) fetchScanner();              // refresh immediately when re-enabled
 });
-$("scanTbl").addEventListener("click", (e) => {     // Focus → load that stock's full cockpit
-  const b = e.target.closest("button[data-focus]");
-  if (b) focusInstrument(b.dataset.focus);
+$("scanTbl").addEventListener("click", (e) => {     // scanner row actions
+  const f = e.target.closest("button[data-focus]");
+  if (f) { focusInstrument(f.dataset.focus); return; }    // load that stock's full cockpit
+  const rd = e.target.closest("button[data-scanread]");   // read Claude's full analysis for the stock
+  if (rd) {
+    const row = _scanRows.find((x) => x.symbol === rd.dataset.scanread);
+    if (row && row.claude_full) {
+      renderRead(row.claude_full);
+      $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
 });
 $("dlPcr").onclick = () => downloadCsv("summary");
 $("dlChain").onclick = () => downloadCsv("chain");

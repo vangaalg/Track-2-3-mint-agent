@@ -78,3 +78,32 @@ def test_scan_universe_isolates_errors_and_highlights_first(monkeypatch):
     assert rows[0]["symbol"] == "RELIANCE" and rows[0]["highlight"] is True   # highlight first
     bad = next(r for r in rows if r["symbol"] == "BAD")
     assert bad.get("error") and bad["highlight"] is False                     # isolated, no crash
+
+
+def test_cache_dedups_claude_per_trigger(monkeypatch):
+    """A still-open trigger scanned every cycle is Claude-read ONCE (the token-drain fix):
+    the second scan of the same (symbol, trigger-ts) reuses the cached read — no new API call."""
+    _patch(monkeypatch, _LONG)
+    calls = []
+    cache = {}
+    rf = lambda snap, prop: (calls.append(1), _read("enter", "bullish"))[1]
+    r1 = sc.scan_symbol("RELIANCE", None, None, chain_fn=lambda s: "CH", read_fn=rf, cache=cache)
+    r2 = sc.scan_symbol("RELIANCE", None, None, chain_fn=lambda s: "CH", read_fn=rf, cache=cache)
+    assert calls == [1]                          # Claude ran only on the FIRST scan
+    assert r1["highlight"] and r2["highlight"]   # both rows still report the (cached) agreement
+    assert r2["claude"]["recommendation"] == "enter" and r2["claude_full"] is not None
+    # a DIFFERENT trigger ts is a fresh read
+    other = {**_LONG, "ts": "2026-06-23T14:00:00+05:30"}
+    _patch(monkeypatch, other)
+    sc.scan_symbol("RELIANCE", None, None, chain_fn=lambda s: "CH", read_fn=rf, cache=cache)
+    assert calls == [1, 1]                        # one more call for the new trigger
+
+
+def test_scan_row_carries_full_read(monkeypatch):
+    """Each triggered row exposes the FULL Claude read (claude_full) so a stock's analysis is
+    readable like an index — not just the verdict chip."""
+    _patch(monkeypatch, _LONG)
+    row = sc.scan_symbol("INFY", None, None, chain_fn=lambda s: "CH",
+                         read_fn=lambda snap, prop: _read("enter", "bullish"))
+    assert row["claude_full"]["recommendation"] == "enter"
+    assert row["claude_full"]["confidence"] == 4

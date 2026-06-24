@@ -729,8 +729,11 @@ def _run_scan() -> dict:
     _SCAN["scanning"] = True
     try:
         syms = SCAN_SYMBOLS or scanner_symbols()
+        # Persist a per-(stock, trigger-ts) read cache across scans so a still-open trigger
+        # is sent to the Claude API ONCE, not every 5-min cycle (the token-drain fix).
+        cache = _SCAN.setdefault("read_cache", {})
         rows = scanner.scan_universe(syms, PULL_FN, CHAIN_FN, _scan_read_fn,
-                                     cfg=RESOLVER_CFG, pace_s=SCAN_PACE_S)
+                                     cfg=RESOLVER_CFG, pace_s=SCAN_PACE_S, cache=cache)
         _SCAN.update(rows=rows, at=time.time(), error=None)
     except Exception as exc:
         _SCAN["error"] = str(exc)

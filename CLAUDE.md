@@ -624,6 +624,20 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       404). Suite green (306). PENDING: persist un-actioned trigger reads + scanner reads across restart
       (in-memory today; acted decisions already durable in the journal); per-trigger chat context for 💬.
 
+- [x] **Scanner token-drain fix (per-(stock,trigger) Claude cache) + full read surfaced.** Trader hit
+      ~800K Claude tokens/day with <20 triggers: the NSE-50 scanner (`feeds/scanner.scan_symbol`) called
+      Claude for EVERY still-open triggered stock on EVERY 5-min background scan with NO dedup — a trigger
+      open for an hour was re-read ~12×, ×8 stocks ×75 scans/day = hundreds of calls. Fix: `scan_symbol`/
+      `scan_universe` take a `cache` keyed by `(symbol, trigger_ts)`; the OI pull + Claude read run ONCE per
+      distinct trigger, reused every later cycle (`web.server._run_scan` persists `_SCAN["read_cache"]`
+      across scans). Also: each scanned row now carries `claude_full` (the 4-part read via `_read_dict`,
+      robust to dataclass/dict/obj) + a 💬 button in the Scanner table to READ a stock's analysis like an
+      index (was only the verdict chip). Immediate mitigation for the trader: `SCAN_STOCKS=0` disables the
+      background scanner thread (cockpit_service). Tested: cache dedups Claude per trigger (1 call across 2
+      scans, fresh call on a new ts), full-read carried. Suite green (308). NOTE the index reads were ALSO
+      hard to see because they're tied to the fleeting head — the actionable-triggers table (above) now
+      shows each trigger's read + 💬 Discuss, so index analysis is visible per row going forward.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
