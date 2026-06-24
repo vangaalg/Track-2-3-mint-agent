@@ -27,7 +27,7 @@ async function poll() {
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory();
+    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchScanner();
     // Reveal the token form when the feed reports a Breeze/token/OI problem in its notes.
     flagTokenNeeded(/token|session|breeze|oi:/i.test((d.notes || []).join(" ")));
     // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
@@ -170,6 +170,42 @@ function renderOI(d) {
       + `<td class="${ps}">${lakh(r.put_oi)}</td><td>${n(r.put_ltp)}</td><td>${n(r.put_extrinsic)}</td></tr>`;
   }
   $("chainTbl").innerHTML = h + "</tbody>";
+}
+
+// NSE-50 scanner: poll the cached scan; highlight stocks where trigger + OI + Claude agree.
+async function fetchScanner() {
+  try { renderScanner(await (await fetch("/api/scanner")).json()); } catch (e) { /* keep last */ }
+}
+
+async function scanRescan() {
+  $("scanRefresh").disabled = true; $("scanStatus").textContent = "scanning…";
+  try { renderScanner(await (await fetch("/api/scanner/refresh", { method: "POST" })).json()); }
+  catch (e) { $("scanStatus").textContent = "rescan failed"; }
+  $("scanRefresh").disabled = false;
+}
+
+function renderScanner(d) {
+  const rows = (d.rows || []).filter((r) => r.trigger);     // only stocks with a live trigger
+  const t = d.at ? new Date(d.at * 1000).toLocaleTimeString() : "—";
+  $("scanStatus").innerHTML = d.scanning ? "scanning…"
+    : `${d.highlights || 0} ✅ agree · ${d.triggers || 0} triggers · last ${t}`
+      + (d.error ? ` · <span class="loss-txt">error</span>` : "");
+  let h = "<thead><tr><th>Stock</th><th>Spot</th><th>Trigger</th><th>Conf</th>"
+    + "<th>OI</th><th>Claude</th><th>Action</th></tr></thead><tbody>";
+  if (!rows.length) {
+    h += `<tr><td colspan="7" class="muted">No stock triggers right now`
+      + (d.at ? "" : " — the scanner runs 09:15–15:30 IST on the live service") + ".</td></tr>";
+  }
+  for (const r of rows) {
+    const tg = r.trigger, cl = r.claude || {};
+    h += `<tr class="${r.highlight ? "scanhit" : ""}"><td><b>${r.symbol}</b></td><td>${n(r.spot)}</td>`
+      + `<td>${tg.direction} @ ${n(tg.entry)} <span class="muted">SL ${n(tg.stop)} / TP ${n(tg.target)}</span></td>`
+      + `<td class="conf">${tg.mtf_confidence != null ? tg.mtf_confidence + "/5" : "—"}</td>`
+      + `<td>${r.oi_bias || "—"}</td>`
+      + `<td>${cl.recommendation || "—"}${cl.confidence != null ? " · C" + cl.confidence : ""}</td>`
+      + `<td><button class="btn csv" data-focus="${r.symbol}">Focus</button></td></tr>`;
+  }
+  $("scanTbl").innerHTML = h + "</tbody>";
 }
 
 // PCR / max-pain / walls+bands over time (the recorder's oi_summary series), per instrument.
@@ -566,18 +602,25 @@ $("trigTbl").addEventListener("click", (e) => {     // Exit buttons on open trig
   const b = e.target.closest("button[data-exit-ts]");
   if (b) exitTrigger(b.dataset.exitTs, b.dataset.strat);
 });
-$("instrSel").addEventListener("change", (e) => {   // switch instrument → reset per-instrument view
-  currentSymbol = e.target.value;
+// Switch the whole cockpit to an instrument (index dropdown OR a scanner stock).
+function focusInstrument(symbolName) {
+  currentSymbol = symbolName;
   _trigDate = null; _trigPage = 0; _triggers = []; currentHead = null;
   _pcrDay = "all"; _pcrDays = [];                  // PCR history follows the active instrument
   resetChart();                                    // wipe the prior instrument's candles (no overlap)
   $("chatLog").innerHTML = "";
   $("dot").className = "dot"; $("meta").textContent = `loading ${currentSymbol}…`;
   poll();
-});
+}
+$("instrSel").addEventListener("change", (e) => focusInstrument(e.target.value));
 $("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _trigPage = 0; fetchTable(); });
 $("trigStrat").addEventListener("change", (e) => { _trigStrat = e.target.value; _trigPage = 0; fetchTable(); });
 $("pcrDay").addEventListener("change", (e) => { _pcrDay = e.target.value; fetchPcrHistory(); });
+$("scanRefresh").onclick = scanRescan;
+$("scanTbl").addEventListener("click", (e) => {     // Focus → load that stock's full cockpit
+  const b = e.target.closest("button[data-focus]");
+  if (b) focusInstrument(b.dataset.focus);
+});
 $("dlPcr").onclick = () => downloadCsv("summary");
 $("dlChain").onclick = () => downloadCsv("chain");
 $("trigPrev").onclick = () => { if (_trigPage > 0) { _trigPage--; renderTriggers(); } };

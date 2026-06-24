@@ -77,6 +77,10 @@ td.conf { font-weight:600; white-space:nowrap; }
   border-radius:7px; padding:3px 6px; font-size:12px; }
 .btn.csv { padding:3px 8px; font-size:11px; background:var(--tile); border-color:var(--line); color:var(--txt); }
 .btn.csv:hover { border-color:var(--blue); }
+.scanhdr { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+.scanhdr h2 { margin:0; }
+#scanCard tr.scanhit { background:rgba(46,158,75,.16); }
+#scanCard tr.scanhit td:first-child { border-left:3px solid var(--green); }
 .decision { display:flex; gap:8px; margin-top:10px; align-items:center; }
 
 .chat { margin:0 12px 16px; }

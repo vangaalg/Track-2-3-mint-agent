@@ -30,9 +30,10 @@ from feeds.breeze_oi import make_chain_fetcher
 from feeds.oi import chain_table, summarise_chain
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
-from feeds import oi_store, oi_summary_store
+from feeds import oi_store, oi_summary_store, scanner
 from feeds.instruments import (
-    INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT)
+    INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT,
+    scanner_symbols)
 from analysis.trade1 import (
     propose_trade1, apply_strike, apply_oi_boost, size_for_confidence, LOT_SIZE)
 from analysis.cpr_st import propose_cpr_st
@@ -80,6 +81,9 @@ JOURNAL_DB = os.environ.get("JOURNAL_DB", store.DB_PATH)   # full-context SQLite
 DEFAULT_LOG = os.environ.get("DECISIONS_LOG", DEFAULT_LOG)  # append-only decision log
 OI_SUMMARY_ROOT = os.environ.get("OI_SUMMARY_ROOT")        # recorder's PCR/OI time series (None=default)
 OI_ROOT = os.environ.get("OI_ROOT")                        # recorder's full per-strike chain snapshots (None=default)
+# NSE-50 scanner: pace between stock pulls; SCAN_SYMBOLS optionally limits/overrides the basket.
+SCAN_PACE_S = float(os.environ.get("SCAN_PACE_S", "0.3"))
+SCAN_SYMBOLS = [s.strip().upper() for s in os.environ.get("SCAN_SYMBOLS", "").split(",") if s.strip()]
 AFTER_WRITE = None   # optional hook: deploy wrapper sets it to push the journal repo
 _STATIC = Path(__file__).parent / "static"
 
@@ -161,6 +165,9 @@ def _st(symbol: str | None = None) -> dict:
 
 # back-compat: the default NIFTY state object (tests mutate it in place via .update)
 _state = _st(DEFAULT_INSTRUMENT)
+
+# NSE-50 scanner cache: the latest scan rows (shared by the bg thread + the on-demand refresh).
+_SCAN: dict = {"at": 0.0, "rows": [], "scanning": False, "error": None}
 
 # --- training-mode state (separate from the live cockpit) ------------------- #
 TRAIN_TTL = 900          # re-pull the 7-day history every ~15 min
@@ -698,6 +705,54 @@ def oi_download(symbol: str = "NIFTY", day: str | None = None, kind: str = "summ
     csv = df.to_csv(index=False) if df is not None and not df.empty else ""
     return Response(content=csv, media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+# --- NSE-50 scanner: screen all option stocks for trigger + OI + Claude agreement -------- #
+def _scan_read_fn(snap, prop):
+    """Claude read for one scanned stock (the live memory + completer)."""
+    return claude_read(snap, prop, _learning_memory(), completer=READ_COMPLETER)
+
+
+def _run_scan() -> dict:
+    """Run ONE scan over the stock universe into ``_SCAN``. Mechanical 3-min triggers are
+    cheap; the OI chain pull + Claude read fire only on a stock that actually triggered."""
+    if _SCAN.get("scanning"):
+        return _SCAN
+    _SCAN["scanning"] = True
+    try:
+        syms = SCAN_SYMBOLS or scanner_symbols()
+        rows = scanner.scan_universe(syms, PULL_FN, CHAIN_FN, _scan_read_fn,
+                                     cfg=RESOLVER_CFG, pace_s=SCAN_PACE_S)
+        _SCAN.update(rows=rows, at=time.time(), error=None)
+    except Exception as exc:
+        _SCAN["error"] = str(exc)
+    finally:
+        _SCAN["scanning"] = False
+    return _SCAN
+
+
+def _scan_payload() -> dict:
+    rows = _SCAN.get("rows") or []
+    return {"rows": rows, "count": len(rows),
+            "highlights": sum(1 for r in rows if r.get("highlight")),
+            "triggers": sum(1 for r in rows if r.get("trigger")),
+            "at": _SCAN.get("at"), "scanning": _SCAN.get("scanning", False),
+            "error": _SCAN.get("error")}
+
+
+@app.get("/api/scanner")
+def scanner_get():
+    """The latest NSE-50 scan — rows (highlights first) where each stock's 3-min trigger,
+    OI bias and Claude verdict are surfaced; ``highlight`` = full agreement (focus on this)."""
+    return _scan_payload()
+
+
+@app.post("/api/scanner/refresh")
+def scanner_refresh():
+    """Re-scan the universe now (the manual kick; the bg thread scans every ~5 min live).
+    Runs inline — for ~50 stocks this takes a few seconds of paced pulls."""
+    _run_scan()
+    return _scan_payload()
 
 
 @app.get("/api/record")

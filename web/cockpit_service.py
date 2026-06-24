@@ -47,6 +47,8 @@ os.environ.setdefault("DECISIONS_LOG", str(Path(_JDIR) / "decisions.jsonl"))
 from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
+import pandas as pd
+
 import web.server as server
 from web.server import app as cockpit             # the cockpit FastAPI app (routes + static)
 from deploy import control, gitsync
@@ -54,7 +56,8 @@ from feeds import recorder
 
 STATUS: dict = {"started": None, "last_push": None, "last_pull": None,
                 "token_restored": False, "errors": [],
-                "last_cycle": None, "saved": [], "macro": None, "recorder": "off"}
+                "last_cycle": None, "saved": [], "macro": None, "recorder": "off",
+                "scanner": "off", "last_scan": None, "highlights": None}
 
 @asynccontextmanager
 async def lifespan(app):
@@ -222,6 +225,25 @@ def _recorder_thread() -> None:
                  on_cycle=_on_cycle)
 
 
+def _scanner_thread() -> None:
+    """Screen the NSE-50 option stocks every SCAN_EVERY_MIN during market hours, in-process —
+    writes web.server._SCAN, which /api/scanner serves to the cockpit's Scanner panel."""
+    every = int(os.environ.get("SCAN_EVERY_MIN", "5"))
+    while True:
+        try:
+            if not recorder.in_session(pd.Timestamp.now(tz=recorder.IST)):
+                time.sleep(60)
+                continue
+            server._run_scan()
+            rows = server._SCAN.get("rows") or []
+            STATUS.update(scanner="running",
+                          last_scan=pd.Timestamp.now(tz=recorder.IST).isoformat(timespec="seconds"),
+                          highlights=sum(1 for r in rows if r.get("highlight")))
+        except Exception as exc:
+            STATUS["scanner"] = f"error: {exc}"
+        time.sleep(every * 60)
+
+
 def _start_background() -> None:
     STATUS["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
     # Shared data repo = READ-WRITE: this combined service is the SOLE writer (cockpit reads
@@ -239,6 +261,10 @@ def _start_background() -> None:
     # OI/macro recorder loop — accumulate the live flywheel from the same service.
     threading.Thread(target=_recorder_thread, daemon=True).start()
     STATUS["recorder"] = "running"
+    # NSE-50 scanner loop — screen the option stocks for trigger + OI + Claude agreement.
+    if os.environ.get("SCAN_STOCKS", "1") != "0":
+        threading.Thread(target=_scanner_thread, daemon=True).start()
+        STATUS["scanner"] = "running"
 
 
 server.AFTER_WRITE = _push_journal               # push the journal on each decision

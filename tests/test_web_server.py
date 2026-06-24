@@ -537,6 +537,37 @@ def test_oi_download_empty_is_blank_csv(client, tmp_path, monkeypatch):
     assert r.status_code == 200 and r.text == ""                # no 500, just an empty file
 
 
+def test_scanner_serves_cache_highlights_first(client):
+    srv._SCAN.update(at=123.0, scanning=False, error=None, rows=[
+        {"symbol": "RELIANCE", "trigger": {"direction": "long"}, "highlight": True},
+        {"symbol": "INFY", "trigger": {"direction": "long"}, "highlight": False},
+    ])  # scan_universe already sorts highlights-first; the endpoint serves as-cached
+    d = client.get("/api/scanner").json()
+    assert d["count"] == 2 and d["highlights"] == 1 and d["triggers"] == 2
+    assert d["rows"][0]["symbol"] == "RELIANCE"                 # highlighted stock surfaced first
+
+
+def test_scanner_refresh_runs_inline_scan(client, monkeypatch):
+    srv._SCAN.update(at=0.0, rows=[], scanning=False, error=None)
+    seen = {}
+
+    def fake_scan(syms, pull_fn, chain_fn, read_fn, cfg=None, pace_s=0.0, **k):
+        seen["n"] = len(syms)                                   # the full stock universe
+        return [{"symbol": "RELIANCE", "trigger": {"direction": "long"}, "highlight": True}]
+
+    monkeypatch.setattr(srv.scanner, "scan_universe", fake_scan)
+    d = client.post("/api/scanner/refresh").json()
+    assert d["count"] == 1 and d["highlights"] == 1
+    assert seen["n"] == len(srv.scanner_symbols())             # scanned all 50
+    assert srv._SCAN["rows"][0]["symbol"] == "RELIANCE"        # cache populated
+
+
+def test_cockpit_loads_a_scanner_stock(client):
+    """Click-to-focus: the cockpit resolves a registered stock symbol like any instrument."""
+    d = client.get("/api/snapshot?symbol=RELIANCE").json()
+    assert d["symbol"] == "RELIANCE" and d["spot"]
+
+
 def test_record_scoped_per_instrument(client, tmp_path, monkeypatch):
     from journal import store
     for s, pts in [("NIFTY", 60.0), ("BANKNIFTY", 40.0)]:

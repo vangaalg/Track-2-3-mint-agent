@@ -551,6 +551,37 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       (flip-and-reverse + `_resolve_window`), test_web_server (approve-opposite auto-flattens), test_outcomes
       (auto flag). Suite green (284).
 
+- [x] **CSV export of recorder data + Bank Nifty chart-overlap fix.** (1) `GET /api/oi-download?symbol=&day=&
+      kind=summary|chain` returns a CSV attachment (Excel; no new dep): `summary` = the PCR/walls/bands series,
+      `chain` = the full per-strike snapshots (`_chain_history_df` concatenates `feeds.oi_store` files). Filters
+      by the cockpit Day picker; ⬇ PCR CSV / ⬇ Chain CSV buttons. `OI_ROOT` seam. (2) The Bank Nifty chart
+      spiked/overlapped NIFTY because `chart.js renderLW` redrew fully only on a TIMEFRAME change — fixed to
+      redraw on an INSTRUMENT change too (`LW.loadedSym` vs the `/api/chart` payload's `symbol`) + a `resetChart()`
+      on switch + a dynamic `#chartTitle`. Tested (oi-download serve/filter/empty/per-instrument; /api/chart
+      returns symbol). Suite 287.
+
+- [x] **NSE-50 multi-stock scanner (trigger + OI + Claude agreement → highlight a stock).** The trader wanted
+      to screen ALL ~50 NSE option stocks with the 3-min strategy + OI + Claude and get a HIGHLIGHTED stock to
+      focus on whenever there's a fresh trigger AND full agreement. Built reusing the per-instrument pipeline:
+      `feeds/scanner.py` (pure, injectable) — `scan_symbol` builds the snapshot + detects the latest still-OPEN
+      3-min trigger CHEAPLY (no OI/Claude), then GATES the expensive OI chain pull (`fetch_oi`) + `claude_read`
+      to only stocks that actually triggered; `highlight = trigger ∧ _oi_agrees(claude.oi_bias, dir) ∧ claude
+      ENTER`. `scan_universe` loops with per-symbol try/except + pacing, highlights-first. `feeds/instruments.py`
+      registers the 50 stocks (`NSE50_STOCKS`, lot=1 PLACEHOLDER/points-based, monthly, scaled bands,
+      `primary=False`) so `get_instrument`/the cockpit resolve them; `instrument_list()` stays index-only (the
+      dropdown) and `scanner_symbols()` feeds the scan. `web.server`: `_SCAN` cache + `GET /api/scanner`
+      (cached, highlights-first) + `POST /api/scanner/refresh` (inline rescan) + `_run_scan` (reuses PULL_FN/
+      CHAIN_FN/claude_read); a registered stock loads the full cockpit via `/api/snapshot?symbol=<stock>`.
+      `web.cockpit_service._scanner_thread` scans every `SCAN_EVERY_MIN` (5) in session, writing `_SCAN`
+      (status on /healthz). Frontend: a 🔭 Scanner card (symbol·spot·trigger·conf·OI·Claude, green-highlight on
+      agreement, ⟳ Rescan, **Focus** → `focusInstrument(sym)` loads that stock's whole cockpit). Decided w/
+      trader: highlight = trigger+OI+Claude ENTER, run BOTH bg+on-demand, lots DEFERRED (=1, points-based).
+      Tested offline in test_scanner (agreement/gating/error-isolation) + test_web_server (cache/refresh/
+      stock-loads) + test_instruments (50 registered, dropdown index-only). Suite green (295). NOTE: the 50-stock
+      Breeze pulls (per-stock codes e.g. M&M/BAJAJ-AUTO, monthly-expiry weekday, chains) are LIVE-ONLY — the
+      egress-locked sandbox can't verify them; confirm on the open-network machine. Exact per-stock F&O lot sizes
+      still to be filled into the registry for ₹ (scanner is points-based for now).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
