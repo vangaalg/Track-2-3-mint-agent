@@ -606,6 +606,24 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       + enter the token ~09:10) for a full-day series — Postgres just makes what IS recorded durable.
       Journal SQLite → Postgres is a deferred follow-on (lower-frequency, already in the journal repo).
 
+- [x] **Actionable triggers table — approve/reject/discuss any trigger + pending badge + Focus fix.**
+      Trader feedback: the live decision card only ever shows the single OPEN head trigger, which exists
+      for one 3-min window before the next trigger flips it (replay `one_position=True`), so triggers were
+      missed all day and only appeared in the read-only "if you'd traded each" table. Confirmed w/ trader:
+      BOTH actionable rows AND a pending badge, Claude auto-reads every trigger. The per-(strategy,ts) reads
+      were ALREADY captured as each became the head — just not exposed. `web/server.py`: `/api/triggers`
+      now enriches each row with its cached Claude read + actioned status (`_enrich_trigger_rows`) + a
+      `pending` count of undecided triggers; `/api/decision` acts on ANY queue trigger by ts (not just the
+      live head) — a back-decision logs by date but leaves the live head/position untouched (one-position
+      only governs the head); new `/api/trigger-read` serves the full read for the 💬 Discuss panel;
+      `_save_context_for` accepts a dict OR dataclass read (so a picked trigger archives ITS read).
+      Frontend (`app.js`): triggers table gains a Claude column (ENTER/stand·C0-5) + per-row ✓ approve /
+      ✗ reject / 💬 discuss / Exit, an "N to review" amber badge, and Focus now adds the scanner stock to
+      the instrument dropdown so the switch is visible (was silently failing on `sel.value`). Tested in
+      test_web_server (read+actioned+pending exposed, decision on a non-head trigger by ts, trigger-read
+      404). Suite green (306). PENDING: persist un-actioned trigger reads + scanner reads across restart
+      (in-memory today; acted decisions already durable in the journal); per-trigger chat context for 💬.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

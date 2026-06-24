@@ -731,3 +731,47 @@ def test_live_decision_captures_trigger_label(client, tmp_path, monkeypatch):
     r = store.load_records(srv.JOURNAL_DB)[0]
     assert r["trigger_label"] == "false" and r["reason_why"] is None   # reject -> no outcome yet
     assert client.get("/api/record").status_code == 200               # settle path is clean
+
+
+def test_triggers_table_exposes_read_actioned_and_pending(client, monkeypatch):
+    """Each trigger row carries Claude's auto-read + actioned status; ``pending`` counts the
+    undecided — so the table is the persistent place to act on a trigger missed live."""
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    t2 = _open_trig(ts="2024-01-01T10:00:00+05:30", direction="short")
+    _seed_heads(monkeypatch, trade1=[t1, t2])
+    client.get("/api/snapshot")                       # head (t1) auto-read by the mocked completer
+    d = client.get("/api/triggers?strategy=trade1").json()
+    assert d["pending"] == 2                           # neither decided yet
+    rows = {r["ts"]: r for r in d["triggers"]}
+    assert rows[t1["ts"]]["read"]["recommendation"] == "stand_down"   # auto-read cached on the head
+    assert rows[t1["ts"]]["read"]["confidence"] == 4
+    assert rows[t2["ts"]]["read"] is None              # not yet the head → no read
+    assert rows[t1["ts"]]["actioned"] is None
+    # the full read backs the 💬 Discuss panel (params= encodes the +05:30 ts correctly)
+    assert client.get("/api/trigger-read",
+                      params={"strategy": "trade1", "ts": t1["ts"]}).status_code == 200
+    assert client.get("/api/trigger-read",
+                      params={"strategy": "trade1", "ts": "nope"}).status_code == 404
+
+
+def test_decision_acts_on_non_head_trigger_by_ts(client, monkeypatch, tmp_path):
+    """Approve/reject ANY trigger row by ts — not just the live head — and it's logged, while
+    the live head/position is left untouched (a back-decision on a missed trigger)."""
+    import journal.log as jlog
+    from journal import store
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")
+    t2 = _open_trig(ts="2024-01-01T10:00:00+05:30", direction="short")
+    _seed_heads(monkeypatch, trade1=[t1, t2])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision",                  # act on t2 — the NON-head row — by ts
+                    data={"action": "reject", "strategy": "trade1", "ts": t2["ts"]})
+    assert r.status_code == 200 and r.json()["status"] == "rejected"
+    st = srv._st("NIFTY")
+    assert st["actioned"][("trade1", t2["ts"])] == "rejected"
+    assert ("trade1", t1["ts"]) not in st["actioned"]            # the head is untouched
+    head = client.get("/api/snapshot").json()["heads"]["trade1"]
+    assert head["ts"] == t1["ts"]                                # live head still t1
+    assert any(rec["proposal"]["ts"] == t2["ts"]                 # t2's frozen levels were logged
+               for rec in store.load_records(srv.JOURNAL_DB))

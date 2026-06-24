@@ -13,7 +13,7 @@ const STRAT_LABEL = { trade1: "3-min", cpr_st: "CPR-ST", orb: "ORB", condor: "Ex
 // browseable by day, paginated 10/page.
 const TRIG_PAGE = 10;
 let _trigStrat = "all", _trigDate = null, _trigPage = 0;
-let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null;
+let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null, _trigPending = 0;
 let _trigDates = [], _trigStrats = [];
 let _pcrDay = "all", _pcrDays = [];          // PCR-over-time: recorded session picker
 
@@ -379,6 +379,7 @@ async function fetchTable() {
     const d = await (await fetch(url)).json();
     _trigRows = d.triggers || [];
     _trigSummary = d.summary || {};
+    _trigPending = d.pending || 0;
     _trigLast = d.last; _trigSession = d.session;
     if (d.dates) _trigDates = d.dates;
     if (d.strategies) _trigStrats = d.strategies;
@@ -390,12 +391,15 @@ async function fetchTable() {
 
 // Populate the instrument selector from the snapshot's instrument list.
 function renderInstruments(d) {
-  const list = d.instruments || [];
+  const list = (d.instruments || []).slice();
   const sel = $("instrSel");
   if (!sel || !list.length) return;
-  if (sel.options.length !== list.length) {
-    sel.innerHTML = list.map((i) => `<option value="${i.id}">${i.label}</option>`).join("");
-  }
+  // Include the ACTIVE symbol even when it's a scanner stock (not a primary index) so a
+  // Focus switch is visible + selectable in the dropdown (else sel.value silently fails).
+  if (!list.some((i) => i.id === currentSymbol))
+    list.push({ id: currentSymbol, label: (d.symbol || currentSymbol) + " (stock)" });
+  const want = list.map((i) => `<option value="${i.id}">${i.label}</option>`).join("");
+  if (sel.dataset.opts !== want) { sel.innerHTML = want; sel.dataset.opts = want; }
   sel.value = currentSymbol;
 }
 
@@ -429,7 +433,9 @@ function renderTriggers() {
     $("trigLast").className = "trig-last";
     $("trigLast").textContent = `No triggers on ${_trigSession || "—"} yet — market opens 09:15 IST.`;
   }
-  $("trigSummary").innerHTML = `${s.n || 0} triggers · ${s.wins || 0}W / ${s.losses || 0}L / ${s.open || 0} open`
+  const badge = (!condor && _trigPending > 0)
+    ? `<span class="pending-badge" title="triggers you haven't decided on">${_trigPending} to review</span> ` : "";
+  $("trigSummary").innerHTML = badge + `${s.n || 0} triggers · ${s.wins || 0}W / ${s.losses || 0}L / ${s.open || 0} open`
     + (s.exited ? ` / ${s.exited} exited` : "")
     + ` · net <b class="${s.net_points >= 0 ? "win-txt" : "loss-txt"}">${s.net_points >= 0 ? "+" : ""}${s.net_points || 0} pts `
     + `(${s.net_rupees >= 0 ? "+" : ""}₹${s.net_rupees || 0})</b> if all taken`
@@ -443,22 +449,35 @@ function renderTriggers() {
 
   let h = condor
     ? "<thead><tr><th>Time</th><th>Short PE</th><th>Short CE</th><th>Credit</th><th>Out</th><th>Pts</th><th>₹</th></tr></thead><tbody>"
-    : "<thead><tr><th>Time</th><th>Strategy</th><th>Dir</th><th>Conf</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th><th>Action</th></tr></thead><tbody>";
+    : "<thead><tr><th>Time</th><th>Strategy</th><th>Dir</th><th>Conf</th><th>Entry</th><th>Stop</th><th>Target</th><th>Out</th><th>Pts</th><th>₹</th><th>Claude</th><th>Action</th></tr></thead><tbody>";
   for (const t of pageRows) {
     const pts = `<td class="${t.points >= 0 ? "win" : "loss"}">${t.points >= 0 ? "+" : ""}${t.points}</td>`;
     const rs = `<td>${t.rupees >= 0 ? "+" : ""}${t.rupees}</td>`;
-    // Exit/record ANY directional trade you took (any row, any date) — overrides the
-    // hypothetical replay outcome. Already-exited rows show the price you closed at.
     const dir = t.direction === "long" || t.direction === "short";
-    const act = t.outcome === "exit" ? `<td class="muted">@ ${n(t.exit)}</td>`
-      : dir ? `<td><button class="btn exit" data-exit-ts="${t.ts}" data-strat="${t.strategy || ""}">Exit</button></td>`
-      : "<td></td>";
+    // Claude's auto-read for this trigger (cached per ts as it fired) — ENTER / stand-down · C0-5.
+    const rd = t.read;
+    const cl = rd && rd.recommendation
+      ? `<td class="${rd.recommendation === "enter" ? "win" : "loss"}">${rd.recommendation === "enter" ? "ENTER" : "stand"}`
+        + `${rd.confidence != null ? " C" + rd.confidence : ""}</td>`
+      : `<td class="muted">…</td>`;
+    // Action cell: decide ANY trigger (✓ take / ✗ reject / 💬 discuss) even after its live window,
+    // then it's logged by date; Exit records a real fill. Already-decided rows show the verdict.
+    let act;
+    if (t.outcome === "exit") act = `<td class="muted">@ ${n(t.exit)}</td>`;
+    else if (!dir) act = "<td></td>";
+    else if (t.actioned) act = `<td class="muted">${t.actioned === "approved" ? "✓ taken"
+      : t.actioned === "rejected" ? "✗ rejected" : t.actioned}</td>`;
+    else act = `<td class="trigact">`
+      + `<button class="btn ok" title="Approve / take — logged" data-decide="approve" data-ts="${t.ts}" data-strat="${t.strategy || ""}">✓</button>`
+      + `<button class="btn no" title="Reject / stand down — logged" data-decide="reject" data-ts="${t.ts}" data-strat="${t.strategy || ""}">✗</button>`
+      + `<button class="btn" title="Discuss with Claude" data-discuss="${t.ts}" data-strat="${t.strategy || ""}">💬</button>`
+      + `<button class="btn exit" title="Record a real fill" data-exit-ts="${t.ts}" data-strat="${t.strategy || ""}">Exit</button></td>`;
     h += condor
       ? `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.short_put}</td><td>${t.short_call}</td>`
         + `<td>${t.credit}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}</tr>`
       : `<tr><td>${t.ts.slice(11, 16)}</td><td class="muted">${t.strategy_label || ""}</td><td>${t.direction}</td>`
         + `<td class="conf">${t.mtf_confidence != null ? t.mtf_confidence + "/5" : "—"}</td><td>${t.entry}</td>`
-        + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}${act}</tr>`;
+        + `<td>${t.stop}</td><td>${t.target}</td><td class="${t.outcome}">${t.outcome}</td>${pts}${rs}${cl}${act}</tr>`;
   }
   $("trigTbl").innerHTML = h + "</tbody>";
   $("trigPage").textContent = total ? `page ${_trigPage + 1}/${pages} · ${total} triggers` : "no triggers";
@@ -617,10 +636,36 @@ $("skipBtn").onclick = () => decide("skip");
 $("tokenBtn").onclick = () => { $("tokenForm").hidden = !$("tokenForm").hidden; };
 $("tokenSave").onclick = postToken;
 $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });
-$("trigTbl").addEventListener("click", (e) => {     // Exit buttons on open trigger rows
-  const b = e.target.closest("button[data-exit-ts]");
-  if (b) exitTrigger(b.dataset.exitTs, b.dataset.strat);
+$("trigTbl").addEventListener("click", (e) => {     // per-row actions on the triggers table
+  const ex = e.target.closest("button[data-exit-ts]");
+  if (ex) { exitTrigger(ex.dataset.exitTs, ex.dataset.strat); return; }
+  const dc = e.target.closest("button[data-decide]");
+  if (dc) { decideTrigger(dc.dataset.ts, dc.dataset.strat, dc.dataset.decide); return; }
+  const ds = e.target.closest("button[data-discuss]");
+  if (ds) discussTrigger(ds.dataset.discuss, ds.dataset.strat);
 });
+
+// Approve / reject ANY trigger row by ts (logged by date with Claude's read), then refresh.
+async function decideTrigger(ts, strat, action) {
+  const fd = new FormData();
+  fd.append("action", action); fd.append("strategy", strat || "trade1");
+  fd.append("ts", ts); fd.append("symbol", currentSymbol);
+  const r = await fetch("/api/decision", { method: "POST", body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert((action === "approve" ? "Approve" : "Reject") + " failed: " + (d.detail || r.statusText)); return; }
+  fetchTable(); fetchRecord();
+}
+
+// Show Claude's full saved read for a trigger and jump to the chat to discuss it.
+async function discussTrigger(ts, strat) {
+  try {
+    const rd = await (await fetch(
+      `/api/trigger-read?strategy=${strat || "trade1"}&ts=${encodeURIComponent(ts)}&symbol=${sym()}`)).json();
+    if (rd && rd.recommendation) renderRead(rd);
+    else $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger yet.</span>";
+  } catch (e) { $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger.</span>"; }
+  $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
+}
 // Switch the whole cockpit to an instrument (index dropdown OR a scanner stock).
 function focusInstrument(symbolName) {
   currentSymbol = symbolName;

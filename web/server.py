@@ -825,6 +825,31 @@ def _condor_today(snap, size: int, session_date=None, lot_size: int | None = Non
                         "hit_rate": round(wins / (wins + losses), 2) if (wins + losses) else None}}
 
 
+def _enrich_trigger_rows(rows: list[dict]) -> None:
+    """Attach each trigger's auto-computed Claude read + actioned status (in place), so the
+    triggers table can show Claude's verdict and offer Approve/Reject/Discuss per row — the
+    decision the trader missed in the live 3-min window. Reads are the same per-(strategy,ts)
+    cache the head auto-fills as each trigger fires; a row stays read even after it resolves."""
+    reads, actioned = _st().get("reads", {}), _st().get("actioned", {})
+    for r in rows:
+        key = (r.get("strategy"), r.get("ts"))
+        cached = reads.get(key)
+        r["read"] = {
+            "recommendation": cached.get("recommendation"),
+            "confidence": cached.get("confidence"),
+            "oi_bias": cached.get("oi_bias"),
+            "target": cached.get("claude_target"), "stop": cached.get("claude_stop"),
+            "rr": cached.get("claude_rr"), "verdict": cached.get("verdict_text"),
+        } if cached else None
+        r["actioned"] = actioned.get(key)
+
+
+def _pending_count(rows: list[dict]) -> int:
+    """Triggers the trader hasn't decided on yet (approve/reject/skip) — drives the badge."""
+    actioned = _st().get("actioned", {})
+    return sum(1 for r in rows if (r.get("strategy"), r.get("ts")) not in actioned)
+
+
 @app.get("/api/triggers")
 def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | None = None,
              symbol: str = "NIFTY"):
@@ -833,6 +858,8 @@ def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | Non
     non-directional instrument — is browsed on its own tab. ``date`` browses a prior session
     from the multi-day live pull; ``dates`` lists what's available (NEWEST first) for the toggle.
 
+    Each row carries its Claude read + actioned status (``_enrich_trigger_rows``) so the table
+    is the persistent place to approve/reject/discuss a trigger; ``pending`` counts the undecided.
     replay_today sizes each row by its own conviction (1-2 lot band), so the ₹ column matches
     the proposal; the condor (no conviction) keeps the flat size."""
     _active.set(symbol.upper())
@@ -853,15 +880,29 @@ def triggers(size: int = DEFAULT_SIZE, strategy: str = "trade1", date: str | Non
             for r in q.get("triggers", []):
                 merged.append({**r, "strategy": s["id"], "strategy_label": s["label"]})
         merged.sort(key=lambda r: r.get("ts") or "")
+        _enrich_trigger_rows(merged)
         return {"session": sd, "triggers": merged, "last": merged[-1] if merged else None,
-                "summary": _rows_summary(merged), "dates": dates, "strategy": "all",
-                "strategies": strat_list}
+                "summary": _rows_summary(merged), "pending": _pending_count(merged),
+                "dates": dates, "strategy": "all", "strategies": strat_list}
     q = _apply_exits(strategy, _strategy_queue(strategy, snap, size, session_date=sd))
     meta = _STRAT[strategy]
     for r in q.get("triggers", []):
         r["strategy"], r["strategy_label"] = strategy, meta["label"]
-    q.update(dates=dates, strategy=strategy, strategies=strat_list)
+    _enrich_trigger_rows(q.get("triggers", []))
+    q.update(dates=dates, strategy=strategy, strategies=strat_list,
+             pending=_pending_count(q.get("triggers", [])))
     return q
+
+
+@app.get("/api/trigger-read")
+def trigger_read(strategy: str = "trade1", ts: str = "", symbol: str = "NIFTY"):
+    """Claude's full saved read for one trigger (cached as it fired) — for the table's
+    💬 Discuss action. 404 until the trigger has been auto-read."""
+    _active.set(symbol.upper())
+    cached = _st().get("reads", {}).get((strategy, ts))
+    if cached is None:
+        raise HTTPException(status_code=404, detail="no read for this trigger yet")
+    return cached
 
 
 @app.post("/api/exit")
@@ -997,11 +1038,12 @@ def _save_context_for(prop, decision: str, symbol: str, execution: dict | None,
         except Exception:
             chain_rows = None
     read = _st().get("read")
+    read_d = None if read is None else (read if isinstance(read, dict) else asdict(read))
     payload = {
         "ts": snap.ts, "symbol": symbol, "decision": decision, "spot": snap.spot,
         "proposal": prop.as_dict(),
         "trigger_label": (label or "").strip().lower() or None,
-        "claude_read": asdict(read) if read is not None else None,
+        "claude_read": read_d,
         "chat": _st().get("chat") or None,
         "chart": _chart_bundle(snap),
         "chain": chain_rows,
@@ -1043,27 +1085,38 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
     if action not in ("approve", "reject", "skip"):
         raise HTTPException(status_code=400, detail=f"unknown action {action!r}")
+    # Act on the live HEAD, or on ANY trigger row the trader picks from the table (by ts) —
+    # so a trigger missed in its 3-min live window is still decidable afterwards.
     head = _st()["heads"].get(strategy)
-    if head is None:
-        raise HTTPException(status_code=409, detail="no active trigger to decide")
-    if ts and ts != head["ts"]:                       # stale click — the trigger moved on
-        raise HTTPException(status_code=409, detail="trigger moved on — refresh and re-read")
-    key = (strategy, head["ts"])
+    target = head if (head is not None and (not ts or ts == head["ts"])) else None
+    is_head = target is not None
+    if target is None and ts:
+        target = next((t for t in _st().get("queues", {}).get(strategy, {}).get("triggers", [])
+                       if t.get("ts") == ts), None)
+    if target is None:
+        raise HTTPException(status_code=409, detail="no matching trigger — refresh and re-read")
+    key = (strategy, target["ts"])
     if key in _st()["actioned"]:
         raise HTTPException(status_code=409, detail="trigger already actioned")
     if action == "skip":                              # silent — no journal, no execution
         _st()["actioned"][key] = "skipped"
         return {"status": "skipped", "next_head": _advance_head(strategy)}
-    prop = _proposal_from_head(strategy, head, _st()["snap"], _st().get("table"))
+    # Archive THIS trigger's cached Claude read (not whatever the live head last read).
+    cached = _st().get("reads", {}).get(key)
+    if cached is not None:
+        _st()["read"] = cached
+    prop = _proposal_from_head(strategy, target, _st()["snap"], _st().get("table"))
     if action == "approve":
-        # one position at a time: auto-exit the strategy's prior open trade before this opens
-        flat = _auto_flatten(strategy, symbol)
+        flat = None
+        if is_head:    # one position at a time only governs the LIVE head, not a back-decision
+            flat = _auto_flatten(strategy, symbol)
         result = breeze_exec.place(prop, live=live) if strategy == "trade1" else \
             {"status": "logged (propose-only)"}
         rec = log_decision(prop, "approved", execution=result)
         _st()["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
         _st()["actioned"][key] = "approved"
-        _st()["position"][strategy] = dict(head)       # the new open position for this strategy
+        if is_head:
+            _st()["position"][strategy] = dict(target)   # the new open position for this strategy
         return {"status": result.get("status"), "logged": rec["decision"],
                 "auto_exit": flat, "next_head": _advance_head(strategy)}
     rec = log_decision(prop, "rejected")

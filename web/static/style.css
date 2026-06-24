@@ -79,6 +79,13 @@ td.conf { font-weight:600; white-space:nowrap; }
 .btn.csv:hover { border-color:var(--blue); }
 .scanhdr { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
 .scanhdr h2 { margin:0; }
+.pending-badge { background:var(--amber); color:#1a1a1a; border-radius:10px; padding:1px 8px;
+  font-weight:600; font-size:11px; margin-right:6px; }
+.trigact { white-space:nowrap; }
+.trigact .btn { padding:2px 7px; margin-right:3px; }
+.btn.ok { background:rgba(46,158,75,.22); border-color:var(--green); }
+.btn.no { background:rgba(214,79,79,.20); border-color:var(--loss, #d64f4f); }
+
 #scanCard tr.scanhit { background:rgba(46,158,75,.16); }       /* GO: trigger + OI + Claude agree */
 #scanCard tr.scanhit td:first-child { border-left:3px solid var(--green); }
 #scanCard tr.scanwatch { background:rgba(214,160,43,.13); }    /* WATCH: 3-min trigger only */
