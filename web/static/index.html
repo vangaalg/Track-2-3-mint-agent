@@ -197,6 +197,27 @@
     <div id="recPosts" class="postmortems"></div>
   </section>
 
+  <!-- Persistent analysis + chat popup (opened by any 💬; survives polling until ✕) -->
+  <div id="analysisModal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-card">
+      <div class="modal-head">
+        <span id="modalTitle" class="modal-title">Analysis</span>
+        <button id="modalClose" class="btn" title="Close">✕</button>
+      </div>
+      <div id="modalBody" class="modal-body readbox"></div>
+      <div class="chat incard">
+        <div class="chat-h">💬 Discuss this with Claude</div>
+        <div id="modalChatLog" class="chatlog"></div>
+        <form id="modalChatForm" class="chatform">
+          <input id="modalChatText" type="text" placeholder="Ask about this stock / level…" autocomplete="off" />
+          <input id="modalChatFile" type="file" accept="image/*" />
+          <button class="btn" type="submit">Send</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/chart.js"></script>
   <script src="/static/app.js"></script>
 </body>

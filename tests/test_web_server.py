@@ -238,6 +238,28 @@ def test_approve_opposite_auto_flattens_prior_position(client, monkeypatch, tmp_
     assert srv._st("NIFTY")["position"]["trade1"]["ts"] == sht["ts"]   # short is now the position
 
 
+def test_stock_enter_records_under_its_own_symbol(client, monkeypatch, tmp_path):
+    """A highlighted scanner stock → POST /api/stock-enter builds the stock's state, records
+    the trade under its OWN symbol (so it settles per-instrument), and guards on bad ts."""
+    import journal.log as jlog
+    from journal import store
+    monkeypatch.setattr(srv, "log_decision",
+                        lambda p, dec, **k: jlog.log_decision(p, dec, path=tmp_path / "d.jsonl", **k))
+    trig = _open_trig(ts="2024-01-02T09:30:00+05:30", direction="long")
+    _seed_heads(monkeypatch, trade1=[trig])             # the stock's queue gets this trigger
+    r = client.post("/api/stock-enter", data={"symbol": "RELIANCE", "ts": trig["ts"]})
+    assert r.status_code == 200
+    recs = store.load_records(srv.JOURNAL_DB, symbol="RELIANCE")
+    assert recs and recs[-1]["proposal"]["ts"] == trig["ts"]
+    assert srv._st("RELIANCE")["position"]["trade1"]["ts"] == trig["ts"]   # now the open position
+    # re-entering the same trigger is rejected (already actioned)
+    assert client.post("/api/stock-enter",
+                       data={"symbol": "RELIANCE", "ts": trig["ts"]}).status_code == 409
+    # an unknown ts → 409 (not in the queue, not in the scanner cache)
+    assert client.post("/api/stock-enter",
+                       data={"symbol": "RELIANCE", "ts": "2024-01-02T11:00:00+05:30"}).status_code == 409
+
+
 def test_skip_advances_silently_without_logging(client, monkeypatch):
     from journal import store
     t1 = _open_trig(ts="2024-01-01T09:18:00+05:30")

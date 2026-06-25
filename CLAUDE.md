@@ -720,6 +720,28 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       view now on that level", not a reconstruction (as-of replay lives in Training; live as-of is a
       deferred follow-on). node --check clean; backend trigger-read/reask paths already covered; suite 321.
 
+- [x] **One-click stock "Enter" (record + track) + persistent analysis/chat popup (confirmed w/ trader).**
+      Two scanner-flow asks. (1) **Enter a stock:** highlighted scanner / pending-inbox rows (trigger + OI +
+      Claude ENTER all agree) gained an **Enter** button — `POST /api/stock-enter(symbol, ts)` builds the
+      stock's per-instrument state if unloaded (`_refresh`), resolves the trigger from its `queues[trade1]`
+      (falls back to the `_SCAN` row), seeds the scanner's cached Claude read so the OI-confluence boost
+      applies with **no extra API call**, then records via the shared `_record_decision` (extracted from
+      `/api/decision`'s approve/reject body — pure refactor) → logs + `save_decision` + opens the position;
+      frontend `enterStock` then `focusInstrument`s the stock to watch it (decided: record **+ focus**).
+      Settling is the existing per-instrument `/api/record?symbol=<stock>`. KNOWN: NSE-50 lot sizes are
+      placeholder `=1` (points-based) until real F&O lots are filled in (flagged on the button). (2)
+      **Persistent popup:** every 💬 used to render inline into the shared `#readBox`, which the 15s poll
+      clobbered. New net-new `#analysisModal` (fixed overlay, ✕/backdrop/Esc close) shows Claude's 4-part
+      read **and** a per-stock chat box that stays until closed — `discussTrigger`/`discussStock`/scanner
+      `data-scanread`/pending `data-pdiscuss|data-sdiscuss` all route to `openAnalysisModal` (decided: ALL
+      💬 buttons). `renderRead`→`renderReadInto(el, rd)` so the live-head read still owns `#readBox`
+      (poll-managed) while on-demand reads live in the poll-immune modal (fixes the clobber bug). Modal
+      chat reuses `/api/chat` (already per-instrument); opening for a non-active stock fires one
+      `/api/snapshot?symbol=` so its chat has context. Re-ask moved into the modal (`_modalReask`); old
+      `_reaskButton`/`reaskTrigger` removed. Tested in test_web_server (`/api/stock-enter` records under the
+      stock's own symbol, 409 on re-enter/unknown ts; `_record_decision` refactor keeps `/api/decision`
+      green). node --check clean; suite green (322).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

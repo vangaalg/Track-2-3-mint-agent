@@ -195,3 +195,16 @@ td.conf { font-weight:600; white-space:nowrap; }
 .token-banner button { background:var(--green); color:#fff; border:none; border-radius:7px;
   padding:7px 14px; font-weight:600; cursor:pointer; }
 .token-banner #tokenMsg { flex-basis:100%; font-size:12px; }
+
+/* Persistent analysis + chat popup (any 💬). Fixed overlay; poll-immune (separate from #readBox). */
+.modal { position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center; }
+.modal[hidden] { display:none; }
+.modal-backdrop { position:absolute; inset:0; background:rgba(15,18,28,.45); }
+.modal-card { position:relative; background:var(--card); border:1px solid var(--line); border-radius:12px;
+  width:min(560px, 94vw); max-height:88vh; overflow:auto; padding:14px 16px;
+  box-shadow:0 18px 48px rgba(15,18,28,.35); }
+.modal-head { display:flex; align-items:center; gap:10px; margin-bottom:8px;
+  border-bottom:1px solid var(--line); padding-bottom:8px; }
+.modal-title { font-weight:700; font-size:14px; }
+.modal-head .btn { margin-left:auto; padding:2px 9px; }
+.modal-body { margin-bottom:6px; }

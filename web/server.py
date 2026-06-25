@@ -1260,6 +1260,18 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     if action == "skip":                              # silent — no journal, no execution
         _st()["actioned"][key] = "skipped"
         return {"status": "skipped", "next_head": _advance_head(strategy)}
+    return _record_decision(strategy, target, action, symbol=symbol, label=label,
+                            live=live, is_head=is_head)
+
+
+def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,
+                     label: str = "", live: bool = False, is_head: bool = True) -> dict:
+    """Record an approve/reject for a RESOLVED trigger on the ACTIVE instrument and
+    persist the whole decision moment. Shared by ``/api/decision`` (live head or
+    back-decision) and ``/api/stock-enter`` (record a scanner stock by ts)."""
+    key = (strategy, target["ts"])
+    if key in _st()["actioned"]:
+        raise HTTPException(status_code=409, detail="trigger already actioned")
     # Archive THIS trigger's cached Claude read (not whatever the live head last read).
     cached = _st().get("reads", {}).get(key)
     if cached is not None:
@@ -1283,6 +1295,44 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     _st()["actioned"][key] = "rejected"
     return {"status": "rejected", "logged": rec["decision"],
             "next_head": _advance_head(strategy)}
+
+
+@app.post("/api/stock-enter")
+def stock_enter(symbol: str = Form(...), ts: str = Form(...),
+                strategy: str = Form("trade1"), live: bool = Form(False)):
+    """Record (take) a SCANNER stock trade by ``ts`` — the one-click "Enter" the trader
+    clicks on a highlighted NSE-50 row. Builds the stock's per-instrument state if it
+    isn't loaded yet (so the queue + recorder machinery work exactly like an index), seeds
+    the scanner's already-computed Claude read (its OI-bias boost, NO extra API call), then
+    records via the shared ``_record_decision``. Settling is per-instrument via /api/record."""
+    if strategy not in _STRAT:
+        raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
+    sym = symbol.upper()
+    _active.set(sym)
+    if _st()["snap"] is None:                       # not focused yet — build its state/queue
+        try:
+            _refresh(sym, DEFAULT_SIZE)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"could not load {sym}: {exc}")
+    # Prefer the canonical replay trigger (full engine levels); fall back to the scanner row.
+    target = next((t for t in _st().get("queues", {}).get(strategy, {}).get("triggers", [])
+                   if t.get("ts") == ts), None)
+    if target is None:
+        row = next((r for r in (_SCAN.get("rows") or []) if r.get("symbol") == sym), None)
+        tg = (row or {}).get("trigger")
+        if tg and tg.get("ts") == ts:
+            target = {"direction": tg["direction"], "entry": tg["entry"], "ts": tg["ts"],
+                      "stop": tg.get("stop"), "target": tg.get("target"), "rr": tg.get("rr"),
+                      "mtf_confidence": tg.get("mtf_confidence")}
+    if target is None:
+        raise HTTPException(status_code=409, detail="no matching stock trigger — rescan and retry")
+    # Reuse the scanner's cached read so the OI-confluence boost applies without a new API call.
+    cached = (_SCAN.get("read_cache") or {}).get((sym, ts))
+    if cached is not None:
+        read = dict(cached.get("read") or {})
+        read.setdefault("oi_bias", cached.get("oi_bias"))
+        _st().setdefault("reads", {})[(strategy, ts)] = read
+    return _record_decision(strategy, target, "approve", symbol=sym, live=live, is_head=True)
 
 
 # --- training mode (replay past 3-min triggers, label them, back-train) ----- #

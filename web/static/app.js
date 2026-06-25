@@ -226,6 +226,7 @@ function renderScanner(d) {
       + `<td>${r.oi_bias || "—"}</td>`
       + `<td>${cl.recommendation || "—"}${cl.confidence != null ? " · C" + cl.confidence : ""}</td>`
       + `<td>`
+      + (r.highlight && tg ? `<button class="btn ok" data-senter="${r.symbol}|${tg.ts}" title="Take this trade (record + track + focus); ₹ is points-based until stock lot sizes are set">Enter</button> ` : "")
       + (r.claude_full ? `<button class="btn" data-scanread="${r.symbol}" title="Read Claude's full analysis">💬</button> ` : "")
       + `<button class="btn csv" data-focus="${r.symbol}">Focus</button></td></tr>`;
   }
@@ -358,15 +359,16 @@ function renderCondor(p) {
   }
 }
 
-function renderRead(rd) {
+function readHtml(rd) {
   const v = rd.recommendation === "enter";
-  $("readBox").innerHTML =
-    `<div class="verdict ${v ? "enter" : "stand"}">Claude: ${v ? "ENTER" : "STAND DOWN"} · `
+  return `<div class="verdict ${v ? "enter" : "stand"}">Claude: ${v ? "ENTER" : "STAND DOWN"} · `
     + `${rd.agrees_with_engine ? "agrees with" : "DISAGREES with"} the engine · conf ${rd.confidence}/5</div>`
     + `<p><b>📈 Chart:</b> ${rd.chart_analysis}</p><p><b>🧮 OI:</b> ${rd.oi_analysis}</p>`
     + `<p><b>🧭 Where:</b> ${rd.where_moving}</p><p><b>🎯 Trade:</b> ${rd.right_trade}</p>`
     + `<p><b>⚔️ Challenge:</b> ${rd.challenge}</p><p><b>⚠️ Risk:</b> ${rd.key_risk}</p>`;
 }
+function renderReadInto(el, rd) { el.innerHTML = readHtml(rd); }
+function renderRead(rd) { renderReadInto($("readBox"), rd); }   // live head → decision card (poll-managed)
 
 // Chart ▲/▼ overlay follows the active CHART tab (independent of the table filter).
 async function fetchMarkers(strat) {
@@ -648,11 +650,66 @@ async function sendChat(ev) {
   const d = await r.json(); appendMsg("assistant", d.reply);
 }
 
-function appendMsg(role, text, file) {
+function appendMsgTo(logId, role, text, file) {
   const div = document.createElement("div"); div.className = "msg " + role;
   div.textContent = text || "";
   if (file) { const img = document.createElement("img"); img.src = URL.createObjectURL(file); div.appendChild(img); }
-  $("chatLog").appendChild(div); $("chatLog").scrollTop = $("chatLog").scrollHeight;
+  $(logId).appendChild(div); $(logId).scrollTop = $(logId).scrollHeight;
+}
+function appendMsg(role, text, file) { appendMsgTo("chatLog", role, text, file); }
+
+// ---- Persistent analysis + chat popup (any 💬; survives polling until ✕) ---- //
+let _modal = { symbol: null, ts: null, strat: "trade1" };
+
+function openAnalysisModal({ symbol, ts, strat, read, title }) {
+  _modal = { symbol: symbol || currentSymbol, ts: ts || null, strat: strat || "trade1" };
+  $("modalTitle").textContent = title
+    || `${_modal.symbol}${ts ? " · " + (("" + ts).slice(11, 16) || ts) : ""}`;
+  const body = $("modalBody");
+  if (read && read.recommendation) renderReadInto(body, read);
+  else body.innerHTML = "<span class='muted'>No saved read yet — re-ask Claude for a view on this level.</span>";
+  _modalReaskButton();
+  $("modalChatLog").innerHTML = "";
+  $("analysisModal").hidden = false;
+  // Give the discussed instrument a server-side snapshot so its chat has context (no-op if active).
+  if (_modal.symbol && _modal.symbol !== currentSymbol)
+    fetch(`/api/snapshot?symbol=${encodeURIComponent(_modal.symbol)}`).catch(() => { });
+}
+function closeAnalysisModal() { $("analysisModal").hidden = true; }
+
+function _modalReaskButton() {
+  if (!_modal.ts) return;
+  const b = document.createElement("button");
+  b.className = "btn"; b.style.marginTop = "6px"; b.textContent = "🔄 re-ask Claude";
+  b.onclick = _modalReask;
+  $("modalBody").appendChild(b);
+}
+async function _modalReask() {
+  $("modalBody").insertAdjacentHTML("beforeend", "<div class='muted'>re-asking Claude…</div>");
+  const fd = new FormData();
+  fd.append("strategy", _modal.strat); fd.append("ts", _modal.ts); fd.append("symbol", _modal.symbol);
+  try {
+    const r = await fetch("/api/reask", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    renderReadInto($("modalBody"), d); _modalReaskButton();
+    fetchTable(); fetchPending();
+  } catch (e) { $("modalBody").insertAdjacentHTML("beforeend", `<div class='muted'>re-ask failed: ${e.message}</div>`); }
+}
+async function modalSendChat(ev) {
+  ev.preventDefault();
+  const text = $("modalChatText").value.trim(), file = $("modalChatFile").files[0];
+  if (!text && !file) return;
+  const fd = new FormData();
+  fd.append("text", text); fd.append("symbol", _modal.symbol || currentSymbol);
+  if (file) fd.append("files", file);
+  appendMsgTo("modalChatLog", "user", text, file);
+  $("modalChatText").value = ""; $("modalChatFile").value = "";
+  try {
+    const r = await fetch("/api/chat", { method: "POST", body: fd });
+    const d = await r.json();
+    appendMsgTo("modalChatLog", "assistant", r.ok ? d.reply : (d.detail || "chat unavailable"));
+  } catch (e) { appendMsgTo("modalChatLog", "assistant", "chat unavailable"); }
 }
 
 $("analyseBtn").onclick = analyse;
@@ -683,38 +740,27 @@ async function decideTrigger(ts, strat, action, symbol) {
   fetchTable(); fetchRecord(); fetchPending();        // the inbox drops the decided row
 }
 
-// Append a "🔄 re-ask Claude" button under the current read for a trigger.
-function _reaskButton(ts, strat, symbol) {
-  const b = document.createElement("button");
-  b.className = "btn"; b.style.marginTop = "6px"; b.textContent = "🔄 re-ask Claude";
-  b.onclick = () => reaskTrigger(ts, strat, symbol);
-  $("readBox").appendChild(b);
-}
-
-// Show Claude's full saved read for a trigger + a re-ask button (cross-instrument via symbol).
-async function discussTrigger(ts, strat, symbol) {
-  try {
-    const rd = await (await fetch(
-      `/api/trigger-read?strategy=${strat || "trade1"}&ts=${encodeURIComponent(ts)}&symbol=${symbol || currentSymbol}`)).json();
-    if (rd && rd.recommendation) renderRead(rd);
-    else $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger yet.</span>";
-  } catch (e) { $("readBox").innerHTML = "<span class='muted'>No saved read for this trigger.</span>"; }
-  _reaskButton(ts, strat, symbol);
-  $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-// Re-run Claude on demand for a trigger (fresh take); updates the read + table + inbox.
-async function reaskTrigger(ts, strat, symbol) {
-  $("readBox").insertAdjacentHTML("beforeend", "<div class='muted'>re-asking Claude…</div>");
+// Take a SCANNER stock trade in one click: record it server-side, then focus to watch it live.
+async function enterStock(key) {
+  const [symbol, ts] = key.split("|");
   const fd = new FormData();
-  fd.append("strategy", strat || "trade1"); fd.append("ts", ts); fd.append("symbol", symbol || currentSymbol);
+  fd.append("symbol", symbol); fd.append("ts", ts); fd.append("strategy", "trade1");
+  const r = await fetch("/api/stock-enter", { method: "POST", body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert("Enter failed: " + (d.detail || r.statusText)); return; }
+  focusInstrument(symbol);                            // record + focus (watch what happens)
+}
+
+// Open the popup with Claude's saved read for a trigger (cross-instrument via symbol).
+// Re-ask is handled inside the modal (_modalReask) so it never gets clobbered by polling.
+async function discussTrigger(ts, strat, symbol) {
+  let rd = null;
   try {
-    const r = await fetch("/api/reask", { method: "POST", body: fd });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || r.statusText);
-    renderRead(d); _reaskButton(ts, strat, symbol);
-    fetchTable(); fetchPending();
-  } catch (e) { $("readBox").insertAdjacentHTML("beforeend", `<div class='muted'>re-ask failed: ${e.message}</div>`); }
+    rd = await (await fetch(
+      `/api/trigger-read?strategy=${strat || "trade1"}&ts=${encodeURIComponent(ts)}&symbol=${symbol || currentSymbol}`)).json();
+  } catch (e) { /* no saved read — the modal offers re-ask */ }
+  openAnalysisModal({ symbol: symbol || currentSymbol, ts, strat: strat || "trade1",
+    read: (rd && rd.recommendation) ? rd : null });
 }
 
 // One-shot alert tone for a fresh trigger (best-effort; browsers may gate audio on a gesture).
@@ -759,7 +805,8 @@ function renderPending(rows, count) {
     const sym = `${r.highlight ? "🟢 " : ""}<b>${r.symbol_label || sy}</b>`;
     let act;
     if (r.kind === "stock") {                          // screener candidate — focus the stock to act
-      act = `<button class="btn csv" title="Open this stock's cockpit" data-focus="${sy}">Focus</button>`
+      act = (r.highlight ? `<button class="btn ok" title="Take this trade (record + track + focus)" data-senter="${sy}|${r.ts}">Enter</button> ` : "")
+        + `<button class="btn csv" title="Open this stock's cockpit" data-focus="${sy}">Focus</button>`
         + `<button class="btn" title="Claude's read" data-sdiscuss="${sy}|${r.ts}">💬</button>`;
     } else {                                           // index trigger — decide inline on its instrument
       const a = (lbl, t, act2) => `<button class="btn ${act2 === "approve" ? "ok" : act2 === "reject" ? "no" : ""}" title="${t}" data-pdecide="${act2}" data-ts="${r.ts}" data-strat="${st}" data-sym="${sy}">${lbl}</button>`;
@@ -777,9 +824,8 @@ function renderPending(rows, count) {
 // Show a scanner stock's full read (already in the row — no server round-trip).
 function discussStock(key) {
   const r = _pendingRows.find(x => ((x.symbol || "") + "|" + (x.ts || "")) === key);
-  if (r && r.claude_full) renderRead(r.claude_full);
-  else $("readBox").innerHTML = "<span class='muted'>No saved read for this stock.</span>";
-  $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
+  openAnalysisModal({ symbol: (r && r.symbol) || key.split("|")[0], ts: r && r.ts,
+    strat: (r && r.strategy) || "trade1", read: (r && r.claude_full) || null });
 }
 // NIFTY-50 breadth: advance/decline tally + top-20 heavyweights' contribution to the index.
 async function fetchBreadth() {
@@ -835,6 +881,8 @@ $("scanAuto").addEventListener("change", (e) => {
 $("pendingTbl").addEventListener("click", (e) => {  // inbox row actions (cross-instrument)
   const d = e.target.closest("button[data-pdecide]");
   if (d) { decideTrigger(d.dataset.ts, d.dataset.strat, d.dataset.pdecide, d.dataset.sym); return; }
+  const en = e.target.closest("button[data-senter]");
+  if (en) { enterStock(en.dataset.senter); return; }            // stock → record + focus
   const f = e.target.closest("button[data-focus]");
   if (f) { focusInstrument(f.dataset.focus); return; }          // stock → load its cockpit
   const s = e.target.closest("button[data-sdiscuss]");
@@ -843,15 +891,15 @@ $("pendingTbl").addEventListener("click", (e) => {  // inbox row actions (cross-
   if (c) discussTrigger(c.dataset.pdiscuss, c.dataset.strat, c.dataset.sym);
 });
 $("scanTbl").addEventListener("click", (e) => {     // scanner row actions
+  const en = e.target.closest("button[data-senter]");
+  if (en) { enterStock(en.dataset.senter); return; }      // record + track + focus
   const f = e.target.closest("button[data-focus]");
   if (f) { focusInstrument(f.dataset.focus); return; }    // load that stock's full cockpit
   const rd = e.target.closest("button[data-scanread]");   // read Claude's full analysis for the stock
   if (rd) {
     const row = _scanRows.find((x) => x.symbol === rd.dataset.scanread);
-    if (row && row.claude_full) {
-      renderRead(row.claude_full);
-      $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    if (row) openAnalysisModal({ symbol: row.symbol, ts: (row.trigger || {}).ts,
+      strat: "trade1", read: row.claude_full || null });
   }
 });
 $("dlPcr").onclick = () => downloadCsv("summary");
@@ -859,6 +907,10 @@ $("dlChain").onclick = () => downloadCsv("chain");
 $("trigPrev").onclick = () => { if (_trigPage > 0) { _trigPage--; renderTriggers(); } };
 $("trigNext").onclick = () => { _trigPage++; renderTriggers(); };
 $("chatForm").onsubmit = sendChat;
+$("modalChatForm").onsubmit = modalSendChat;
+$("modalClose").onclick = closeAnalysisModal;
+$("analysisModal").addEventListener("click", (e) => { if (e.target.dataset.close) closeAnalysisModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("analysisModal").hidden) closeAnalysisModal(); });
 document.querySelectorAll("#stratTabs button").forEach((b) =>
   b.addEventListener("click", () => setStrat(b.dataset.strat)));
 wireChartUI(fetchChart);          // timeframe buttons + ⚙ indicator panel (chart.js)
