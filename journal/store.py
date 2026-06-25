@@ -229,3 +229,42 @@ def load_trigger_reads(symbol: str, path: str | Path = DB_PATH) -> list[dict]:
             (symbol,)).fetchall()
     return [{"strategy": r["strategy"], "ts": r["ts"],
              "read": json.loads(r["read_json"]) if r["read_json"] else None} for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# Market reads — Claude's on-demand "Market view" reads (no trigger). Own table
+# so the day's reads can be browsed/re-opened. ``ts`` is the IST moment the read
+# was generated (used for the day picker + display).
+# --------------------------------------------------------------------------- #
+def init_market_reads(path: str | Path = DB_PATH) -> None:
+    with _connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS market_reads ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, logged_at TEXT, symbol TEXT, "
+            "ts TEXT, read_json TEXT)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_mreads_sym ON market_reads(symbol)")
+
+
+def save_market_read(symbol: str, ts: str, read: dict | None,
+                     path: str | Path = DB_PATH) -> None:
+    """Append one on-demand market read (``ts`` = IST moment it was generated)."""
+    init_market_reads(path)
+    with _connect(path) as conn:
+        conn.execute(
+            "INSERT INTO market_reads (logged_at, symbol, ts, read_json) "
+            "VALUES (?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), symbol, ts,
+             json.dumps(read) if read is not None else None))
+
+
+def load_market_reads(symbol: str, path: str | Path = DB_PATH) -> list[dict]:
+    """All persisted market reads for ``symbol`` (oldest first), each ``{ts, read}``."""
+    if not Path(path).exists():
+        return []
+    init_market_reads(path)
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT ts, read_json FROM market_reads WHERE symbol=? ORDER BY id",
+            (symbol,)).fetchall()
+    return [{"ts": r["ts"],
+             "read": json.loads(r["read_json"]) if r["read_json"] else None} for r in rows]

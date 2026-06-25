@@ -606,7 +606,22 @@ def market_read(symbol: str = "NIFTY"):
         read = claude_read(snap, _st().get("prop"), _learning_memory(), completer=READ_COMPLETER)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Claude unavailable: {exc}")
-    return asdict(read)
+    out = asdict(read)
+    ts = _persist_market_read(symbol.upper(), out)        # durable: browse/re-open all day
+    out["ts"] = ts
+    return out
+
+
+def _persist_market_read(symbol: str, read: dict) -> str:
+    """Save an on-demand market read to the journal store (own table, never pollutes the
+    track record) so the trader can re-open the day's reads. Returns the IST timestamp used
+    (also surfaced to the UI). Best-effort — never breaks the read."""
+    ts = datetime.now(_IST).isoformat(timespec="seconds")
+    try:
+        store.save_market_read(symbol.upper(), ts, read, path=JOURNAL_DB)
+    except Exception:
+        pass
+    return ts
 
 
 # --- routes ---------------------------------------------------------------- #
@@ -720,6 +735,19 @@ def oi_history(symbol: str = "NIFTY", day: str | None = None):
         df = df[[str(t)[:10] == day for t in df.index]]
     rows = json.loads(df.reset_index().to_json(orient="records"))  # NaN -> null
     return {"symbol": symbol.upper(), "rows": rows, "days": days}
+
+
+@app.get("/api/market-reads")
+def market_reads(symbol: str = "NIFTY", day: str | None = None):
+    """The day's on-demand "Market view" Claude reads for one instrument — for the cockpit's
+    "Market reads" card (browse + re-open). ``day`` (a YYYY-MM-DD, off the IST ts) filters to one
+    session; omitted / "all" returns the full history. Newest-first. Empty when none yet."""
+    reads = store.load_market_reads(symbol.upper(), path=JOURNAL_DB)   # oldest-first
+    days = sorted({(r.get("ts") or "")[:10] for r in reads if r.get("ts")}, reverse=True)
+    if day and day != "all":
+        reads = [r for r in reads if (r.get("ts") or "")[:10] == day]
+    reads.reverse()                                                   # newest-first for display
+    return {"symbol": symbol.upper(), "rows": reads, "days": days}
 
 
 def _chain_history_df(sym: str, day: str | None):

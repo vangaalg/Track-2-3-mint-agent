@@ -914,3 +914,26 @@ def test_market_read_works_without_a_trigger(client, monkeypatch):
     assert r.status_code == 200
     d = r.json()
     assert d["recommendation"] in ("enter", "stand_down") and d["chart_analysis"]
+    assert d.get("ts")                                 # IST stamp surfaced to the UI
+    # Persisted so it can be re-opened later in the day (own table, not the track record).
+    from journal import store
+    saved = store.load_market_reads("NIFTY", path=srv.JOURNAL_DB)
+    assert len(saved) == 1 and saved[0]["read"]["chart_analysis"] == d["chart_analysis"]
+    assert store.load_records(srv.JOURNAL_DB) == []    # never pollutes decisions/track record
+
+
+def test_market_reads_history(client, monkeypatch):
+    """The saved market reads are browseable per instrument, newest-first, day-filtered."""
+    _seed_heads(monkeypatch, trade1=[])
+    client.get("/api/snapshot")
+    client.post("/api/market-read")                    # NIFTY read
+    client.post("/api/market-read")                    # a second NIFTY read
+    h = client.get("/api/market-reads").json()
+    assert h["symbol"] == "NIFTY" and len(h["rows"]) == 2 and h["days"]
+    # newest-first ordering
+    assert h["rows"][0]["ts"] >= h["rows"][1]["ts"]
+    day = h["days"][0]
+    assert len(client.get(f"/api/market-reads?day={day}").json()["rows"]) == 2
+    assert client.get("/api/market-reads?day=1999-01-01").json()["rows"] == []
+    # per-instrument isolation
+    assert client.get("/api/market-reads?symbol=BANKNIFTY").json()["rows"] == []

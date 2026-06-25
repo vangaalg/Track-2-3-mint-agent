@@ -16,6 +16,7 @@ let _trigStrat = "all", _trigDate = null, _trigPage = 0;
 let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null, _trigPending = 0;
 let _trigDates = [], _trigStrats = [];
 let _pcrDay = "all", _pcrDays = [];          // PCR-over-time: recorded session picker
+let _mrDay = "all", _mrDays = [], _mrRows = [];  // saved "Market view" reads: day picker + rows
 let _scanRows = [];                          // last scanner rows (for the 💬 full-read lookup)
 let _seenPending = new Set();                // pending trigger ts already alerted (one beep each)
 
@@ -33,6 +34,7 @@ async function poll() {
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
     fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending(); fetchBreadth();
+    fetchMarketReads();                               // saved Market-view reads (browse all day)
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
     // The token banner is driven by the real Breeze connection state (refreshTokenStatus),
     // NOT by benign OI notes — so a valid token no longer re-prompts on every refresh.
@@ -320,6 +322,45 @@ function renderPcr(rows) {
   $("pcrTbl").innerHTML = h + "</tbody>";
 }
 
+// Saved "Market view" reads — the day's on-demand Claude analyses (own table), so the
+// trader can re-open any one in the poll-immune popup all session long. Per instrument.
+async function fetchMarketReads() {
+  try {
+    const d = await (await fetch(`/api/market-reads?symbol=${sym()}&day=${_mrDay}`)).json();
+    if (d.days) { _mrDays = d.days; populateMrDays(); }
+    _mrRows = d.rows || [];
+    renderMarketReads();
+  } catch (e) { /* keep last */ }
+}
+function populateMrDays() {
+  const sel = $("mrDay");
+  if (!sel) return;
+  if (sel.options.length !== _mrDays.length + 1) {
+    sel.innerHTML = `<option value="all">All days</option>`
+      + _mrDays.map((x) => `<option value="${x}">${x}</option>`).join("");
+  }
+  sel.value = _mrDay;
+}
+function renderMarketReads() {
+  const el = $("mrList");
+  if (!el) return;
+  if (!_mrRows.length) {
+    el.innerHTML = `<tr><td colspan="4" class="muted">No market reads yet — press `
+      + `🔍 Market view to ask Claude; saved reads appear here to re-open all day.</td></tr>`;
+    return;
+  }
+  let h = "<thead><tr><th>Time</th><th>Verdict</th><th>Conf</th><th></th></tr></thead><tbody>";
+  for (const r of _mrRows) {                              // already newest-first from the server
+    const rd = r.read || {}, enter = (rd.recommendation || "").toLowerCase() === "enter";
+    const day = (r.ts || "").slice(5, 10), t = (r.ts || "").slice(11, 16);
+    h += `<tr class="mrrow" data-mrts="${r.ts}"><td>${t}<span class="muted"> ${day}</span></td>`
+      + `<td class="${enter ? "win-txt" : "muted"}">${enter ? "ENTER" : "stand down"}</td>`
+      + `<td class="conf">${rd.confidence != null ? rd.confidence + "/5" : "—"}</td>`
+      + `<td><button class="btn" data-mropen="${r.ts}">Open</button></td></tr>`;
+  }
+  el.innerHTML = h + "</tbody>";
+}
+
 // The calm idle state — no flickering ENTER/STAND-DOWN between triggers.
 function renderWatching() {
   $("propBox").className = "propbox watching";
@@ -601,7 +642,11 @@ async function marketRead() {
     const r = await fetch(`/api/market-read?symbol=${sym()}`, { method: "POST" });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
-    renderRead(d);
+    $("readBox").innerHTML = "";                          // hand off to the poll-immune popup
+    const t = d.ts ? (("" + d.ts).slice(11, 16)) : "";
+    openAnalysisModal({ symbol: sym(), kind: "market", read: d,
+                        title: `${currentSymbol} · market view${t ? " · " + t : ""}` });
+    fetchMarketReads();                                   // saved-reads card picks it up
   } catch (e) { $("readBox").innerHTML = `<span class="muted">Market read failed: ${e.message}</span>`; }
   btn.disabled = false; btn.textContent = old;
 }
@@ -659,10 +704,10 @@ function appendMsgTo(logId, role, text, file) {
 function appendMsg(role, text, file) { appendMsgTo("chatLog", role, text, file); }
 
 // ---- Persistent analysis + chat popup (any 💬; survives polling until ✕) ---- //
-let _modal = { symbol: null, ts: null, strat: "trade1" };
+let _modal = { symbol: null, ts: null, strat: "trade1", kind: "trigger" };
 
-function openAnalysisModal({ symbol, ts, strat, read, title }) {
-  _modal = { symbol: symbol || currentSymbol, ts: ts || null, strat: strat || "trade1" };
+function openAnalysisModal({ symbol, ts, strat, read, title, kind }) {
+  _modal = { symbol: symbol || currentSymbol, ts: ts || null, strat: strat || "trade1", kind: kind || "trigger" };
   $("modalTitle").textContent = title
     || `${_modal.symbol}${ts ? " · " + (("" + ts).slice(11, 16) || ts) : ""}`;
   const body = $("modalBody");
@@ -678,7 +723,7 @@ function openAnalysisModal({ symbol, ts, strat, read, title }) {
 function closeAnalysisModal() { $("analysisModal").hidden = true; }
 
 function _modalReaskButton() {
-  if (!_modal.ts) return;
+  if (!_modal.ts && _modal.kind !== "market") return;   // market reads re-ask without a ts
   const b = document.createElement("button");
   b.className = "btn"; b.style.marginTop = "6px"; b.textContent = "🔄 re-ask Claude";
   b.onclick = _modalReask;
@@ -686,9 +731,16 @@ function _modalReaskButton() {
 }
 async function _modalReask() {
   $("modalBody").insertAdjacentHTML("beforeend", "<div class='muted'>re-asking Claude…</div>");
-  const fd = new FormData();
-  fd.append("strategy", _modal.strat); fd.append("ts", _modal.ts); fd.append("symbol", _modal.symbol);
   try {
+    if (_modal.kind === "market") {                      // fresh market view (no trigger ts)
+      const r = await fetch(`/api/market-read?symbol=${encodeURIComponent(_modal.symbol)}`, { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.detail || r.statusText);
+      renderReadInto($("modalBody"), d); _modalReaskButton(); fetchMarketReads();
+      return;
+    }
+    const fd = new FormData();
+    fd.append("strategy", _modal.strat); fd.append("ts", _modal.ts); fd.append("symbol", _modal.symbol);
     const r = await fetch("/api/reask", { method: "POST", body: fd });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
@@ -863,6 +915,7 @@ function focusInstrument(symbolName) {
   currentSymbol = symbolName;
   _trigDate = null; _trigPage = 0; _triggers = []; currentHead = null;
   _pcrDay = "all"; _pcrDays = [];                  // PCR history follows the active instrument
+  _mrDay = "all"; _mrDays = []; _mrRows = [];      // market reads follow the active instrument
   resetChart();                                    // wipe the prior instrument's candles (no overlap)
   $("chatLog").innerHTML = "";
   $("dot").className = "dot"; $("meta").textContent = `loading ${currentSymbol}…`;
@@ -872,6 +925,16 @@ $("instrSel").addEventListener("change", (e) => focusInstrument(e.target.value))
 $("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _trigPage = 0; fetchTable(); });
 $("trigStrat").addEventListener("change", (e) => { _trigStrat = e.target.value; _trigPage = 0; fetchTable(); });
 $("pcrDay").addEventListener("change", (e) => { _pcrDay = e.target.value; fetchPcrHistory(); });
+$("mrDay").addEventListener("change", (e) => { _mrDay = e.target.value; fetchMarketReads(); });
+$("mrList").addEventListener("click", (e) => {     // re-open a saved market read in the popup
+  const b = e.target.closest("button[data-mropen]");
+  if (!b) return;
+  const row = _mrRows.find((r) => r.ts === b.dataset.mropen);
+  if (!row) return;
+  const t = (row.ts || "").slice(11, 16), day = (row.ts || "").slice(0, 10);
+  openAnalysisModal({ symbol: currentSymbol, kind: "market", read: row.read,
+                      title: `${currentSymbol} · market view · ${day} ${t}` });
+});
 $("scanRefresh").onclick = scanRescan;
 $("scanAuto").checked = localStorage.getItem("scanAuto") !== "0";   // restore the toggle
 $("scanAuto").addEventListener("change", (e) => {
