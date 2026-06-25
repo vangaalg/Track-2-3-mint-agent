@@ -466,16 +466,20 @@ function renderTriggers() {
         + `${rd.confidence != null ? " C" + rd.confidence : ""}</td>`
       : `<td class="muted">…</td>`;
     // Action cell: decide ANY trigger (✓ take / ✗ reject / 💬 discuss) even after its live window,
-    // then it's logged by date; Exit records a real fill. Already-decided rows show the verdict.
+    // then it's logged by date; Exit records a real fill. Already-decided / exited rows still get a
+    // 💬 so Claude's read (or an on-demand re-ask) is viewable for EVERY directional trigger.
+    const discuss = dir
+      ? `<button class="btn" title="Discuss with Claude" data-discuss="${t.ts}" data-strat="${t.strategy || ""}">💬</button>`
+      : "";
     let act;
-    if (t.outcome === "exit") act = `<td class="muted">@ ${n(t.exit)}</td>`;
-    else if (!dir) act = "<td></td>";
-    else if (t.actioned) act = `<td class="muted">${t.actioned === "approved" ? "✓ taken"
-      : t.actioned === "rejected" ? "✗ rejected" : t.actioned}</td>`;
+    if (!dir) act = "<td></td>";
+    else if (t.outcome === "exit") act = `<td class="trigact"><span class="muted">@ ${n(t.exit)}</span> ${discuss}</td>`;
+    else if (t.actioned) act = `<td class="trigact"><span class="muted">${t.actioned === "approved" ? "✓ taken"
+      : t.actioned === "rejected" ? "✗ rejected" : t.actioned}</span> ${discuss}</td>`;
     else act = `<td class="trigact">`
       + `<button class="btn ok" title="Approve / take — logged" data-decide="approve" data-ts="${t.ts}" data-strat="${t.strategy || ""}">✓</button>`
       + `<button class="btn no" title="Reject / stand down — logged" data-decide="reject" data-ts="${t.ts}" data-strat="${t.strategy || ""}">✗</button>`
-      + `<button class="btn" title="Discuss with Claude" data-discuss="${t.ts}" data-strat="${t.strategy || ""}">💬</button>`
+      + discuss
       + `<button class="btn exit" title="Record a real fill" data-exit-ts="${t.ts}" data-strat="${t.strategy || ""}">Exit</button></td>`;
     h += condor
       ? `<tr><td>${t.ts.slice(11, 16)}</td><td>${t.short_put}</td><td>${t.short_call}</td>`

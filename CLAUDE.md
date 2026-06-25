@@ -706,6 +706,20 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       with no trigger while `/api/analyse` 409s. Suite green (321). FOLLOW-ON: optionally feed the breadth
       (advance/decline) + a market-specific prompt into the read; persist the manual reads if useful.
 
+- [x] **💬 Discuss on EVERY trigger row (see/generate Claude's read for any trigger).** Trader had two
+      triggers (09:24 ORB exited, 09:30 3-min `stand C4`) but couldn't view Claude's analysis: the read is
+      only auto-computed for a strategy's LIVE OPEN head while polling, so the ORB (resolved before the
+      cockpit saw it as a head) showed `…`, AND `renderTriggers` only rendered action buttons for OPEN
+      un-actioned rows — exited rows showed just `@ <exit>`, actioned rows just the verdict, so neither had
+      a 💬. Fix (frontend only, `web/static/app.js renderTriggers`): every DIRECTIONAL row now gets a 💬
+      Discuss button regardless of outcome/actioned state (exited + actioned cells append it; open
+      unchanged; condor/non-directional none). No backend change — `discussTrigger`→`/api/trigger-read`
+      shows the frozen read when present, else the panel offers 🔄 re-ask (`/api/reask`, which finds the
+      trigger by `(strategy,ts)` in the queue incl. the exited ORB) to generate one on demand. NOTE: a
+      never-auto-read trigger's re-ask uses the CURRENT snapshot (not the as-of-trigger world) — "Claude's
+      view now on that level", not a reconstruction (as-of replay lives in Training; live as-of is a
+      deferred follow-on). node --check clean; backend trigger-read/reask paths already covered; suite 321.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
