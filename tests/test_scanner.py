@@ -99,6 +99,27 @@ def test_cache_dedups_claude_per_trigger(monkeypatch):
     assert calls == [1, 1]                        # one more call for the new trigger
 
 
+def test_scan_rows_carry_day_stats(monkeypatch):
+    """Every scan row carries today's OHLCV + day %-change (the breadth view feeds off this) —
+    FREE off the snapshot's partial daily bar, for both a triggered and a no-trigger stock."""
+    import pandas as pd
+    snap = _Snap()
+    snap.spot = 110.0
+    snap.frames = {"1day": pd.DataFrame(
+        [{"open": 100.0, "high": 112.0, "low": 99.0, "close": 110.0, "volume": 5000}],
+        index=pd.to_datetime(["2026-06-23"]))}
+    monkeypatch.setattr(sc, "build_snapshot", lambda *a, **k: snap)
+    monkeypatch.setattr(sc, "fetch_oi", lambda *a, **k: {"pcr": 1.0})
+    monkeypatch.setattr(sc, "list_triggers", lambda *a, **k: [_LONG])
+    trow = sc.scan_symbol("RELIANCE", None, None, chain_fn=lambda s: "CH",
+                          read_fn=lambda snap, prop: _read("enter", "bullish"))
+    monkeypatch.setattr(sc, "list_triggers", lambda *a, **k: [])
+    nrow = sc.scan_symbol("TCS", None, None, chain_fn=lambda s: "CH", read_fn=lambda *a: _read())
+    for row in (trow, nrow):
+        assert row["open"] == 100.0 and row["high"] == 112.0 and row["volume"] == 5000
+        assert row["close"] == 110.0 and row["pct_change"] == 10.0   # (110-100)/100*100
+
+
 def test_scan_row_carries_full_read(monkeypatch):
     """Each triggered row exposes the FULL Claude read (claude_full) so a stock's analysis is
     readable like an index — not just the verdict chip."""

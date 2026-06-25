@@ -856,3 +856,27 @@ def test_reask_reruns_claude_for_a_trigger(client, monkeypatch):
     assert r.status_code == 200 and r.json()["recommendation"] == "enter"
     assert srv._st("NIFTY")["reads"][("trade1", t1["ts"])]["recommendation"] == "enter"
     assert client.post("/api/reask", data={"strategy": "trade1", "ts": "nope"}).status_code == 409
+
+
+def test_breadth_endpoint(client, monkeypatch):
+    """/api/breadth computes advance/decline + top contributors off the cached scan rows + the
+    live NIFTY spot (no extra pull)."""
+    import types
+    monkeypatch.setattr(srv, "_SCAN", {"at": 1.0, "rows": [
+        {"symbol": "HDFCBANK", "pct_change": 1.0, "open": 1600, "high": 1620, "low": 1595, "close": 1616, "volume": 100},
+        {"symbol": "RELIANCE", "pct_change": -2.0, "open": 2900, "high": 2905, "low": 2850, "close": 2842, "volume": 200},
+        {"symbol": "INFY", "pct_change": 0.0, "open": 1500, "high": 1505, "low": 1495, "close": 1500, "volume": 50},
+    ]})
+    srv._st("NIFTY")["snap"] = types.SimpleNamespace(spot=24000.0)
+    d = client.get("/api/breadth").json()
+    assert d["advance"] == 1 and d["decline"] == 1 and d["unchanged"] == 1
+    by = {r["symbol"]: r for r in d["rows"]}
+    assert by["HDFCBANK"]["contribution"] > 0 and by["RELIANCE"]["contribution"] < 0
+    assert d["rows"][0]["symbol"] == "HDFCBANK"        # positive contribution sorts first
+    assert d["net_points"] is not None
+
+
+def test_breadth_empty_when_no_scan(client, monkeypatch):
+    monkeypatch.setattr(srv, "_SCAN", {"at": 0.0, "rows": []})
+    d = client.get("/api/breadth").json()
+    assert d["rows"] == [] and d["advance"] == 0 and d["decline"] == 0 and d["net_points"] is None

@@ -25,11 +25,38 @@ from indicators.directional import journal_mtf_config
 ANCHOR = "9h15min"
 
 
+def _day_stats(snap) -> dict:
+    """Today's OHLCV + day %-change for the breadth / index-contribution view — sourced from the
+    already-built snapshot's partial DAILY bar, so it's FREE (no extra pull). NaN-safe → None."""
+    import math
+
+    def f(x):
+        try:
+            x = float(x)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(x) else x
+
+    out = {"open": None, "high": None, "low": None, "close": None, "volume": None, "pct_change": None}
+    if snap is None:
+        return out
+    spot = f(getattr(snap, "spot", None))
+    out["close"] = round(spot, 2) if spot is not None else None
+    daily = (getattr(snap, "frames", {}) or {}).get("1day")
+    if daily is not None and not daily.empty:
+        last = daily.iloc[-1]
+        o, h, l, v = f(last.get("open")), f(last.get("high")), f(last.get("low")), f(last.get("volume"))
+        out["open"], out["high"], out["low"], out["volume"] = o, h, l, v
+        if o and spot is not None:
+            out["pct_change"] = round((spot - o) / o * 100.0, 2)
+    return out
+
+
 def _no_trigger(symbol: str, snap) -> dict:
     return {"symbol": symbol, "spot": round(float(snap.spot), 2) if snap else None,
             "trigger": None, "oi_bias": None, "claude": None,
             "pcr": (getattr(snap, "oi", None) or {}).get("pcr") if snap else None,
-            "agree": False, "highlight": False}
+            "agree": False, "highlight": False, **_day_stats(snap)}
 
 
 def _read_dict(read) -> dict | None:
@@ -104,7 +131,7 @@ def scan_symbol(symbol: str, base, daily, chain_fn, read_fn, cfg=None,
         "oi_bias": oi_bias, "pcr": pcr,
         "claude": ({"recommendation": rec, "confidence": conf_c} if rec is not None else None),
         "claude_full": full,                                 # the 4-part read, so you can READ it
-        "agree": agree, "highlight": agree,
+        "agree": agree, "highlight": agree, **_day_stats(snap),
     }
 
 

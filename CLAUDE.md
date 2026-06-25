@@ -675,6 +675,25 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       NOTE: Bank Nifty's live Breeze chain/expiry still needs open-network verification (try/except
       isolates it); stock rows = highlights only (easy to widen to all triggers).
 
+- [x] **Market-breadth + index-contribution container (intraday direction read; confirmed w/ trader).**
+      A cockpit card showing (1) NIFTY-50 **advance/decline** (e.g. 40:10 across all 50) + (2) the
+      **top-20 heavyweights** with OHLCV + each stock's **point-contribution to NIFTY today**. Decided
+      w/ trader: STATIC weights table, PIGGYBACK the 5-min scanner (FREE — the scanner already pulls all
+      50 stocks' OHLCV on the cheap path; zero extra Breeze pulls, zero tokens), rank top-20 BY WEIGHT.
+      `feeds/scanner.py`: new pure `_day_stats(snap)` (today's OHLCV + day %-change off the snapshot's
+      partial daily bar, NaN-safe) merged onto BOTH the no-trigger + triggered rows → `_SCAN["rows"]`
+      now carries day stats for all 50. New pure `feeds/breadth.py`: `NIFTY50_WEIGHTS` (approx free-float,
+      keyed to `NSE50_STOCKS`; refresh ~semi-annually) + `compute_breadth(scan_rows, nifty_spot, top_n)`
+      → advance/decline/unchanged across ALL rows + top-N by weight each with `contribution =
+      (wt/100)*(pct/100)*nifty_spot` (Σ = `net_points` ≈ today's NIFTY basket move), displayed sorted by
+      signed contribution. `GET /api/breadth` = thin compute over `_SCAN` + the live NIFTY spot
+      (`_states["NIFTY"].snap.spot`); honest empty state when the scanner hasn't run. Frontend: a
+      📊 breadth card (tally line `adv:dec · net ±X pts` + OHLCV/%chg/contrib table, sign-coloured),
+      `fetchBreadth` in the poll loop. Needs the stock scanner ON (`SCAN_STOCKS=1`) — cheap now post
+      token-fix. Tested: breadth compute (A/D, contribution sign, net, top-N-by-weight, NaN/None-spot),
+      scanner day-stats on both row types, `/api/breadth` endpoint + empty state. Suite green (320).
+      NOTE: weights are APPROXIMATE (static) — flagged in `feeds/breadth.py` for periodic refresh.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

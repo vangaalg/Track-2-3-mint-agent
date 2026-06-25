@@ -32,6 +32,7 @@ from feeds.oi_levels import wall_levels
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store, oi_summary_store, scanner
+from feeds.breadth import compute_breadth
 from feeds.instruments import (
     INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT,
     scanner_symbols)
@@ -784,6 +785,18 @@ def scanner_refresh():
     Runs inline — for ~50 stocks this takes a few seconds of paced pulls."""
     _run_scan()
     return _scan_payload()
+
+
+@app.get("/api/breadth")
+def breadth_get():
+    """NIFTY-50 market breadth + index contribution — advance/decline tally + the top-20
+    heavyweights' point-contribution to NIFTY today. Computed FREE off the scanner's cached
+    50-stock snapshots (no extra pull) + the live NIFTY spot."""
+    nifty = (_states.get("NIFTY") or {}).get("snap")
+    out = compute_breadth(_SCAN.get("rows") or [], nifty_spot=getattr(nifty, "spot", None))
+    out["at"] = _SCAN.get("at")
+    out["scanning"] = _SCAN.get("scanning", False)
+    return out
 
 
 @app.get("/api/record")

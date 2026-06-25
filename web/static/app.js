@@ -32,7 +32,7 @@ async function poll() {
     $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending();
+    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending(); fetchBreadth();
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
     // The token banner is driven by the real Breeze connection state (refreshTokenStatus),
     // NOT by benign OI notes — so a valid token no longer re-prompts on every refresh.
@@ -759,6 +759,37 @@ function discussStock(key) {
   else $("readBox").innerHTML = "<span class='muted'>No saved read for this stock.</span>";
   $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
 }
+// NIFTY-50 breadth: advance/decline tally + top-20 heavyweights' contribution to the index.
+async function fetchBreadth() {
+  try { renderBreadth(await (await fetch("/api/breadth")).json()); } catch (e) { /* keep last */ }
+}
+
+function renderBreadth(d) {
+  const adv = d.advance || 0, dec = d.decline || 0, unch = d.unchanged || 0;
+  const np = d.net_points;
+  const tally = (adv || dec || unch)
+    ? `<b class="win-txt">${adv}</b> : <b class="loss-txt">${dec}</b> adv:dec`
+      + (unch ? ` · ${unch} unch` : "")
+      + (np != null ? ` · net <b class="${np >= 0 ? "win-txt" : "loss-txt"}">${np >= 0 ? "+" : ""}${np}</b> pts` : "")
+    : "no breadth yet — scanner runs 09:15–15:30 IST (needs the stock scanner on)";
+  $("breadthTally").innerHTML = tally;
+  const rows = d.rows || [];
+  let h = "<thead><tr><th>Stock</th><th>Wt%</th><th>O</th><th>H</th><th>L</th><th>LTP</th>"
+    + "<th>Vol</th><th>%Chg</th><th>Contrib</th></tr></thead><tbody>";
+  if (!rows.length) h += `<tr><td colspan="9" class="muted">—</td></tr>`;
+  for (const r of rows) {
+    const pc = r.pct_change, ct = r.contribution;
+    const pcl = pc == null ? "" : (pc >= 0 ? "win-txt" : "loss-txt");
+    const ccl = ct == null ? "" : (ct >= 0 ? "win-txt" : "loss-txt");
+    h += `<tr><td><b>${r.symbol}</b></td><td class="muted">${n(r.weight)}</td>`
+      + `<td>${n(r.open)}</td><td>${n(r.high)}</td><td>${n(r.low)}</td><td>${n(r.close)}</td>`
+      + `<td class="muted">${r.volume != null ? Math.round(r.volume).toLocaleString() : "—"}</td>`
+      + `<td class="${pcl}">${pc == null ? "—" : (pc >= 0 ? "+" : "") + pc + "%"}</td>`
+      + `<td class="${ccl}">${ct == null ? "—" : (ct >= 0 ? "+" : "") + ct}</td></tr>`;
+  }
+  $("breadthTbl").innerHTML = h + "</tbody>";
+}
+
 // Switch the whole cockpit to an instrument (index dropdown OR a scanner stock).
 function focusInstrument(symbolName) {
   currentSymbol = symbolName;
