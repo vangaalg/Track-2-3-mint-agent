@@ -583,6 +583,23 @@ async function analyse() {
   analysing = false; $("analyseBtn").textContent = "🤖 Analyse with Claude";
 }
 
+// On-demand MARKET view for the selected index — Claude reads the current chart + OI + macro,
+// no trigger needed. Manual (one Claude call per click).
+async function marketRead() {
+  const btn = $("mktBtn");
+  if (btn.disabled) return;
+  btn.disabled = true; const old = btn.textContent; btn.textContent = "Analysing…";
+  $("readBox").innerHTML = `<span class="muted">Asking Claude for the current ${currentSymbol} market view…</span>`;
+  $("readBox").scrollIntoView({ behavior: "smooth", block: "center" });
+  try {
+    const r = await fetch(`/api/market-read?symbol=${sym()}`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+    renderRead(d);
+  } catch (e) { $("readBox").innerHTML = `<span class="muted">Market read failed: ${e.message}</span>`; }
+  btn.disabled = false; btn.textContent = old;
+}
+
 // Swap the card to the next trigger INSTANTLY off the decision response's `next_head`
 // (no snapshot round-trip), then kick Claude's read for it asynchronously.
 function advanceTo(nextHead) {
@@ -635,6 +652,7 @@ function appendMsg(role, text, file) {
 }
 
 $("analyseBtn").onclick = analyse;
+$("mktBtn").onclick = marketRead;
 $("approveBtn").onclick = () => decide("approve");
 $("rejectBtn").onclick = () => decide("reject");
 $("skipBtn").onclick = () => decide("skip");

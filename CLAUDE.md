@@ -694,6 +694,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       scanner day-stats on both row types, `/api/breadth` endpoint + empty state. Suite green (320).
       NOTE: weights are APPROXIMATE (static) — flagged in `feeds/breadth.py` for periodic refresh.
 
+- [x] **On-demand "Market view" Claude button (no trigger needed; confirmed w/ trader).** The existing
+      "🤖 Analyse with Claude" button is gated to an active trigger (`_run_read` → 409 "no active trigger
+      to analyse"), so the trader couldn't get Claude's view while the market was just chopping. Added a
+      header **🔍 Market view** button → new `POST /api/market-read?symbol=` that runs `claude_read(snap,
+      _st()["prop"], _learning_memory())` on the CURRENT snapshot (chart + OI + macro) for the selected
+      index, with NO head required (refreshes the snapshot first if the session hasn't pulled yet). Returns
+      the same 4-part read (chart/OI/where-moving/trade/challenge/risk) rendered in `#readBox` via the
+      existing `renderRead`; works on NIFTY or Bank Nifty. Manual = one user-initiated Claude call (token-
+      cheap). The trigger-specific analyse button is unchanged. Tested: `/api/market-read` returns a read
+      with no trigger while `/api/analyse` 409s. Suite green (321). FOLLOW-ON: optionally feed the breadth
+      (advance/decline) + a market-specific prompt into the read; persist the manual reads if useful.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

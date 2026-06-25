@@ -586,6 +586,29 @@ def _run_read(sid: str = "trade1") -> dict:
     return _run_head_read(sid, head)
 
 
+@app.post("/api/market-read")
+def market_read(symbol: str = "NIFTY"):
+    """On-demand holistic MARKET view for the selected index — sends the CURRENT chart + OI +
+    macro to Claude and returns its read, with NO active trigger required (unlike /api/analyse,
+    which only reads a head). Manual button → one user-initiated Claude call. Works on NIFTY or
+    Bank Nifty (whichever is selected)."""
+    _active.set(symbol.upper())
+    snap = _st().get("snap")
+    if snap is None:                                   # first read of the session — pull now
+        try:
+            _refresh(symbol.upper(), DEFAULT_SIZE)
+            snap = _st().get("snap")
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"data pull failed: {exc}")
+    if snap is None:
+        raise HTTPException(status_code=409, detail="no snapshot yet")
+    try:
+        read = claude_read(snap, _st().get("prop"), _learning_memory(), completer=READ_COMPLETER)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Claude unavailable: {exc}")
+    return asdict(read)
+
+
 # --- routes ---------------------------------------------------------------- #
 @app.get("/")
 def index():

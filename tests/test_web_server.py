@@ -880,3 +880,15 @@ def test_breadth_empty_when_no_scan(client, monkeypatch):
     monkeypatch.setattr(srv, "_SCAN", {"at": 0.0, "rows": []})
     d = client.get("/api/breadth").json()
     assert d["rows"] == [] and d["advance"] == 0 and d["decline"] == 0 and d["net_points"] is None
+
+
+def test_market_read_works_without_a_trigger(client, monkeypatch):
+    """The manual market read returns Claude's CURRENT view even with no active trigger
+    (unlike /api/analyse, which 409s) — for the selected index."""
+    _seed_heads(monkeypatch, trade1=[])               # no triggers → no head
+    client.get("/api/snapshot")
+    assert client.post("/api/analyse?strategy=trade1").status_code == 409   # gated to a trigger
+    r = client.post("/api/market-read")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["recommendation"] in ("enter", "stand_down") and d["chart_analysis"]
