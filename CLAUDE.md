@@ -742,6 +742,27 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       stock's own symbol, 409 on re-enter/unknown ts; `_record_decision` refactor keeps `/api/decision`
       green). node --check clean; suite green (322).
 
+- [x] **Persist + browse "Market view" reads + a date-wise "Triggers & analysis log" sheet (confirmed
+      w/ trader).** Two read-review asks. (1) **Market view stopped blanking + saved:** the 🔍 Market-view
+      read rendered into `#readBox`, which the 15s poll rewrote to "No active trigger — watching." (trigger
+      "Analyse" reads survive — re-rendered from the cached head — but a market read has no head). Now it
+      opens in the poll-immune `#analysisModal` and is persisted: new `market_reads` table (`journal/store.py`,
+      mirrors `trigger_reads`) + `_persist_market_read`; `GET /api/market-reads?symbol=&day=` history
+      (mirrors `/api/oi-history`); a 🧠 "Market reads" card (day picker → re-open any in the popup). (2)
+      **Triggers & analysis log:** the data already existed (`trigger_reads` = EVERY trigger Claude read,
+      acted or not; `decisions` = the acted ones w/ direction/levels/label/reason/outcome) but only
+      per-instrument in the triggers table. New `_triggers_log_rows(symbol="all", date, strategy)` merges
+      both keyed `(symbol, strategy from proposal.trade_type, ts)` across `instrument_list()`+`scanner_symbols()`
+      (best-effort in-memory engine levels from `_states[sym]["queues"]`, no network), newest-first; `GET
+      /api/triggers-log` (JSON + `days`) feeds a 📒 "Triggers & analysis log" card (day+strategy pickers,
+      💬→`openAnalysisModal`), and `GET /api/triggers-export` returns a CSV attachment (reuses the
+      `/api/oi-download` pandas→to_csv pattern; `_LOG_COLS`). Confirmed w/ trader: BOTH on-screen page +
+      CSV, ALL instruments together. Tested in test_web_server (market-reads persist/history; log
+      aggregates both instruments + date/strategy filters + un-acted=rationale-only; CSV columns).
+      node --check clean; suite green (325). NOTE: past un-acted triggers show blank engine levels (only
+      `decisions`/today's `_states` carry them) — rationale + verdict always present; backfilling past
+      levels needs a session replay (deferred).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

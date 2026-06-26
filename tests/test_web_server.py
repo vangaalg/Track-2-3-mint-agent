@@ -937,3 +937,59 @@ def test_market_reads_history(client, monkeypatch):
     assert client.get("/api/market-reads?day=1999-01-01").json()["rows"] == []
     # per-instrument isolation
     assert client.get("/api/market-reads?symbol=BANKNIFTY").json()["rows"] == []
+
+
+def _seed_log(db):
+    """Seed the journal: a NIFTY trigger Claude read (acted on) + a BANKNIFTY one
+    (un-acted, different day) — the persisted source the log/export reads from."""
+    from journal import store
+    read = dict(recommendation="enter", confidence=4, oi_bias="bullish",
+                chart_analysis="ca", oi_analysis="oa", where_moving="wm",
+                right_trade="rt", challenge="ch", key_risk="kr", agrees_with_engine=True)
+    store.save_trigger_read("NIFTY", "trade1", "2026-06-25T10:15:00+05:30", read, path=db)
+    store.save_trigger_read("BANKNIFTY", "orb", "2026-06-24T09:45:00+05:30",
+                            dict(read, recommendation="stand_down", oi_bias="bearish"), path=db)
+    store.save_decision({"symbol": "NIFTY", "ts": "2026-06-25T10:15:00+05:30",
+                         "decision": "approved", "kind": "live",
+                         "proposal": {"trade_type": "trade1", "ts": "2026-06-25T10:15:00+05:30",
+                                      "direction": "long", "entry": 24000.0, "stop": 23980.0,
+                                      "target": 24060.0, "rr_ratio": 1.5},
+                         "trigger_label": "genuine", "reason_why": "clean breakout",
+                         "outcome": {"status": "win", "points": 60.0, "rupees": 3900.0},
+                         "claude_read": read}, path=db)
+
+
+def test_triggers_log_aggregates_all_instruments(client):
+    """Every persisted trigger + Claude rationale, cross-instrument, newest-first; the acted-on
+    one also carries the decision/label/reason/outcome. Day + strategy filters work."""
+    _seed_log(srv.JOURNAL_DB)
+    d = client.get("/api/triggers-log?symbol=all").json()
+    syms = {r["symbol"] for r in d["rows"]}
+    assert syms == {"NIFTY", "BANKNIFTY"} and d["count"] == 2
+    assert d["rows"][0]["ts"] >= d["rows"][1]["ts"]                 # newest-first
+    assert set(d["days"]) == {"2026-06-25", "2026-06-24"}
+    nifty = next(r for r in d["rows"] if r["symbol"] == "NIFTY")
+    assert nifty["chart_analysis"] == "ca" and nifty["claude_reco"] == "enter"
+    assert nifty["decision"] == "approved" and nifty["reason_why"] == "clean breakout"
+    assert nifty["direction"] == "long" and nifty["outcome"] == "win" and nifty["points"] == 60.0
+    bank = next(r for r in d["rows"] if r["symbol"] == "BANKNIFTY")
+    assert bank["decision"] is None and bank["claude_reco"] == "stand_down"   # un-acted: rationale only
+    # date filter
+    one = client.get("/api/triggers-log?date=2026-06-25").json()
+    assert one["count"] == 1 and one["rows"][0]["symbol"] == "NIFTY"
+    # strategy filter
+    assert client.get("/api/triggers-log?strategy=orb").json()["count"] == 1
+
+
+def test_triggers_export_csv(client):
+    """The same log downloads as a CSV attachment with the documented columns."""
+    _seed_log(srv.JOURNAL_DB)
+    r = client.get("/api/triggers-export?symbol=all")
+    assert r.headers["content-type"].startswith("text/csv")
+    assert "attachment" in r.headers["content-disposition"]
+    lines = [ln for ln in r.text.splitlines() if ln.strip()]
+    header = lines[0].split(",")
+    for col in ("date", "time", "symbol", "strategy", "claude_reco", "reason_why", "key_risk"):
+        assert col in header
+    assert len(lines) == 1 + 2                                      # header + 2 triggers
+    assert "read" not in header                                    # nested dict dropped from CSV

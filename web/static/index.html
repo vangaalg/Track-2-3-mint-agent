@@ -193,6 +193,20 @@
     <div class="tablewrap"><table id="mrList"></table></div>
   </section>
 
+  <!-- Triggers & analysis log — every trigger + Claude's rationale, date-wise, all instruments -->
+  <section class="card triggers" id="logCard">
+    <h2>📒 Triggers &amp; analysis log <span class="muted">— every trigger + Claude's rationale, date-wise</span></h2>
+    <div class="row trigctrls">
+      <label class="small muted">Day <select id="logDay"><option value="all">All days</option></select></label>
+      <label class="small muted">Strategy <select id="logStrat">
+        <option value="all">All</option><option value="trade1">3-min</option>
+        <option value="cpr_st">CPR-ST</option><option value="orb">ORB</option></select></label>
+      <span id="logCount" class="small muted">—</span>
+      <a id="logCsv" class="btn csv" title="Download every trigger + Claude rationale as CSV (Excel)">⬇ CSV</a>
+    </div>
+    <div class="tablewrap"><table id="logTbl"></table></div>
+  </section>
+
   <!-- Track record (process x outcome 2x2 — the learning loop) -->
   <section class="card triggers" id="recCard">
     <h2>🧠 Track record — graded by process & outcome</h2>

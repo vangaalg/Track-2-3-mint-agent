@@ -17,6 +17,7 @@ let _trigRows = [], _trigSummary = {}, _trigLast = null, _trigSession = null, _t
 let _trigDates = [], _trigStrats = [];
 let _pcrDay = "all", _pcrDays = [];          // PCR-over-time: recorded session picker
 let _mrDay = "all", _mrDays = [], _mrRows = [];  // saved "Market view" reads: day picker + rows
+let _logDay = "all", _logStrat = "all", _logDays = [], _logRows = [];  // triggers+analysis log (all instruments)
 let _scanRows = [];                          // last scanner rows (for the 💬 full-read lookup)
 let _seenPending = new Set();                // pending trigger ts already alerted (one beep each)
 
@@ -35,6 +36,7 @@ async function poll() {
     renderChart(d); renderOI(d); renderStrategy();
     fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending(); fetchBreadth();
     fetchMarketReads();                               // saved Market-view reads (browse all day)
+    fetchTriggersLog();                               // triggers + analysis log (all instruments)
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
     // The token banner is driven by the real Breeze connection state (refreshTokenStatus),
     // NOT by benign OI notes — so a valid token no longer re-prompts on every refresh.
@@ -357,6 +359,55 @@ function renderMarketReads() {
       + `<td class="${enter ? "win-txt" : "muted"}">${enter ? "ENTER" : "stand down"}</td>`
       + `<td class="conf">${rd.confidence != null ? rd.confidence + "/5" : "—"}</td>`
       + `<td><button class="btn" data-mropen="${r.ts}">Open</button></td></tr>`;
+  }
+  el.innerHTML = h + "</tbody>";
+}
+
+// Triggers & analysis log — every trigger + Claude's rationale, date-wise, ALL instruments.
+// Cross-instrument review/export (not tied to the active symbol), built from the journal.
+async function fetchTriggersLog() {
+  try {
+    const d = await (await fetch(`/api/triggers-log?symbol=all&date=${_logDay}&strategy=${_logStrat}`)).json();
+    if (d.days) { _logDays = d.days; populateLogDays(); }
+    _logRows = d.rows || [];
+    $("logCount").textContent = `${d.count || 0} trigger${(d.count || 0) === 1 ? "" : "s"}`;
+    $("logCsv").href = `/api/triggers-export?symbol=all&date=${_logDay}&strategy=${_logStrat}`;
+    renderTriggersLog();
+  } catch (e) { /* keep last */ }
+}
+function populateLogDays() {
+  const sel = $("logDay");
+  if (!sel) return;
+  if (sel.options.length !== _logDays.length + 1) {
+    sel.innerHTML = `<option value="all">All days</option>`
+      + _logDays.map((x) => `<option value="${x}">${x}</option>`).join("");
+  }
+  sel.value = _logDay;
+}
+function renderTriggersLog() {
+  const el = $("logTbl");
+  if (!el) return;
+  if (!_logRows.length) {
+    el.innerHTML = `<tr><td colspan="9" class="muted">No triggers logged yet — once a trigger `
+      + `fires and Claude reads it, it's saved here (all instruments) to review or export.</td></tr>`;
+    return;
+  }
+  let h = "<thead><tr><th>Date</th><th>Time</th><th>Instr</th><th>Strat</th><th>Dir</th>"
+    + "<th>Entry/SL/TP</th><th>Claude</th><th>Decision · P&L</th><th></th></tr></thead><tbody>";
+  for (const r of _logRows) {                              // already newest-first from the server
+    const enter = (r.claude_reco || "").toLowerCase() === "enter";
+    const lv = r.entry != null ? `${n(r.entry)} / ${n(r.stop)} / ${n(r.target)}` : "—";
+    const cl = `<span class="${enter ? "win-txt" : "muted"}">${enter ? "ENTER" : "stand"}</span>`
+      + (r.claude_conf != null ? ` C${r.claude_conf}` : "")
+      + (r.oi_bias ? ` · ${r.oi_bias}` : "");
+    const dec = r.decision ? r.decision : "<span class='muted'>—</span>";
+    const pl = r.points != null ? ` · ${n(r.points, 1)}pt` : "";
+    const out = r.outcome ? ` <span class="${r.outcome === "win" ? "win-txt" : (r.outcome === "loss" ? "loss-txt" : "muted")}">${r.outcome}</span>` : "";
+    h += `<tr><td>${r.date}</td><td>${r.time}</td><td><b>${r.symbol}</b></td>`
+      + `<td>${r.strategy}</td><td>${r.direction || "—"}</td><td>${lv}</td>`
+      + `<td>${r.read ? cl : "<span class='muted'>—</span>"}</td>`
+      + `<td>${dec}${out}${pl}</td>`
+      + `<td>${r.read ? `<button class="btn" data-logread="${r.symbol}|${r.ts}">💬</button>` : ""}</td></tr>`;
   }
   el.innerHTML = h + "</tbody>";
 }
@@ -934,6 +985,17 @@ $("mrList").addEventListener("click", (e) => {     // re-open a saved market rea
   const t = (row.ts || "").slice(11, 16), day = (row.ts || "").slice(0, 10);
   openAnalysisModal({ symbol: currentSymbol, kind: "market", read: row.read,
                       title: `${currentSymbol} · market view · ${day} ${t}` });
+});
+$("logDay").addEventListener("change", (e) => { _logDay = e.target.value; fetchTriggersLog(); });
+$("logStrat").addEventListener("change", (e) => { _logStrat = e.target.value; fetchTriggersLog(); });
+$("logTbl").addEventListener("click", (e) => {     // open a trigger's full Claude rationale in the popup
+  const b = e.target.closest("button[data-logread]");
+  if (!b) return;
+  const [sy, ts] = b.dataset.logread.split("|");
+  const row = _logRows.find((r) => r.symbol === sy && r.ts === ts);
+  if (!row || !row.read) return;
+  openAnalysisModal({ symbol: sy, ts, strat: row.strategy, read: row.read,
+                      title: `${sy} · ${row.strategy} · ${row.date} ${row.time}` });
 });
 $("scanRefresh").onclick = scanRescan;
 $("scanAuto").checked = localStorage.getItem("scanAuto") !== "0";   // restore the toggle

@@ -787,6 +787,127 @@ def oi_download(symbol: str = "NIFTY", day: str | None = None, kind: str = "summ
                     headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
+# --- Triggers & analysis log: every trigger + Claude's rationale, date-wise, all instruments --- #
+# The persisted source of truth is the journal: ``trigger_reads`` has a row for EVERY trigger
+# Claude read (actioned or not), ``decisions`` adds the acted-on ones (direction/levels/label/
+# reason/outcome). This consolidates them into one cross-instrument, date-wise sheet so the
+# trader can review (and export) what fired and why — including triggers they missed.
+_LOG_COLS = [
+    "date", "time", "symbol", "strategy", "direction", "entry", "stop", "target", "rr",
+    "conviction", "claude_reco", "claude_conf", "oi_bias", "agrees_with_engine",
+    "claude_target", "claude_stop", "claude_rr", "chart_analysis", "oi_analysis",
+    "where_moving", "right_trade", "challenge", "key_risk", "decision", "trigger_label",
+    "reason_why", "outcome", "points", "rupees",
+]
+
+
+def _log_symbols(symbol: str) -> list[str]:
+    """The instrument universe for the log: one symbol, or ALL (indices + scanned stocks)."""
+    if symbol and symbol.lower() != "all":
+        return [symbol.upper()]
+    syms = [i["id"] for i in instrument_list()]
+    for s in scanner_symbols():
+        if s.upper() not in syms:
+            syms.append(s.upper())
+    return syms
+
+
+def _triggers_log_rows(symbol: str = "all", date: str = "all",
+                       strategy: str = "all") -> list[dict]:
+    """One flat row per (symbol, strategy, ts), newest-first, merging the persisted
+    Claude rationale (``trigger_reads``) with decision metadata (``decisions``) and, for any
+    in-memory current session, the engine direction/levels/outcome. No network — pure journal."""
+    rows: list[dict] = []
+    for sym in _log_symbols(symbol):
+        # Persisted reads = every trigger Claude analysed (the must-have rationale). Newest wins.
+        reads: dict[tuple, dict] = {}
+        try:
+            for rec in store.load_trigger_reads(sym, path=JOURNAL_DB):
+                reads[(rec["strategy"], rec["ts"])] = rec["read"] or {}
+        except Exception:
+            reads = {}
+        # Decision metadata keyed (strategy, ts) — direction/levels/label/reason/outcome.
+        decs: dict[tuple, dict] = {}
+        try:
+            for d in store.load_records(JOURNAL_DB, kind="live", symbol=sym):
+                k = ((d.get("proposal") or {}).get("trade_type") or "trade1", d.get("ts"))
+                decs[k] = d
+        except Exception:
+            decs = {}
+        # In-memory engine levels for a loaded session (best-effort, no pull).
+        qrows: dict[tuple, dict] = {}
+        st = _states.get(sym) or {}
+        for sid, q in (st.get("queues") or {}).items():
+            for t in q.get("triggers", []):
+                if t.get("ts"):
+                    qrows[(sid, t["ts"])] = t
+        for (strat, ts), rd in reads.items():
+            d, q = decs.get((strat, ts)) or {}, qrows.get((strat, ts)) or {}
+            rows.append({
+                "date": (ts or "")[:10], "time": (ts or "")[11:16], "ts": ts,
+                "symbol": sym, "strategy": strat,
+                "direction": d.get("direction") or q.get("direction"),
+                "entry": d.get("entry") if d.get("entry") is not None else q.get("entry"),
+                "stop": d.get("stop") if d.get("stop") is not None else q.get("stop"),
+                "target": d.get("target") if d.get("target") is not None else q.get("target"),
+                "rr": d.get("rr_ratio") if d.get("rr_ratio") is not None else q.get("rr"),
+                "conviction": (d.get("final_confidence")
+                               if d.get("final_confidence") is not None
+                               else q.get("mtf_confidence")),
+                "claude_reco": rd.get("recommendation"),
+                "claude_conf": rd.get("confidence"),
+                "oi_bias": rd.get("oi_bias"),
+                "agrees_with_engine": rd.get("agrees_with_engine"),
+                "claude_target": rd.get("claude_target") or rd.get("proposed_target"),
+                "claude_stop": rd.get("claude_stop") or rd.get("proposed_stop"),
+                "claude_rr": rd.get("claude_rr"),
+                "chart_analysis": rd.get("chart_analysis"),
+                "oi_analysis": rd.get("oi_analysis"),
+                "where_moving": rd.get("where_moving"),
+                "right_trade": rd.get("right_trade"),
+                "challenge": rd.get("challenge"),
+                "key_risk": rd.get("key_risk"),
+                "decision": d.get("decision"),
+                "trigger_label": d.get("trigger_label"),
+                "reason_why": d.get("reason_why"),
+                "outcome": d.get("outcome_status") or q.get("outcome"),
+                "points": (d.get("outcome_points")
+                           if d.get("outcome_points") is not None else q.get("points")),
+                "rupees": (d.get("outcome_rupees")
+                           if d.get("outcome_rupees") is not None else q.get("rupees")),
+                "read": rd or None,        # raw read for the cockpit modal (dropped from CSV)
+            })
+    if strategy and strategy.lower() != "all":
+        rows = [r for r in rows if r["strategy"] == strategy]
+    if date and date.lower() != "all":
+        rows = [r for r in rows if r["date"] == date]
+    rows.sort(key=lambda r: (r.get("ts") or ""), reverse=True)     # newest first
+    return rows
+
+
+@app.get("/api/triggers-log")
+def triggers_log(symbol: str = "all", date: str = "all", strategy: str = "all"):
+    """Date-wise log of every trigger + Claude's rationale across instruments (JSON for the
+    cockpit card). ``days`` lists the distinct session dates (newest-first) for the picker."""
+    rows = _triggers_log_rows(symbol, date, strategy)
+    # Distinct dates over the date-UNFILTERED set so the picker always lists every day.
+    days = sorted({r["date"] for r in _triggers_log_rows(symbol, "all", strategy)
+                   if r["date"]}, reverse=True)
+    return {"rows": rows, "days": days, "count": len(rows)}
+
+
+@app.get("/api/triggers-export")
+def triggers_export(symbol: str = "all", date: str = "all", strategy: str = "all"):
+    """Same log as a CSV attachment (opens in Excel), date-wise, all instruments."""
+    rows = _triggers_log_rows(symbol, date, strategy)
+    flat = [{c: r.get(c) for c in _LOG_COLS} for r in rows]      # drop the nested read dict
+    df = pd.DataFrame(flat, columns=_LOG_COLS)
+    csv = df.to_csv(index=False) if not df.empty else ",".join(_LOG_COLS) + "\n"
+    fname = f"triggers_{symbol.lower()}_{date.lower()}_IST.csv"
+    return Response(content=csv, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 # --- NSE-50 scanner: screen all option stocks for trigger + OI + Claude agreement -------- #
 def _scan_read_fn(snap, prop):
     """Claude read for one scanned stock (the live memory + completer)."""
