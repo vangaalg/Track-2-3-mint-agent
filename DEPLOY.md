@@ -141,6 +141,24 @@ intraday OI (which can't be backfilled). The journal still uses SQLite in the jo
 - **Journal:** every approve/reject commits to `JOURNAL_REPO_URL` (plus a periodic push),
   so your track record + Claude's memory survive redeploys. `git clone` it to analyze.
 
+## Live execution (place real orders) — OFF by default
+The cockpit is propose-only until you arm it. To place real orders after YOU approve a trigger:
+- Set **`EXECUTION_LIVE=1`** in the environment (the master arm). With it set + a reachable Breeze
+  session, the combined service injects the Breeze broker, reconciles any open positions on boot,
+  and runs the exit monitor. Unset / `0` = every order is dry-run (the kill switch).
+- On each trade you must ALSO tick the **🔴 LIVE** box on the decision card (per-trade gate). Both
+  the env arm AND the per-trade toggle are required — either off ⇒ dry-run.
+- This phase places live for the **3-min strategy only** (CPR-ST/ORB/condor stay propose-only).
+- **Stocks** buy NSE **equity** (long-only, CNC), capped at **`STOCK_MAX_AMOUNT`** (default ₹10,000;
+  `qty = floor(cap / price)`). **Index** trades buy the deep-ITM option (lots). Entry defaults to
+  MARKET (switch to Limit per trade).
+- **Exits are agent-managed** (nothing rests at the broker): it monitors the underlying every
+  `EXIT_POLL_S` (default 5s) and fires a MARKET exit on SL/target/trailing-stop; you can ⛔ Square-off
+  any time. Flip `EXECUTION_LIVE=0` to stop NEW orders — the monitor still closes open positions.
+- Verify on a SINGLE small live order first: the exact Breeze `place_order` params for an NSE CNC
+  equity buy + an NFO option buy, the option-exit call, and the `expiry_date` format (the egress-
+  locked sandbox can't). `STOCK_PRODUCT` (default `cash`) is the env knob for the equity product code.
+
 ## Notes / risks
 - **Token is manual by design** — Breeze has no refresh API. If a morning is missed, that day
   isn't recorded (logged, non-fatal); just enter the token when you can.

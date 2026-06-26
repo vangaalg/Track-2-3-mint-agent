@@ -37,6 +37,7 @@ async function poll() {
     fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending(); fetchBreadth();
     fetchMarketReads();                               // saved Market-view reads (browse all day)
     fetchTriggersLog();                               // triggers + analysis log (all instruments)
+    fetchLivePos();                                   // open LIVE broker position (fill + trailing stop)
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
     // The token banner is driven by the real Breeze connection state (refreshTokenStatus),
     // NOT by benign OI notes — so a valid token no longer re-prompts on every refresh.
@@ -431,6 +432,30 @@ function renderHead(head) {
     + `<br>R:R ${head.rr} · ${head.size_lots} lots <span class="muted">(conviction ${head.mtf_confidence}/5)</span>`
     + `<br><span class="small muted">${bySrc} · pinned — won't advance until you approve/reject</span>`;
   $("decision").hidden = false;
+  fillTicket(head);
+}
+
+// Prefill the order ticket from the frozen trigger (entry/stop/target/lots). Stock instruments
+// trade equity (cash) sized by a Max-₹ cap; indices trade the option vehicle sized in lots.
+function fillTicket(head) {
+  const stock = !!(lastPayload && lastPayload.is_stock);
+  $("otSl").value = head.stop != null ? head.stop : "";
+  $("otTarget").value = head.target != null ? head.target : "";
+  if (!$("otTicketTouched")) {                 // don't clobber a price the trader is editing
+    $("otType").value = "market"; $("otPriceWrap").hidden = true;
+  }
+  $("otQtyWrap").hidden = stock;
+  $("otMaxWrap").hidden = !stock;
+  if (stock) { recomputeStockQty(); }
+  else { $("otQty").value = head.size_lots != null ? head.size_lots : 1; $("otQtyCalc").textContent = "lots"; }
+}
+
+function recomputeStockQty() {
+  const max = parseFloat($("otMax").value) || 0;
+  const px = (lastPayload && lastPayload.spot) || 0;
+  const q = px > 0 ? Math.floor(max / px) : 0;
+  $("otQtyCalc").textContent = px > 0 ? `→ ${q} shares @ ₹${n(px)}` : "no price";
+  return q;
 }
 
 // Non-directional defined-risk iron condor (propose-only — manual multi-leg entry).
@@ -723,6 +748,7 @@ async function decide(action) {
   fd.append("symbol", currentSymbol);
   const lbl = document.querySelector('input[name="liveLabel"]:checked');
   if (lbl) fd.append("label", lbl.value);
+  if (action === "approve") appendTicket(fd);            // order ticket → broker params
   const r = await fetch("/api/decision", { method: "POST", body: fd });
   const d = await r.json();
   if (!r.ok) { $("decisionMsg").textContent = "⚠ " + (d.detail || "decision failed"); return; }
@@ -732,6 +758,53 @@ async function decide(action) {
     + (action === "skip" ? " · not recorded"
        : ` · logged ${d.logged} · ${d.status || "—"}` + (lbl ? ` · trigger ${lbl.value}` : ""));
   advanceTo(d.next_head);        // instant swap to the next pending trigger (if any)
+  if (action === "approve") { fetchLivePos(); }
+}
+
+// Pack the order-ticket fields into the decision/stock-enter form.
+function appendTicket(fd) {
+  const t = $("otType").value;
+  fd.append("order_type", t);
+  if (t === "limit" && $("otPrice").value) fd.append("limit_price", $("otPrice").value);
+  if (lastPayload && lastPayload.is_stock) {
+    if ($("otMax").value) fd.append("max_amount", $("otMax").value);
+  } else if ($("otQty").value) {
+    fd.append("qty", $("otQty").value);          // LOTS for an index option
+  }
+  if ($("otSl").value) fd.append("sl", $("otSl").value);
+  if ($("otTarget").value) fd.append("target_px", $("otTarget").value);
+  if ($("otTsl").value) fd.append("tsl", $("otTsl").value);
+  if ($("otLive").checked) fd.append("live", "true");
+}
+
+// Live broker position panel: fill state, live (trailing) stop, manual square-off.
+async function fetchLivePos() {
+  try {
+    const d = await (await fetch(`/api/order-status?symbol=${sym()}&strategy=${currentStrat}`)).json();
+    renderLivePos(d);
+  } catch (e) { /* keep */ }
+}
+function renderLivePos(d) {
+  const el = $("livePos");
+  if (!el) return;
+  if (!d || !d.open) { el.hidden = true; el.innerHTML = ""; return; }
+  const p = d.position || {}, b = d.broker || {};
+  el.hidden = false;
+  el.innerHTML = `🔴 LIVE ${(p.direction || "").toUpperCase()} ${p.symbol} `
+    + `<span class="muted">${(p.ts || "").slice(11, 16)}</span> · ${p.qty} ${p.segment === "equity" ? "sh" : "qty"}`
+    + `<br>Entry ${n(p.entry)} · Stop ${n(p.stop)}${p.tsl_points ? ` <span class="muted">(TSL ${p.tsl_points})</span>` : ""} · Target ${n(p.target)}`
+    + `<br><span class="small muted">${p.entry_filled ? "filled" : "pending fill"}`
+    + `${b && b.status ? " · broker " + b.status : ""}${p.broker_order_id ? " · #" + p.broker_order_id : ""}</span>`
+    + ` <button id="sqOff" class="btn no" title="Square off this position at market now">⛔ Square off</button>`;
+  $("sqOff").onclick = squareOff;
+}
+async function squareOff() {
+  if (!confirm("Square off the live position at market now?")) return;
+  const fd = new FormData(); fd.append("symbol", currentSymbol); fd.append("strategy", currentStrat);
+  const r = await fetch("/api/square-off", { method: "POST", body: fd });
+  const d = await r.json();
+  $("decisionMsg").textContent = r.ok ? "⛔ squared off" : "⚠ " + (d.detail || "square-off failed");
+  fetchLivePos(); fetchTable(); fetchRecord();
 }
 
 async function sendChat(ev) {
@@ -820,6 +893,12 @@ $("mktBtn").onclick = marketRead;
 $("approveBtn").onclick = () => decide("approve");
 $("rejectBtn").onclick = () => decide("reject");
 $("skipBtn").onclick = () => decide("skip");
+$("otType").addEventListener("change", (e) => {
+  $("otPriceWrap").hidden = e.target.value !== "limit";
+  if (e.target.value === "limit" && !$("otPrice").value && currentHead)
+    $("otPrice").value = currentHead.entry != null ? currentHead.entry : "";
+});
+$("otMax").addEventListener("input", recomputeStockQty);
 $("tokenBtn").onclick = () => { $("tokenForm").hidden = !$("tokenForm").hidden; };
 $("tokenSave").onclick = postToken;
 $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });

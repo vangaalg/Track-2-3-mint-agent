@@ -59,7 +59,13 @@ def client(monkeypatch, tmp_path):
     srv._state.update(snap=None, prop=None, chain=None, snap_at=0.0, oi_at=0.0,
                       read=None, analysed_bar=None, chat=[],
                       queues={}, heads={}, actioned={}, reads={}, exits={}, records={},
-                      position={}, read_saved=set(), stored_reads={}, stored_reads_at=0.0)
+                      position={}, read_saved=set(), stored_reads={}, stored_reads_at=0.0,
+                      live_positions={}, live_orders={})
+    # drop any other-instrument states a prior test created (RELIANCE/BANKNIFTY) so live
+    # positions/orders never leak across tests.
+    for s in list(srv._states):
+        if s != srv.DEFAULT_INSTRUMENT:
+            srv._states.pop(s, None)
     return TestClient(srv.app)
 
 
@@ -993,3 +999,169 @@ def test_triggers_export_csv(client):
         assert col in header
     assert len(lines) == 1 + 2                                      # header + 2 triggers
     assert "read" not in header                                    # nested dict dropped from CSV
+
+
+# --------------------------------------------------------------------------- #
+# LIVE execution — order placement, self-managed exits, safety gates.
+# --------------------------------------------------------------------------- #
+from execution.base import OrderResult                                 # noqa: E402
+
+_ETS = "2024-01-01T09:18:00+05:30"
+
+
+class FakeBroker:
+    name = "fake"
+
+    def __init__(self):
+        self.entries, self.exits, self.status_calls = [], [], 0
+
+    def place_entry(self, order):
+        self.entries.append(order)
+        return OrderResult(status="placed", broker_order_id="OID1",
+                           filled_qty=order.quantity, avg_price=24000.0)
+
+    def place_exit(self, order):
+        self.exits.append(order)
+        return OrderResult(status="placed", broker_order_id="OID2",
+                           filled_qty=order.quantity, avg_price=24050.0)
+
+    def order_status(self, oid):
+        self.status_calls += 1
+        return OrderResult(status="placed", filled_qty=130, avg_price=24000.0)
+
+    def cancel(self, oid):
+        return OrderResult(status="placed")
+
+    def positions(self):
+        return []
+
+    def funds(self):
+        return {}
+
+
+def _enter_prop(monkeypatch, sym="NIFTY", direction="long", vehicle="NIFTY 23600 CE (ITM)"):
+    """Force an ENTER proposal so the live path actually builds + places an order."""
+    from analysis.proposal import TradeProposal, Recommendation
+    monkeypatch.setattr(srv, "_proposal_from_head", lambda sid, head, snap, table:
+                        TradeProposal(instrument=sym, trade_type=sid, ts=head["ts"],
+                                      direction=direction, entry=24000.0, stop=23980.0,
+                                      target=24060.0, size_lots=1, vehicle=vehicle,
+                                      recommendation=Recommendation.ENTER))
+
+
+def test_live_order_dry_run_by_default(client, monkeypatch):
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.delenv("EXECUTION_LIVE", raising=False)
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                           "ts": _ETS, "live": "true"})
+    assert r.json()["status"] == "dry_run" and fb.entries == []      # gate shut → no real order
+
+
+def test_live_order_places_when_armed(client, monkeypatch):
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={
+        "action": "approve", "strategy": "trade1", "ts": _ETS, "live": "true",
+        "order_type": "market", "qty": "2", "sl": "23950", "target_px": "24100", "tsl": "20"})
+    j = r.json()
+    assert j["status"] == "placed" and j["broker_order_id"] == "OID1"
+    assert len(fb.entries) == 1
+    o = fb.entries[0]
+    assert o.segment == "option" and o.quantity == 2 * 65 and o.action == "buy"  # 2 lots × 65
+    pos = srv._st("NIFTY")["live_positions"]["trade1"]
+    assert pos["stop"] == 23950 and pos["target"] == 24100 and pos["tsl_points"] == 20
+    from journal import store
+    assert store.load_records(srv.JOURNAL_DB)[-1]["execution"]["status"] == "placed"
+    # idempotent: re-decision on the same trigger is blocked (already actioned)
+    r2 = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                            "ts": _ETS, "live": "true"})
+    assert r2.status_code == 409 and len(fb.entries) == 1
+
+
+def test_stock_enter_places_equity_capped(client, monkeypatch):
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    _enter_prop(monkeypatch, sym="RELIANCE")
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts="2024-01-02T09:30:00+05:30")])
+    r = client.post("/api/stock-enter", data={
+        "symbol": "RELIANCE", "ts": "2024-01-02T09:30:00+05:30", "live": "true",
+        "max_amount": "100000"})           # synth spot ~24000 → floor(100000/24000)=4 shares
+    assert r.json()["status"] == "placed"
+    o = fb.entries[0]
+    assert o.segment == "equity" and o.exchange == "NSE" and o.action == "buy"
+    assert o.quantity == 4 and o.strike_price is None
+
+
+def test_square_off_fires_market_exit(client, monkeypatch):
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                       "ts": _ETS, "live": "true"})
+    r = client.post("/api/square-off", data={"symbol": "NIFTY", "strategy": "trade1"})
+    assert r.status_code == 200 and fb.exits and fb.exits[0].action == "sell"
+    assert "trade1" not in srv._st("NIFTY")["live_positions"]        # position cleared
+
+
+def test_order_status_surfaces_open_position(client, monkeypatch):
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    assert client.get("/api/order-status?strategy=trade1").json()["open"] is False
+    client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                       "ts": _ETS, "live": "true", "sl": "23950"})
+    d = client.get("/api/order-status?strategy=trade1").json()
+    assert d["open"] is True and d["position"]["stop"] == 23950
+
+
+def test_kill_switch_forces_dry_run(client, monkeypatch):
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    client.post("/api/kill-switch", data={"on": "false"})
+    import os
+    assert os.environ.get("EXECUTION_LIVE") == "0"
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                           "ts": _ETS, "live": "true"})
+    assert r.json()["status"] == "dry_run" and fb.entries == []
+
+
+def test_exit_monitor_tick_fires_on_stop(client, monkeypatch):
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                       "ts": _ETS, "live": "true", "sl": "23980"})
+    fired = srv._exit_monitor_tick(srv._states, fb, lambda s: 23900.0)   # price below the stop
+    assert any(f["reason"] == "stop" for f in fired) and fb.exits
+
+
+def test_reconcile_keeps_only_broker_confirmed(client, monkeypatch):
+    from journal import store
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    store.save_live_position(dict(symbol="NIFTY", strategy="trade1", ts=_ETS, segment="option",
+                                  direction="long", entry=24000, stop=23980, target=24060,
+                                  tsl_points=None, qty=65, broker_order_id="OIDX", status="open",
+                                  entry_filled=True), path=srv.JOURNAL_DB)
+    store.save_live_position(dict(symbol="BANKNIFTY", strategy="trade1", ts=_ETS, segment="option",
+                                  direction="long", entry=50000, stop=49900, target=50200,
+                                  tsl_points=None, qty=30, broker_order_id="OIDY", status="open",
+                                  entry_filled=True), path=srv.JOURNAL_DB)
+
+    class _Pos(FakeBroker):
+        def positions(self):
+            from execution.base import Position
+            return [Position(symbol="NIFTY", segment="option", quantity=65)]   # only NIFTY confirmed
+    monkeypatch.setattr(srv, "BROKER", _Pos())
+    mism = srv._reconcile_live_positions()
+    assert srv._states["NIFTY"]["live_positions"].get("trade1")        # rehydrated
+    assert any(m["symbol"] == "BANKNIFTY" for m in mism)               # dropped (not at broker)
+    assert store.load_open_live_positions(path=srv.JOURNAL_DB)[0]["symbol"] == "NIFTY"

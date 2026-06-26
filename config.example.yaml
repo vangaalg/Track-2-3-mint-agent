@@ -134,6 +134,17 @@ execution:
   default_size_lots: 1
   live: false                   # dashboard toggle default; live also needs EXECUTION_LIVE=1
   # Breeze order key must be Trade+View with WITHDRAW DISABLED (SEBI non-algo).
+  # --- LIVE order phase (place after the trader approves; Breeze now, Kite later) ---
+  # A real order needs ALL of: the per-trade LIVE toggle on the card, EXECUTION_LIVE=1 in
+  # the env, and an injected broker. This phase places live only for the 3-min strategy.
+  # Index = the deep-ITM CE/PE option vehicle (lots). Stock = NSE equity (long-only, cash)
+  # capped by STOCK_MAX_AMOUNT. Exits don't rest at the broker — the agent monitors the
+  # underlying and fires MARKET exits for SL/target/TSL (manual square-off any time).
+  # Env knobs (set in the deploy environment, not here):
+  #   EXECUTION_LIVE=1       master arm (kill switch off = "0"; new orders go dry-run)
+  #   STOCK_MAX_AMOUNT=10000 per-trade ₹ cap for an equity stock buy
+  #   STOCK_PRODUCT=cash     Breeze product for an NSE cash/CNC buy (verify on a live order)
+  #   EXIT_POLL_S=5          exit-monitor cadence (seconds)
 
 # Claude reasoning + sparring layer (agent/). Reads the snapshot + proposal and
 # challenges the trade like the journal does, then feeds the decision log back as

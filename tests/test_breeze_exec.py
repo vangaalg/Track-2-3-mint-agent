@@ -70,3 +70,64 @@ def test_log_decision_appends_jsonl(tmp_path):
     assert path.read_text().count("\n") == 1
     log_decision(_enter_proposal(), "rejected", path=path)
     assert path.read_text().count("\n") == 2
+
+
+# --- build_orders (neutral Order) + the BreezeBroker SDK mapping ------------- #
+def test_build_orders_option_market_and_limit():
+    o = breeze_exec.build_orders(_enter_proposal(), segment="option", order_type="market",
+                                 lot_size=65, expiry_date="2024-01-25T06:00:00.000Z")
+    assert o.segment == "option" and o.exchange == "NFO" and o.action == "buy"
+    assert o.right == "call" and o.strike_price == 23600 and o.product == "options"
+    assert o.quantity == 75 * 65 and o.price is None          # market → no price
+    lim = breeze_exec.build_orders(_enter_proposal(), segment="option", order_type="limit",
+                                   limit_price=120.5, lot_size=65)
+    assert lim.order_type == "limit" and lim.price == 120.5
+
+
+def test_build_orders_equity_caps_by_rupees_no_strike():
+    o = breeze_exec.build_orders(_enter_proposal(), segment="equity",
+                                 max_amount=10_000, share_price=2500.0)
+    assert o.segment == "equity" and o.exchange == "NSE" and o.action == "buy"
+    assert o.quantity == 4 and o.strike_price is None and o.right is None
+    assert o.product == breeze_exec.STOCK_PRODUCT
+
+
+def test_build_orders_zero_size_raises():
+    with pytest.raises(ValueError):
+        breeze_exec.build_orders(_enter_proposal(), segment="equity",
+                                 max_amount=10_000, share_price=0)
+
+
+class _FakeBreeze:
+    """A stand-in for the breeze_connect client capturing place_order kwargs."""
+
+    def __init__(self):
+        self.calls = []
+
+    def place_order(self, **kw):
+        self.calls.append(kw)
+        return {"Success": {"order_id": "OID9"}, "Status": 200, "Error": None}
+
+
+def test_breeze_broker_maps_place_order(monkeypatch):
+    fake = _FakeBreeze()
+    broker = breeze_exec.BreezeBroker(client=fake)
+    o = breeze_exec.build_orders(_enter_proposal(), segment="option", lot_size=65,
+                                 expiry_date="2024-01-25T06:00:00.000Z")
+    res = broker.place_entry(o)
+    assert res.status == "placed" and res.broker_order_id == "OID9"
+    kw = fake.calls[0]
+    assert kw["stock_code"] == "NIFTY" and kw["right"] == "call"
+    assert kw["quantity"] == str(75 * 65) and kw["action"] == "buy"
+    assert kw["exchange_code"] == "NFO" and kw["product"] == "options"
+
+
+def test_breeze_broker_parses_rejection():
+    class _Rej(_FakeBreeze):
+        def place_order(self, **kw):
+            return {"Success": None, "Status": 500, "Error": "insufficient funds"}
+    broker = breeze_exec.BreezeBroker(client=_Rej())
+    o = breeze_exec.build_orders(_enter_proposal(), segment="equity",
+                                 max_amount=10_000, share_price=2500.0)
+    res = broker.place_exit(o)
+    assert res.status == "rejected" and "insufficient" in res.message

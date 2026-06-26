@@ -208,3 +208,15 @@ td.conf { font-weight:600; white-space:nowrap; }
 .modal-title { font-weight:700; font-size:14px; }
 .modal-head .btn { margin-left:auto; padding:2px 9px; }
 .modal-body { margin-bottom:6px; }
+
+/* Order ticket (what gets sent to the broker on Approve) + live position panel */
+.orderticket { margin:8px 0; padding:8px; border:1px dashed var(--line); border-radius:8px;
+  background:var(--tile); }
+.orderticket .otrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:3px 0; }
+.orderticket label { font-size:12px; color:var(--muted); display:flex; gap:4px; align-items:center; }
+.orderticket input[type=number] { width:84px; padding:2px 4px; }
+.orderticket select { padding:2px 4px; }
+.orderticket .otlive { color:var(--red); font-weight:700; margin-left:auto; }
+.livepos { margin:8px 0; padding:8px 10px; border:1px solid var(--red); border-radius:8px;
+  background:rgba(228,87,86,.08); font-weight:600; font-size:13px; }
+.livepos .btn { margin-left:8px; padding:2px 9px; }

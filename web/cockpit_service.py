@@ -255,6 +255,25 @@ def _scanner_thread() -> None:
         time.sleep(every * 60)
 
 
+def _exit_monitor_thread() -> None:
+    """Self-managed exits: every EXIT_POLL_S during market hours, trail + fire market exits
+    for any open LIVE position (SL/target/TSL). Started only when execution is armed; keeps
+    managing/closing even if the kill-switch later disarms new entries (never strands a fill)."""
+    every = int(os.environ.get("EXIT_POLL_S", "5"))
+    while True:
+        try:
+            if not recorder.in_session(pd.Timestamp.now(tz=recorder.IST)):
+                time.sleep(30)
+                continue
+            fired = server._exit_monitor_tick(server._states, server.BROKER, server._monitor_price)
+            if fired:
+                STATUS["last_exit"] = (pd.Timestamp.now(tz=recorder.IST).isoformat(timespec="seconds")
+                                       + f" {fired}")
+        except Exception as exc:
+            STATUS["exit_monitor"] = f"error: {exc}"
+        time.sleep(every)
+
+
 def _start_background() -> None:
     STATUS["started"] = time.strftime("%Y-%m-%d %H:%M:%S")
     # Durable time-series store: when DATABASE_URL is set (Railway Postgres), create the
@@ -287,6 +306,23 @@ def _start_background() -> None:
     if os.environ.get("SCAN_STOCKS", "1") != "0":
         threading.Thread(target=_scanner_thread, daemon=True).start()
         STATUS["scanner"] = "running"
+    # LIVE execution: when armed, inject the Breeze broker into the seam, reconcile persisted
+    # open positions vs the broker, then run the exit monitor. Only when EXECUTION_LIVE=1 so
+    # dry-run deploys never place anything.
+    if os.environ.get("EXECUTION_LIVE") == "1" and server.BROKER is None:
+        try:
+            from execution.breeze_exec import BreezeBroker
+            server.BROKER = BreezeBroker()
+            STATUS["broker"] = "breeze"
+        except Exception as exc:
+            STATUS["broker"] = f"error: {exc}"
+    if os.environ.get("EXECUTION_LIVE") == "1" and server.BROKER is not None:
+        try:
+            STATUS["reconcile"] = server._reconcile_live_positions()
+        except Exception as exc:
+            STATUS["reconcile"] = f"error: {exc}"
+        threading.Thread(target=_exit_monitor_thread, daemon=True).start()
+        STATUS["exit_monitor"] = "running"
 
 
 server.AFTER_WRITE = _push_journal               # push the journal on each decision

@@ -49,6 +49,9 @@ from agent.read import claude_read
 from agent.reason import explain_outcome
 from agent.chat import spar_turn
 from execution import breeze_exec
+from execution.base import Order
+from execution.exit_manager import evaluate_exit
+from feeds.breeze_oi import _expiry_iso
 from journal.log import log_decision, DEFAULT_LOG
 from journal.outcomes import (
     settle_log, settle_store, matrix_summary, conviction_breakdown, grade_training,
@@ -79,6 +82,14 @@ STRATEGIES = [
 _STRAT = {s["id"]: s for s in STRATEGIES}
 # Journal paths honor env overrides so a deploy wrapper (web.cockpit_service) can point
 # them at a git-backed dir that persists across redeploys; defaults unchanged otherwise.
+# --- LIVE execution seam (the broker that actually places orders) ----------- #
+# Injected (tests use a FakeBroker); None = no broker → every placement stays dry-run.
+# Live placement needs ALL of: per-trade `live` toggle, EXECUTION_LIVE==1 env, BROKER set,
+# and (this phase) strategy=="trade1". Stocks buy equity (CNC) capped at STOCK_MAX_AMOUNT.
+BROKER = None
+LIVE_STRATEGIES = {"trade1"}                                # which strategies may go live
+STOCK_MAX_AMOUNT = float(os.environ.get("STOCK_MAX_AMOUNT", "10000"))
+
 JOURNAL_DB = os.environ.get("JOURNAL_DB", store.DB_PATH)   # full-context SQLite store
 DEFAULT_LOG = os.environ.get("DECISIONS_LOG", DEFAULT_LOG)  # append-only decision log
 OI_SUMMARY_ROOT = os.environ.get("OI_SUMMARY_ROOT")        # recorder's PCR/OI time series (None=default)
@@ -156,6 +167,10 @@ def _new_state() -> dict:
         "exits": {}, "records": {},
         # one-position-at-a-time: the open APPROVED trade per strategy (auto-flattened on a new one)
         "position": {},
+        # LIVE execution: broker-backed open positions the exit-monitor manages (keyed by
+        # strategy — distinct from "position", which is replay/journal bookkeeping), and the
+        # idempotency map (strategy,ts)->broker_order_id so a re-click never double-sends.
+        "live_positions": {}, "live_orders": {},
     }
 
 
@@ -448,6 +463,8 @@ def _payload(symbol: str) -> dict:
                        for s in STRATEGIES],
         # multi-instrument selector: the available instruments + the active one
         "instruments": instrument_list(), "symbol": symbol.upper(),
+        # equity (NSE-50 stock, ₹-capped cash buy) vs option vehicle (index) — drives the ticket
+        "is_stock": not get_instrument(symbol).get("primary"),
     }
 
 
@@ -1292,6 +1309,251 @@ def _auto_flatten(strategy: str, symbol: str) -> dict | None:
             "points": out["points"], "exit": out["exit"]}
 
 
+# --------------------------------------------------------------------------- #
+# LIVE execution — place the entry order, then self-manage SL/target/TSL exits.
+# Gating triple preserved: a real order needs `live` + EXECUTION_LIVE==1 + BROKER,
+# and (this phase) strategy in LIVE_STRATEGIES. Anything short of that is dry-run.
+# --------------------------------------------------------------------------- #
+def _build_live_order(strategy: str, symbol: str, target: dict, prop, params: dict) -> Order:
+    """Translate the approved proposal + order ticket into a neutral ``Order``."""
+    inst = get_instrument(symbol)
+    snap = _st()["snap"]
+    tag = f"{strategy}:{target['ts']}"
+    if not inst.get("primary"):                 # NSE-50 stock → equity cash, long-only, ₹-capped
+        # qty is ALWAYS recomputed server-side from the ₹ cap + live spot (the hard cap — a
+        # client never widens it); the ticket's qty field is hidden for stocks.
+        return breeze_exec.build_orders(
+            prop, segment="equity", order_type=params.get("order_type", "market"),
+            limit_price=params.get("limit_price"), quantity=None,
+            max_amount=params.get("max_amount") or STOCK_MAX_AMOUNT,
+            share_price=(snap.spot if snap else None), client_tag=tag)
+    # Index option: the ticket's qty field is LOTS (default = conviction size_lots); convert to
+    # contracts via lot_size. A trader-edited lot count overrides the proposal's sizing.
+    lots = params.get("qty")
+    if lots is not None:
+        prop.size_lots = int(lots)
+    expiry = _expiry_iso(None, inst.get("weekday", EXPIRY_WEEKDAY), inst.get("monthly", False))
+    return breeze_exec.build_orders(
+        prop, segment="option", order_type=params.get("order_type", "market"),
+        limit_price=params.get("limit_price"), quantity=None,
+        lot_size=inst["lot_size"], exchange=inst.get("exchange", "NFO"),
+        expiry_date=expiry, client_tag=tag)
+
+
+def _execute_entry(strategy: str, symbol: str, target: dict, prop, live: bool,
+                   params: dict) -> dict:
+    """Place (or dry-run) the entry for an approved directional trigger. Propose-only for
+    non-live strategies / stand-downs; idempotent per (strategy, ts)."""
+    direction = target.get("direction")
+    if not prop.is_enter or direction not in ("long", "short"):
+        return {"status": "logged (propose-only)"}
+    if strategy not in LIVE_STRATEGIES:          # this phase: trade1 only
+        return {"status": "logged (propose-only)"}
+    is_stock = not get_instrument(symbol).get("primary")
+    if is_stock and direction != "long":
+        return {"status": "rejected", "reason": "stocks are long-only"}
+    key = (strategy, target["ts"])
+    prior = _st()["live_orders"].get(key)        # idempotency: never double-send a trigger
+    if prior:
+        return {"status": "placed", "broker_order_id": prior, "idempotent": True}
+    try:
+        order = _build_live_order(strategy, symbol, target, prop, params)
+    except Exception as exc:
+        return {"status": "error", "message": f"order build failed: {exc}"}
+    order_d = asdict(order)
+    gated = (live and os.environ.get("EXECUTION_LIVE") == "1" and BROKER is not None)
+    if not gated:
+        return {"status": "dry_run", "order": order_d}
+    res = BROKER.place_entry(order)
+    out = {"status": res.status, "broker_order_id": res.broker_order_id,
+           "order": order_d, "message": res.message, "broker": dict(res.raw or {})}
+    if res.status == "placed":
+        _st()["live_orders"][key] = res.broker_order_id or f"{strategy}:{target['ts']}"
+        _open_live_position(strategy, symbol, target, prop, order, res, params)
+    return out
+
+
+def _open_live_position(strategy, symbol, target, prop, order, result, params) -> dict:
+    """Record a freshly-placed live entry so the exit-monitor can manage it; persist for
+    restart reconciliation. A MARKET entry is treated as filled (fills ~instantly); a LIMIT
+    entry waits for an order-status fill confirmation before any exit can fire."""
+    snap = _st()["snap"]
+    sl = params.get("sl"); tg = params.get("target")
+    pos = {
+        "strategy": strategy, "symbol": symbol.upper(), "ts": target["ts"],
+        "segment": order.segment, "direction": target.get("direction"),
+        "entry": (result.avg_price or order.price or prop.entry
+                  or (snap.spot if snap else None)),
+        "stop": sl if sl is not None else prop.stop,
+        "target": tg if tg is not None else prop.target,
+        "tsl_points": params.get("tsl"),
+        "qty": int(result.filled_qty or order.quantity),
+        "broker_order_id": result.broker_order_id,
+        "entry_filled": order.order_type == "market" or bool(result.filled_qty),
+        "peak": None,
+        "vehicle": prop.vehicle, "selected_strike": prop.selected_strike,
+        "entry_order": asdict(order),
+    }
+    _st()["live_positions"][strategy] = pos
+    try:
+        store.save_live_position(pos, path=JOURNAL_DB)
+    except Exception:
+        pass
+    if AFTER_WRITE:
+        try:
+            AFTER_WRITE()
+        except Exception:
+            pass
+    return pos
+
+
+def _fire_live_exit(symbol: str, strategy: str, pos: dict, price: float, reason: str) -> dict:
+    """Square off an open live position with a MARKET order, then record the realized P&L
+    via the existing journal/exit machinery. Every entry was a BUY (long option / long
+    equity / a 'short' index view = long PUT), so the exit is always a SELL. On a broker
+    failure we DO NOT record a close (the position stays open + managed)."""
+    _active.set(symbol.upper())
+    broker_state = "exited"
+    if BROKER is not None and pos.get("entry_order"):
+        eo = dict(pos["entry_order"])
+        eo.update(action="sell", order_type="market", price=None,
+                  client_tag=f"exit:{strategy}:{pos['ts']}")
+        res = BROKER.place_exit(Order(**eo))
+        broker_state = res.status
+        if res.status not in ("placed",):
+            return {"status": res.status, "message": res.message}   # leave the position open
+        if res.avg_price:
+            price = res.avg_price
+    lot = get_instrument(symbol)["lot_size"]
+    trig = next((t for t in _st().get("queues", {}).get(strategy, {}).get("triggers", [])
+                 if t.get("ts") == pos["ts"]), None) or {
+        "ts": pos["ts"], "direction": pos.get("direction"), "entry": pos.get("entry"),
+        "stop": pos.get("stop"), "target": pos.get("target"), "mtf_confidence": None}
+    outcome = _record_exit(strategy, trig, price, symbol, lot, auto=(reason != "manual"))
+    _st()["live_positions"].pop(strategy, None)
+    try:
+        store.close_live_position(symbol.upper(), strategy, pos["ts"], path=JOURNAL_DB)
+    except Exception:
+        pass
+    return {"status": "placed" if broker_state == "placed" else "exited",
+            "reason": reason, "outcome": outcome}
+
+
+def _monitor_price(symbol: str) -> float | None:
+    """The latest underlying spot for the monitor (TTL-cached pull — no Claude, no tokens)."""
+    try:
+        _active.set(symbol.upper())
+        _refresh(symbol, DEFAULT_SIZE)
+        snap = _st()["snap"]
+        return snap.spot if snap is not None else None
+    except Exception:
+        return None
+
+
+def _exit_monitor_tick(states: dict, broker, price_fn) -> list[dict]:
+    """One pass of the exit monitor (thread-free → unit-testable): per open live position,
+    confirm the entry fill, then trail / fire a market exit on SL/target/TSL. Returns the
+    exits fired this tick."""
+    fired: list[dict] = []
+    for symbol, st in list(states.items()):
+        for strategy, pos in list((st.get("live_positions") or {}).items()):
+            _active.set(symbol.upper())
+            if not pos.get("entry_filled"):
+                oid = pos.get("broker_order_id")
+                if oid and broker is not None:
+                    res = broker.order_status(oid)
+                    if (res.filled_qty or 0) > 0:
+                        pos["entry_filled"] = True
+                        if res.avg_price:
+                            pos["entry"] = res.avg_price
+                continue
+            price = price_fn(symbol)
+            if price is None:
+                continue
+            dec = evaluate_exit(pos, price)
+            if dec["action"] == "update":
+                pos["stop"] = dec["new_stop"]
+            elif dec["action"] == "exit":
+                out = _fire_live_exit(symbol, strategy, pos, price, dec["reason"])
+                if out.get("status") in ("placed", "exited"):
+                    fired.append({"symbol": symbol, "strategy": strategy,
+                                  "reason": dec["reason"]})
+    return fired
+
+
+def _reconcile_live_positions() -> list[dict]:
+    """On boot, rehydrate persisted open live positions the BROKER still confirms; mark the
+    rest closed (squared off out-of-band while we were down). Returns the mismatches."""
+    if BROKER is None:
+        return []
+    try:
+        broker_syms = {p.symbol.upper() for p in BROKER.positions()}
+    except Exception:
+        broker_syms = set()
+    mism: list[dict] = []
+    for row in store.load_open_live_positions(path=JOURNAL_DB):
+        sym = (row.get("symbol") or "").upper()
+        raw = row.get("raw") or row
+        st = _states.get(sym) or _states.setdefault(sym, _new_state())
+        if sym in broker_syms:
+            st["live_positions"][row["strategy"]] = raw
+            st["live_orders"][(row["strategy"], row["ts"])] = row.get("broker_order_id")
+        else:
+            try:
+                store.close_live_position(sym, row["strategy"], row["ts"], path=JOURNAL_DB)
+            except Exception:
+                pass
+            mism.append({"symbol": sym, "strategy": row["strategy"], "ts": row["ts"]})
+    return mism
+
+
+@app.post("/api/square-off")
+def square_off(symbol: str = Form("NIFTY"), strategy: str = Form("trade1")):
+    """Manual override — square off the open live position for ``strategy`` with a market
+    order now (and record the realized P&L). The agent's auto SL/target/TSL still run, but
+    this lets the trader exit on judgement at any moment."""
+    _active.set(symbol.upper())
+    pos = _st().get("live_positions", {}).get(strategy)
+    if not pos:
+        raise HTTPException(status_code=409, detail="no open live position for that strategy")
+    price = _monitor_price(symbol) or (_st()["snap"].spot if _st().get("snap") else pos.get("entry"))
+    out = _fire_live_exit(symbol, strategy, pos, price, reason="manual")
+    if out.get("status") not in ("placed", "exited"):
+        raise HTTPException(status_code=502, detail=f"square-off failed: {out.get('message')}")
+    return {"ok": True, "exit": out}
+
+
+@app.get("/api/order-status")
+def order_status(symbol: str = "NIFTY", strategy: str = "trade1"):
+    """The open live position for ``strategy`` (entry/stop/target/trailing-stop/fill state)
+    + the broker's order status, so the cockpit can show the live trade + trailing stop."""
+    _active.set(symbol.upper())
+    pos = _st().get("live_positions", {}).get(strategy)
+    if not pos:
+        return {"open": False}
+    broker_state = None
+    if BROKER is not None and pos.get("broker_order_id"):
+        try:
+            r = BROKER.order_status(pos["broker_order_id"])
+            broker_state = {"status": r.status, "filled_qty": r.filled_qty,
+                            "avg_price": r.avg_price}
+        except Exception as exc:
+            broker_state = {"error": str(exc)}
+    keys = ("strategy", "symbol", "ts", "segment", "direction", "entry", "stop", "target",
+            "tsl_points", "qty", "broker_order_id", "entry_filled", "peak")
+    return {"open": True, "position": {k: pos.get(k) for k in keys}, "broker": broker_state}
+
+
+@app.post("/api/kill-switch")
+def kill_switch(on: bool = Form(...)):
+    """Master execution switch. ``on=false`` → every new order is dry-run (the monitor still
+    MANAGES/closes open positions — never strands one). ``on=true`` re-arms live placement
+    (still subject to the per-trade live toggle + an injected BROKER)."""
+    os.environ["EXECUTION_LIVE"] = "1" if on else "0"
+    return {"execution_live": os.environ.get("EXECUTION_LIVE"),
+            "broker": (BROKER.name if BROKER is not None else None)}
+
+
 @app.post("/api/analyse")
 def analyse(strategy: str = "trade1", symbol: str = "NIFTY"):
     _active.set(symbol.upper())
@@ -1382,12 +1644,18 @@ def _advance_head(strategy: str) -> dict | None:
 
 @app.post("/api/decision")
 def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Form("NIFTY"),
-             label: str = Form(""), strategy: str = Form("trade1"), ts: str = Form("")):
+             label: str = Form(""), strategy: str = Form("trade1"), ts: str = Form(""),
+             order_type: str = Form("market"), limit_price: float | None = Form(None),
+             qty: int | None = Form(None), sl: float | None = Form(None),
+             target_px: float | None = Form(None), tsl: float | None = Form(None),
+             max_amount: float | None = Form(None)):
     """Approve/reject/skip the FROZEN queue HEAD for ``strategy`` (identified by ``ts``).
     Acts on the trigger the trader actually saw — not a moved-on live bar — and marks it
     actioned so the next open trigger surfaces (returned as ``next_head`` so the card
     advances instantly). ``skip`` records NOTHING (the track record stays clean — only a
-    deliberate ``reject`` is a logged stand-down). Execution stays Trade-1 only."""
+    deliberate ``reject`` is a logged stand-down). On approve, the order-ticket fields
+    (order_type/limit_price/qty/sl/target_px/tsl/max_amount) drive a LIVE order — gated to
+    Trade-1 + the dry-run safety triple; otherwise propose-only."""
     _active.set(symbol.upper())
     if strategy not in _STRAT:
         raise HTTPException(status_code=404, detail=f"unknown strategy {strategy!r}")
@@ -1409,12 +1677,22 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     if action == "skip":                              # silent — no journal, no execution
         _st()["actioned"][key] = "skipped"
         return {"status": "skipped", "next_head": _advance_head(strategy)}
+    params = _order_params(order_type, limit_price, qty, sl, target_px, tsl, max_amount)
     return _record_decision(strategy, target, action, symbol=symbol, label=label,
-                            live=live, is_head=is_head)
+                            live=live, is_head=is_head, params=params)
+
+
+def _order_params(order_type="market", limit_price=None, qty=None, sl=None,
+                  target_px=None, tsl=None, max_amount=None) -> dict:
+    """Normalize the order-ticket form fields into one dict threaded through the approve path."""
+    return {"order_type": "limit" if order_type == "limit" else "market",
+            "limit_price": limit_price, "qty": qty, "sl": sl, "target": target_px,
+            "tsl": tsl, "max_amount": max_amount}
 
 
 def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,
-                     label: str = "", live: bool = False, is_head: bool = True) -> dict:
+                     label: str = "", live: bool = False, is_head: bool = True,
+                     params: dict | None = None) -> dict:
     """Record an approve/reject for a RESOLVED trigger on the ACTIVE instrument and
     persist the whole decision moment. Shared by ``/api/decision`` (live head or
     back-decision) and ``/api/stock-enter`` (record a scanner stock by ts)."""
@@ -1430,14 +1708,14 @@ def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,
         flat = None
         if is_head:    # one position at a time only governs the LIVE head, not a back-decision
             flat = _auto_flatten(strategy, symbol)
-        result = breeze_exec.place(prop, live=live) if strategy == "trade1" else \
-            {"status": "logged (propose-only)"}
+        result = _execute_entry(strategy, symbol, target, prop, live, params or {})
         rec = log_decision(prop, "approved", execution=result)
         _st()["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
         _st()["actioned"][key] = "approved"
         if is_head:
             _st()["position"][strategy] = dict(target)   # the new open position for this strategy
         return {"status": result.get("status"), "logged": rec["decision"],
+                "broker_order_id": result.get("broker_order_id"),
                 "auto_exit": flat, "next_head": _advance_head(strategy)}
     rec = log_decision(prop, "rejected")
     _save_context_for(prop, "rejected", symbol, None, label=label)
@@ -1448,7 +1726,11 @@ def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,
 
 @app.post("/api/stock-enter")
 def stock_enter(symbol: str = Form(...), ts: str = Form(...),
-                strategy: str = Form("trade1"), live: bool = Form(False)):
+                strategy: str = Form("trade1"), live: bool = Form(False),
+                order_type: str = Form("market"), limit_price: float | None = Form(None),
+                qty: int | None = Form(None), sl: float | None = Form(None),
+                target_px: float | None = Form(None), tsl: float | None = Form(None),
+                max_amount: float | None = Form(None)):
     """Record (take) a SCANNER stock trade by ``ts`` — the one-click "Enter" the trader
     clicks on a highlighted NSE-50 row. Builds the stock's per-instrument state if it
     isn't loaded yet (so the queue + recorder machinery work exactly like an index), seeds
@@ -1481,7 +1763,9 @@ def stock_enter(symbol: str = Form(...), ts: str = Form(...),
         read = dict(cached.get("read") or {})
         read.setdefault("oi_bias", cached.get("oi_bias"))
         _st().setdefault("reads", {})[(strategy, ts)] = read
-    return _record_decision(strategy, target, "approve", symbol=sym, live=live, is_head=True)
+    params = _order_params(order_type, limit_price, qty, sl, target_px, tsl, max_amount)
+    return _record_decision(strategy, target, "approve", symbol=sym, live=live,
+                            is_head=True, params=params)
 
 
 # --- training mode (replay past 3-min triggers, label them, back-train) ----- #

@@ -145,10 +145,31 @@
           <label><input type="radio" name="liveLabel" value="genuine" /> 👍 genuine</label>
           <label><input type="radio" name="liveLabel" value="false" /> 👎 false</label>
         </div>
+        <!-- Order ticket: what gets sent to the broker on Approve (propose-only unless LIVE+armed) -->
+        <div id="orderTicket" class="orderticket">
+          <div class="otrow">
+            <label>Type
+              <select id="otType"><option value="market">Market</option><option value="limit">Limit</option></select>
+            </label>
+            <label id="otPriceWrap" hidden>Limit ₹ <input id="otPrice" type="number" step="0.05" /></label>
+            <label id="otQtyWrap">Qty <input id="otQty" type="number" step="1" /></label>
+            <label id="otMaxWrap" hidden>Max ₹ <input id="otMax" type="number" step="500" value="10000" /></label>
+            <span id="otQtyCalc" class="small muted"></span>
+          </div>
+          <div class="otrow">
+            <label>SL <input id="otSl" type="number" step="0.05" /></label>
+            <label>Target <input id="otTarget" type="number" step="0.05" /></label>
+            <label>TSL pts <input id="otTsl" type="number" step="0.5" placeholder="off" /></label>
+            <label class="otlive" title="Send a REAL order (still needs EXECUTION_LIVE + broker on the server)">
+              <input id="otLive" type="checkbox" /> 🔴 LIVE</label>
+          </div>
+        </div>
         <button id="approveBtn" class="btn ok">✅ Approve</button>
         <button id="rejectBtn" class="btn no">❌ Reject</button>
         <button id="skipBtn" class="btn skip" title="Move to the next trigger — records nothing">⏭ Next</button>
       </div>
+      <!-- Open LIVE position: fill state + live trailing stop + manual square-off -->
+      <div id="livePos" class="livepos" hidden></div>
       <div id="decisionMsg" class="muted small"></div>
       <div id="claudeBlock">
         <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>

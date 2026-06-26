@@ -268,3 +268,70 @@ def load_market_reads(symbol: str, path: str | Path = DB_PATH) -> list[dict]:
             (symbol,)).fetchall()
     return [{"ts": r["ts"],
              "read": json.loads(r["read_json"]) if r["read_json"] else None} for r in rows]
+
+
+# --------------------------------------------------------------------------- #
+# Live broker positions — the open, broker-backed trades the exit-monitor manages.
+# Persisted so a Railway restart can reconcile against the broker (own table so it
+# never touches the decision/track-record queries). One open row per (symbol,
+# strategy); ``close_live_position`` flips status when the exit fills.
+# --------------------------------------------------------------------------- #
+_LIVE_COLS = ("symbol", "strategy", "ts", "segment", "direction", "entry", "stop",
+              "target", "tsl_points", "qty", "broker_order_id", "status")
+
+
+def init_live_positions(path: str | Path = DB_PATH) -> None:
+    with _connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS live_positions ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, logged_at TEXT, symbol TEXT, "
+            "strategy TEXT, ts TEXT, segment TEXT, direction TEXT, entry REAL, stop REAL, "
+            "target REAL, tsl_points REAL, qty INTEGER, broker_order_id TEXT, "
+            "status TEXT, raw_json TEXT)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_livepos_open "
+                     "ON live_positions(status)")
+
+
+def save_live_position(pos: dict, path: str | Path = DB_PATH) -> int:
+    """Persist (append) one OPEN live position; returns its row id."""
+    init_live_positions(path)
+    row = {c: pos.get(c) for c in _LIVE_COLS}
+    row["status"] = row.get("status") or "open"
+    row["logged_at"] = datetime.now(timezone.utc).isoformat()
+    row["raw_json"] = json.dumps(pos)
+    cols = list(row.keys())
+    with _connect(path) as conn:
+        cur = conn.execute(
+            f"INSERT INTO live_positions ({', '.join(cols)}) "
+            f"VALUES ({', '.join('?' for _ in cols)})", [row[c] for c in cols])
+        return int(cur.lastrowid)
+
+
+def load_open_live_positions(path: str | Path = DB_PATH) -> list[dict]:
+    """Every still-open live position (the boot reconciliation source)."""
+    if not Path(path).exists():
+        return []
+    init_live_positions(path)
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM live_positions WHERE status='open' ORDER BY id").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw = d.pop("raw_json", None)
+        d["raw"] = json.loads(raw) if raw else None
+        out.append(d)
+    return out
+
+
+def close_live_position(symbol: str, strategy: str, ts: str,
+                        path: str | Path = DB_PATH) -> None:
+    """Mark the open (symbol, strategy, ts) position closed (exit filled / reconciled out)."""
+    if not Path(path).exists():
+        return
+    init_live_positions(path)
+    with _connect(path) as conn:
+        conn.execute(
+            "UPDATE live_positions SET status='closed' "
+            "WHERE symbol=? AND strategy=? AND ts=? AND status='open'",
+            (symbol, strategy, ts))

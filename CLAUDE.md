@@ -763,6 +763,36 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       `decisions`/today's `_states` carry them) — rationale + verdict always present; backfilling past
       levels needs a session replay (deferred).
 
+- [x] **EXECUTION PHASE — place LIVE orders after trigger approval (Breeze now, Kite later; confirmed
+      w/ trader).** The cockpit was propose-only (`/api/decision` approve → `breeze_exec.place` with no
+      broker wired → always dry_run). Now, after the trader approves, it sends a real order with
+      quantity, market/limit price, SL, target and a trailing stop. Decisions: stock trades buy EQUITY
+      shares (NSE cash, **CNC**, long-only) capped by a per-trade ₹ (default 10k, `qty=floor(max/spot)`);
+      index trades keep the deep-ITM CE/PE option (lots); exits DON'T rest at the broker — the agent
+      monitors the underlying + fires MARKET exits for SL/target/TSL (OCO + one-position structural) with
+      a manual square-off; entry defaults MARKET; LIVE this phase = **trade1 only**; env-gated (runs on
+      Railway or local). NEW `execution/base.py` (broker-agnostic `Order`/`OrderResult`/`Position` +
+      `Broker` ABC), `execution/sizing.py` (pure `qty_for_order`), `execution/exit_manager.py` (pure
+      `evaluate_exit`: hold/update-trail/exit; never exits before a confirmed fill), `execution/kite_exec.py`
+      (Zerodha stub). `execution/breeze_exec.py` gained `build_orders` (equity vs option, market/limit) +
+      `BreezeBroker` over the SDK (place/exit/status/cancel/positions/funds; never raises → `OrderResult`;
+      kept legacy `build_order`/`place`). `web/server.py`: `BROKER` seam (dry-run unless `live` +
+      EXECUTION_LIVE=1 + injected), order-ticket Form params on `/api/decision`+`/api/stock-enter`,
+      `_execute_entry`/`_open_live_position`/`_fire_live_exit`/`_monitor_price`/`_exit_monitor_tick`/
+      `_reconcile_live_positions`, idempotency (`live_orders` dedupe), endpoints `/api/square-off`
+      `/api/order-status` `/api/kill-switch`, `is_stock` on the snapshot. `journal/store.py`: `live_positions`
+      table (save/load-open/close → restart reconciliation). `web/cockpit_service.py`: exit-monitor thread +
+      boot reconcile, both gated on EXECUTION_LIVE; injects `BreezeBroker`. Frontend: order ticket on the
+      decision card (Market/Limit, editable qty/SL/target/TSL, stock Max-₹ with computed shares, 🔴 LIVE
+      toggle) + a live-position panel (fill/trailing-stop + ⛔ Square-off). Safety: dry-run default + triple
+      gate, ₹-cap recomputed server-side, kill switch (still closes opens), boot reconcile vs broker
+      positions, never auto-exit before fill, full audit. Tested: sizing, exit-manager, build_orders +
+      BreezeBroker mapping, and endpoints with a FakeBroker (dry-run default, places when armed, idempotent,
+      stock equity cap, square-off, order-status, kill-switch, monitor fires on stop, reconcile). Suite green
+      (350). OPEN (verify on a LIVE order — sandbox is egress-locked): Breeze CNC equity + NFO option
+      `place_order` param strings, option exit (opposite-sell vs square_off), `expiry_date` format, a
+      pre-trade token probe, NSE-50 lots (irrelevant for equity). config.example + this file updated.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live
