@@ -85,6 +85,45 @@ def test_record_once_writes_all_artifacts_and_isolates_failures(tmp_path):
     assert macro_store.load_macro(root=tmp_path / "macro") is not None
 
 
+def _chain_change(bias="bearish", atm=24000):
+    """A chain carrying its OWN ΔOI/Δprice fields -> single-snapshot strong lean."""
+    base = _chain(atm)
+    if bias == "bearish":                 # call writing across the board -> strong bearish
+        base["call_oi_chg"] = [5e5] * 5; base["call_ltp_chg"] = [-5] * 5
+        base["put_oi_chg"] = [0] * 5; base["put_ltp_chg"] = [0] * 5
+    else:                                 # put writing across the board -> strong bullish
+        base["put_oi_chg"] = [5e5] * 5; base["put_ltp_chg"] = [-5] * 5
+        base["call_oi_chg"] = [0] * 5; base["call_ltp_chg"] = [0] * 5
+    return base
+
+
+def test_record_once_pushes_clear_lean_once_then_dedups(tmp_path):
+    inst = [{"name": "NIFTY", "symbol": "NIFTY", "klass": "index", "band": [37.0, 72.0]}]
+    spot_fns = {"NIFTY": lambda s: 24010.0}
+    sent, alert_state = [], {}
+    notify_fn = lambda text: sent.append(text) or True
+
+    def rec(chain, now="2026-06-23T10:00:00+05:30"):
+        recorder.record_once(inst, {"NIFTY": lambda s: chain}, spot_fns,
+                             now=now, root=tmp_path, notify_fn=notify_fn, alert_state=alert_state)
+
+    rec(_chain_change("bearish"))                     # crosses into CLEAR bearish -> 1 push
+    assert len(sent) == 1 and "CLEAR BEARISH" in sent[0]
+    rec(_chain_change("bearish"), now="2026-06-23T10:15:00+05:30")  # still bearish -> no repeat
+    assert len(sent) == 1
+    rec(_chain_change("bullish"), now="2026-06-23T10:30:00+05:30")  # flip -> 1 more push
+    assert len(sent) == 2 and "CLEAR BULLISH" in sent[1]
+
+
+def test_record_once_no_push_without_notify_fn(tmp_path):
+    inst = [{"name": "NIFTY", "symbol": "NIFTY", "klass": "index", "band": [37.0, 72.0]}]
+    # default (no notify_fn / alert_state) never alerts and never crashes
+    res = recorder.record_once(inst, {"NIFTY": lambda s: _chain_change("bearish")},
+                               {"NIFTY": lambda s: 24010.0},
+                               now="2026-06-23T10:00:00+05:30", root=tmp_path)
+    assert res["saved"] == ["NIFTY"]
+
+
 def test_record_once_falls_back_to_implied_spot(tmp_path):
     instruments = [{"name": "NIFTY", "symbol": "NIFTY", "klass": "index", "band": [37.0, 72.0]}]
     # no spot_fn → implied_spot from put-call parity (~24000 where call_ltp≈put_ltp)

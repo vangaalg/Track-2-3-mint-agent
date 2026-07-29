@@ -114,6 +114,7 @@ intraday OI (which can't be backfilled). The journal still uses SQLite in the jo
 | `JOURNAL_REPO_URL` | a **separate** private repo for the journal, `https://<PAT>@github.com/vangaalg/mint-journal.git` (must DIFFER from `DATA_REPO_URL`) |
 | `RECORDER_INSTRUMENTS` | optional, e.g. `NIFTY,BANKNIFTY` (default = enabled defaults) |
 | `RECORDER_STOCKS` / `INDEX_EVERY_MIN` / `STOCK_EVERY_MIN` | optional recorder knobs (default `15` / `60` min) |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | optional — **FREE** phone push when an OI-buildup lean turns CLEAR (strong bull/bear). Unset = off. Get them in ~2 min: message **@BotFather** `/newbot` → the token; message **@userinfobot** → your numeric chat id; then DM your new bot once. Deduped to one push per transition/day (recorder cadence ≈15 min, so not instant — the in-app beep is the instant one). |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |
 | `SYNC_EVERY_MIN` | optional, data + journal push cadence, default `30` |
 

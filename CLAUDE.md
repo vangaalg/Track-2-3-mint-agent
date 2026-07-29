@@ -846,6 +846,20 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       open on that instrument) — trader picked beep+banner over a recorder phone-push. Frontend-only; node
       --check clean. FOLLOW-ON (deferred, offered): phone push (Telegram/ntfy) from the always-on recorder
       so it reaches you tab-closed.
+  - **FREE Telegram phone push on a CLEAR lean (from the recorder; confirmed w/ trader — no spend).**
+      New pure `feeds/notify.py`: `send_telegram(token, chat_id, text, transport=)` (stdlib urllib, no
+      dependency, injectable transport → offline-tested, never raises), `telegram_from_env()` (bound to
+      `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` env; None when unset → disabled), pure `strong_bias` (|score|
+      ≥ 0.4) + `buildup_alert_text`. `feeds/recorder.record_once(notify_fn=, alert_state=)` pushes once per
+      instrument when its OI lean crosses into strong bull/bear, deduped via a caller-owned `alert_state`
+      ({name:(day,bias)}) so it's one push per transition per day (re-arms when it weakens, resets next
+      day); `run()` builds `notify_fn` from env + a persistent `alert_state` and prints `telegram on/off`.
+      The combined cockpit_service recorder thread picks it up automatically (reads env). Telegram Bot API
+      is free; token is a SECRET (Railway env only, never git). ~15-min recorder cadence = not instant (the
+      in-app beep is instant); tab-closed reach is the point. Setup: @BotFather /newbot → token, @userinfobot
+      → chat id, DM the bot once. Tested in tests/test_notify.py (send/env/gating/text) + test_recorder
+      (push-once + dedup + flip + no-op without notify_fn). config.example + DEPLOY.md env table updated.
+      Suite green.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

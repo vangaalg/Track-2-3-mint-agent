@@ -198,6 +198,13 @@ feeds:
 recorder:
   index_every_min: 15          # indices snapshotted every 15 min (the trader's call)
   stock_every_min: 60          # Nifty-50 stocks every 1 hour (lighter on rate limits)
+  # FREE phone push (Telegram) when an instrument's OI-buildup lean turns CLEAR (strong
+  # bull/bear, |score| >= 0.4) — reaches you even with the cockpit tab closed. Telegram
+  # bots cost nothing. Set these as ENV VARS (not here — the token is a secret); unset =
+  # disabled. One-time: @BotFather /newbot -> TELEGRAM_BOT_TOKEN; @userinfobot -> TELEGRAM_CHAT_ID;
+  # then DM your new bot once. Deduped to one push per transition per day.
+  #   TELEGRAM_BOT_TOKEN: <from @BotFather>
+  #   TELEGRAM_CHAT_ID:   <your numeric id from @userinfobot>
   # band offsets are the trader's S/R extension points. NIFTY is a FIXED [37, 72];
   # other instruments use "scale" (price-scaled off NIFTY's 37/72; ATR-based later).
   # expiry weekday + exchange are per-instrument (NIFTY NFO/Tue=1; SENSEX BFO is BSE,

@@ -32,7 +32,7 @@ except Exception:                                     # pragma: no cover
 
 from feeds import oi_store, oi_summary_store, macro_store
 from feeds.oi import summarise_chain
-from feeds import oi_buildup
+from feeds import oi_buildup, notify
 from feeds.oi_levels import wall_levels, scaled_offsets
 
 OPEN, CLOSE = dtime(9, 15), dtime(15, 30)
@@ -104,7 +104,8 @@ def _roots(root):
 
 
 def record_once(instruments, fetchers, spot_fns=None, macro_fn=None,
-                now=None, root=None, errors=None, pace_s: float = 0.0) -> dict:
+                now=None, root=None, errors=None, pace_s: float = 0.0,
+                notify_fn=None, alert_state=None) -> dict:
     """Record ONE cycle for the given instruments + macro. Pure given injected fns.
 
     ``fetchers``: {name: fetch(symbol)->chain_df}; ``spot_fns``: {name: spot(symbol)->float}
@@ -112,6 +113,11 @@ def record_once(instruments, fetchers, spot_fns=None, macro_fn=None,
     Every instrument is independent — a failure is captured in ``errors`` and the rest
     continue, so an untested Sensex/stock never blocks NIFTY. Returns
     ``{"saved": [...names...], "macro": bool}``.
+
+    ``notify_fn(text)`` (optional, from ``feeds.notify.telegram_from_env``) pushes a phone
+    alert when an instrument's OI-buildup lean crosses into a CLEAR (strong) bull/bear
+    state; ``alert_state`` (a caller-owned dict, persisted across cycles) dedups it to one
+    push per transition per day. Both None => no alerts.
     """
     spot_fns = spot_fns or {}
     now = now or (pd.Timestamp.now(tz=IST) if IST else pd.Timestamp.now())
@@ -147,6 +153,17 @@ def record_once(instruments, fetchers, spot_fns=None, macro_fn=None,
             oi_store.save_chain(name, now, spot, chain, base=oi_base)
             oi_summary_store.append_summary(name, now, spot, summary, levels,
                                             buildup=buildup, root=summary_root)
+            # phone push when the OI lean turns CLEAR (strong) — once per transition/day
+            if notify_fn is not None and alert_state is not None and buildup is not None:
+                sb = notify.strong_bias(buildup)
+                day = str(pd.Timestamp(now).date())
+                if sb and alert_state.get(name) != (day, sb):
+                    try:
+                        notify_fn(notify.buildup_alert_text(name, buildup))
+                    except Exception as exc:
+                        if errors is not None:
+                            errors.append(f"{name} notify: {exc}")
+                alert_state[name] = (day, sb)       # sb None re-arms; a new day resets
             saved.append(name)
         except Exception as exc:
             if errors is not None:
@@ -239,8 +256,10 @@ def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3,
     instruments = instruments or select_instruments()
     fetchers, spot_fns, macro_fn = _build_live(instruments)
     last = {}
+    notify_fn = notify.telegram_from_env()          # None when TELEGRAM_* env unset (disabled)
+    alert_state = {}                                # per-symbol CLEAR-lean dedup (persists across cycles)
     print(f"recorder: {[i['name'] for i in instruments]} | indices {index_every}m / "
-          f"stocks {stock_every}m", file=sys.stderr)
+          f"stocks {stock_every}m | telegram {'on' if notify_fn else 'off'}", file=sys.stderr)
     while True:
         now = pd.Timestamp.now(tz=IST)
         if not in_session(now):
@@ -253,7 +272,8 @@ def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3,
         if due:
             errors = []
             res = record_once(due, fetchers, spot_fns, macro_fn=macro_fn, now=now,
-                              errors=errors, pace_s=pace_s)
+                              errors=errors, pace_s=pace_s,
+                              notify_fn=notify_fn, alert_state=alert_state)
             for n in res["saved"]:
                 last[n] = now
             print(f"{now:%H:%M} saved={res['saved']} macro={res['macro']}"
