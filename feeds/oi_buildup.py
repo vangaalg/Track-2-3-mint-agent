@@ -131,6 +131,49 @@ def buildup_table(prev_chain: pd.DataFrame | None, cur_chain: pd.DataFrame | Non
     })
 
 
+def has_direct_change(chain: pd.DataFrame | None) -> bool:
+    """True when the chain already carries per-strike ΔOI + Δprice fields (Breeze's
+    ``call_oi_chg``/``call_ltp_chg`` etc., captured by ``feeds.breeze_oi.merge_chain``)
+    — then buildup classifies from a SINGLE snapshot, no baseline needed."""
+    if chain is None or getattr(chain, "empty", True):
+        return False
+    need = ("call_oi_chg", "put_oi_chg", "call_ltp_chg", "put_ltp_chg")
+    if not all(c in chain.columns for c in need):
+        return False
+    return bool(pd.to_numeric(chain["call_oi_chg"], errors="coerce").notna().any()
+                or pd.to_numeric(chain["put_oi_chg"], errors="coerce").notna().any())
+
+
+def buildup_table_from_change(chain: pd.DataFrame | None, spot: float,
+                              window: float = 1000.0) -> pd.DataFrame:
+    """Per-strike buildup table from the chain's OWN ΔOI/Δprice fields (one snapshot).
+
+    Same output shape as ``buildup_table`` but sourced from Breeze's per-strike change
+    columns instead of diffing two snapshots — so it works on the first pull of the day.
+    """
+    empty = pd.DataFrame(columns=["strike", "d_call_oi", "d_put_oi", "d_call_ltp",
+                                  "d_put_ltp", "call_state", "put_state",
+                                  "call_bias", "put_bias"])
+    if not has_direct_change(chain):
+        return empty
+    c = chain.copy()
+    c["strike"] = pd.to_numeric(c["strike"], errors="coerce")
+    c = c[(c["strike"] - spot).abs() <= window].sort_values("strike").reset_index(drop=True)
+    if c.empty:
+        return empty
+    d_call_oi, d_put_oi = _num(c, "call_oi_chg"), _num(c, "put_oi_chg")
+    d_call_ltp, d_put_ltp = _num(c, "call_ltp_chg"), _num(c, "put_ltp_chg")
+    call = [_state(o, p, True) for o, p in zip(d_call_oi, d_call_ltp)]
+    put = [_state(o, p, False) for o, p in zip(d_put_oi, d_put_ltp)]
+    return pd.DataFrame({
+        "strike": c["strike"].astype("int64"),
+        "d_call_oi": d_call_oi.to_numpy(), "d_put_oi": d_put_oi.to_numpy(),
+        "d_call_ltp": d_call_ltp.to_numpy(), "d_put_ltp": d_put_ltp.to_numpy(),
+        "call_state": [s for s, _ in call], "put_state": [s for s, _ in put],
+        "call_bias": [b for _, b in call], "put_bias": [b for _, b in put],
+    })
+
+
 def buildup_signal(table: pd.DataFrame | None, spot: float,
                    window: float = 600.0) -> dict:
     """Aggregate the per-strike table into one buyer-vs-seller lean.

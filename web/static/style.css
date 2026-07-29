@@ -244,3 +244,7 @@ td.conf { font-weight:600; white-space:nowrap; }
 .bstate { font-size:10px; padding:0 5px; border-radius:4px; font-weight:600; white-space:nowrap; }
 .bstate.bpos { background:rgba(46,158,75,.16); color:var(--green); }
 .bstate.bneg { background:rgba(226,59,59,.16); color:var(--red); }
+
+/* buyer/seller lean in the PCR history table */
+.bup { color:var(--green); font-weight:600; }
+.bdn { color:var(--red); font-weight:600; }

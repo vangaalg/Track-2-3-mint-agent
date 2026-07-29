@@ -35,6 +35,32 @@ def test_merge_chain_keeps_ltp():
     assert row["call_ltp"] == 120.5 and row["put_ltp"] == 72.35
 
 
+def test_merge_chain_captures_volume_and_oi_change_when_present():
+    calls = [{"strike_price": "24000", "open_interest": "50", "ltp": "120",
+              "total_quantity_traded": "8000", "oi_change": "1200", "ltp_change": "-5"}]
+    puts = [{"strike_price": "24000", "open_interest": "70", "ltp": "72",
+             "volume": "6000", "open_interest_change": "-300", "change": "3"}]
+    df = merge_chain(calls, puts)
+    row = df.loc[df["strike"] == 24000.0].iloc[0]
+    assert row["call_vol"] == 8000.0 and row["put_vol"] == 6000.0
+    assert row["call_oi_chg"] == 1200.0 and row["put_oi_chg"] == -300.0
+    assert row["call_ltp_chg"] == -5.0 and row["put_ltp_chg"] == 3.0
+    # the columns feed chain_table's optional Volume view
+    from feeds.oi import chain_table
+    t = chain_table(df, spot=24000.0, window=1000)
+    assert "call_vol" in t.columns and float(t.iloc[0]["call_vol"]) == 8000.0
+
+
+def test_merge_chain_volume_none_when_absent():
+    df = merge_chain([{"strike_price": "24000", "open_interest": "50"}],
+                     [{"strike_price": "24000", "open_interest": "70"}])
+    row = df.loc[df["strike"] == 24000.0].iloc[0]
+    assert row["call_vol"] is None and row["call_oi_chg"] is None
+    # chain_table stays on its base column set when no volume is present
+    from feeds.oi import chain_table
+    assert "call_vol" not in chain_table(df, spot=24000.0).columns
+
+
 def test_chain_table_time_value_window_and_ranks():
     strikes = [float(s) for s in range(22500, 25501, 500)]  # 22500..25500
     df = pd.DataFrame({

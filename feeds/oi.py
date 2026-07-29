@@ -83,6 +83,13 @@ def chain_table(chain: pd.DataFrame, spot: float, window: float = 1000.0) -> pd.
     })
     out["call_oi_rank"] = call_oi.rank(ascending=False, method="first")
     out["put_oi_rank"] = put_oi.rank(ascending=False, method="first")
+    # Optional per-strike traded volume — surfaced only when the feed actually carries
+    # values (Breeze's merge_chain emits all-None columns when it doesn't). Additive; the
+    # base column set is unchanged whenever no real volume is present.
+    cvol, pvol = num("call_vol"), num("put_vol")
+    if cvol.notna().any() or pvol.notna().any():
+        out["call_vol"] = cvol
+        out["put_vol"] = pvol
     return out
 
 

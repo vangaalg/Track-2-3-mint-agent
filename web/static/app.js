@@ -219,16 +219,19 @@ function renderOI(d) {
     xaxis: { title: "← Call OI (L)   |   Put OI (L) →", zeroline: true, zerolinecolor: "#3a4258" },
   }, { displayModeBar: false, responsive: true });
 
-  // time-value table
-  let h = "<thead><tr><th>Call TV</th><th>Call LTP</th><th>Call OI(L)</th><th>Strike</th>"
-    + "<th>Put OI(L)</th><th>Put LTP</th><th>Put TV</th></tr></thead><tbody>";
+  // time-value table (adds a traded-Volume column per side only when the feed exposes it)
+  const hasVol = chain.some((r) => r.call_vol != null || r.put_vol != null);
+  const vh = hasVol ? "<th>C Vol(L)</th>" : "", vhp = hasVol ? "<th>P Vol(L)</th>" : "";
+  let h = "<thead><tr><th>Call TV</th>" + vh + "<th>Call LTP</th><th>Call OI(L)</th><th>Strike</th>"
+    + "<th>Put OI(L)</th><th>Put LTP</th>" + vhp + "<th>Put TV</th></tr></thead><tbody>";
   for (const r of chain) {
     const cls = r.strike === atm ? "atm" : "";
     const cw = cwS.has(r.strike) ? (r.strike === byCall[0]?.strike ? "cwall" : "cwall2") : "";
     const ps = psS.has(r.strike) ? (r.strike === byPut[0]?.strike ? "pshelf" : "pshelf2") : "";
-    h += `<tr class="${cls}"><td>${n(r.call_extrinsic)}</td><td>${n(r.call_ltp)}</td>`
+    const cv = hasVol ? `<td>${lakh(r.call_vol)}</td>` : "", pv = hasVol ? `<td>${lakh(r.put_vol)}</td>` : "";
+    h += `<tr class="${cls}"><td>${n(r.call_extrinsic)}</td>` + cv + `<td>${n(r.call_ltp)}</td>`
       + `<td class="${cw}">${lakh(r.call_oi)}</td><td class="strike">${r.strike}</td>`
-      + `<td class="${ps}">${lakh(r.put_oi)}</td><td>${n(r.put_ltp)}</td><td>${n(r.put_extrinsic)}</td></tr>`;
+      + `<td class="${ps}">${lakh(r.put_oi)}</td><td>${n(r.put_ltp)}</td>` + pv + `<td>${n(r.put_extrinsic)}</td></tr>`;
   }
   $("chainTbl").innerHTML = h + "</tbody>";
 }
@@ -330,6 +333,9 @@ function renderPcr(rows) {
     type: "scatter", mode: "lines", name, x, y: rows.map((r) => r[key]), yaxis: "y2",
     line: { color, width: 1, dash: dash || "solid" }, connectgaps: true,
   });
+  // buyer-vs-seller lean over time (OI buildup): buildup_score on its own left-side axis,
+  // so its −1..+1 scale reads independently of PCR. Only drawn if any row carries it.
+  const hasBuildup = rows.some((r) => r.buildup_score != null);
   Plotly.react("pcrChart", [
     { type: "scatter", mode: "lines", name: "PCR", x, y: rows.map((r) => r.pcr),
       line: { color: "#e45756", width: 2 }, hovertemplate: "PCR %{y:.2f}<extra></extra>" },
@@ -341,20 +347,33 @@ function renderPcr(rows) {
     lvl("res_ext2", "Res band", "#e45756", "dash"),
     lvl("sup_ext1", "Sup band", "#54a24b", "dash"),
     lvl("sup_ext2", "Sup band", "#54a24b", "dash"),
+    ...(hasBuildup ? [{
+      type: "scatter", mode: "lines", name: "Buildup lean", x,
+      y: rows.map((r) => r.buildup_score), yaxis: "y3", connectgaps: true,
+      line: { color: "#7b5cff", width: 2 },
+      hovertemplate: "buildup %{y:.2f}<extra></extra>",
+    }] : []),
   ], {
     height: 230, showlegend: true, legend: { orientation: "h", font: { size: 9 }, y: -0.25 },
     margin: { l: 40, r: 44, t: 8, b: 36 }, paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
     font: { color: "#555", size: 10 },
-    xaxis: { type: "category", tickangle: -45, nticks: 10, automargin: true },
+    xaxis: { type: "category", tickangle: -45, nticks: 10, automargin: true, domain: [0.08, 1] },
     yaxis: { title: "PCR", zeroline: false },
     yaxis2: { title: "Price / strikes", overlaying: "y", side: "right", zeroline: false },
+    // buyer/seller lean axis: pinned −1..+1, its own left position so it never distorts PCR
+    yaxis3: { overlaying: "y", side: "left", position: 0, range: [-1, 1], showgrid: false,
+              zeroline: true, zerolinecolor: "#c9ccd6", tickfont: { color: "#7b5cff", size: 8 },
+              anchor: "free" },
   }, { displayModeBar: false, responsive: true });
 
   // table beneath the graph
-  let h = "<thead><tr><th>Time</th><th>PCR</th><th>Max-pain</th><th>Call wall</th>"
-    + "<th>Put shelf</th><th>Res bands</th><th>Sup bands</th></tr></thead><tbody>";
+  let h = "<thead><tr><th>Time</th><th>PCR</th><th>Buildup</th><th>Writing C/P</th><th>Max-pain</th>"
+    + "<th>Call wall</th><th>Put shelf</th><th>Res bands</th><th>Sup bands</th></tr></thead><tbody>";
   for (const r of rows.slice().reverse()) {              // newest first
+    const bcls = r.buildup_score > 0.15 ? "bup" : r.buildup_score < -0.15 ? "bdn" : "";
+    const bud = r.buildup_bias ? `<span class="${bcls}">${r.buildup_bias} ${n(r.buildup_score)}</span>` : "—";
     h += `<tr><td>${(r.ts || "").slice(5, 16).replace("T", " ")}</td><td class="conf">${n(r.pcr)}</td>`
+      + `<td>${bud}</td><td>${lakh(r.call_writing) || "—"} / ${lakh(r.put_writing) || "—"}</td>`
       + `<td>${n(r.max_pain, 0)}</td><td>${n(r.call_wall_strike, 0)}</td><td>${n(r.put_shelf_strike, 0)}</td>`
       + `<td>${n(r.res_ext1, 0)} / ${n(r.res_ext2, 0)}</td><td>${n(r.sup_ext1, 0)} / ${n(r.sup_ext2, 0)}</td></tr>`;
   }

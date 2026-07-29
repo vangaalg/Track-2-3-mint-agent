@@ -822,6 +822,21 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       Breeze exposes a direct per-strike ΔOI/volume field (would skip the snapshot-diff); retune the
       strong/mild strength thresholds once watched live; weighted OI boost (+2/+1/−1) supersedes the older
       "refine the flat +1" roadmap item.
+  - **Follow-ons (buyer/seller-over-time chart + per-strike volume/ΔOI capture).** (1) The PCR-over-time
+      graph (`web/static/app.js renderPcr`) now draws a **Buildup lean** line (`buildup_score`, its own
+      pinned −1..+1 left axis so it never distorts PCR) + a **Buildup** and **Writing C/P** column in the
+      table — the buyer-vs-seller series the recorder/cockpit persist (`/api/oi-history` already carried the
+      4 columns). (2) `feeds/breeze_oi.merge_chain` now DEFENSIVELY captures per-strike **volume**
+      (`call_vol/put_vol`), **ΔOI** (`call_oi_chg/put_oi_chg`) and **Δprice** (`call_ltp_chg/put_ltp_chg`)
+      from candidate Breeze field names (`_VOLUME_KEYS`/`_OI_CHANGE_KEYS`/`_LTP_CHANGE_KEYS` — degrade to
+      None, fix to the real keys after a live pull). When present, `feeds/oi_buildup.has_direct_change` +
+      `buildup_table_from_change` classify buildup from a **SINGLE snapshot** (no baseline — works on the
+      day's first pull), preferred by both `web/server._oi_buildup` and `recorder.record_once`; and
+      `feeds/oi.chain_table` surfaces an optional Volume column (only when values exist → base contract
+      unchanged), rendered per-side in the cockpit chain table. Tested: merge_chain volume/ΔOI capture +
+      absent-path, chain_table volume gating, single-snapshot buildup + `has_direct_change` false paths,
+      oi-history buildup columns. node --check clean; suite green (374). LIVE-VERIFY: the actual Breeze
+      quote field names for volume/ΔOI/Δprice (candidates are best-guess; the code is a no-op until they match).
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

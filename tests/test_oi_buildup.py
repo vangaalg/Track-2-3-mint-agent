@@ -127,6 +127,32 @@ def test_compute_buildup_shape():
     assert "signal" in out and "table" in out and isinstance(out["table"], list)
 
 
+# ---- single-snapshot path (Breeze per-strike ΔOI/Δprice fields) ------------- #
+def test_direct_change_single_snapshot():
+    from feeds.oi_buildup import has_direct_change, buildup_table_from_change
+    # a chain carrying its OWN change columns -> no baseline needed
+    chain = pd.DataFrame({
+        "strike": [100], "call_oi": [12], "put_oi": [14], "call_ltp": [4], "put_ltp": [4],
+        "call_oi_chg": [2], "put_oi_chg": [4], "call_ltp_chg": [-1], "put_ltp_chg": [1],
+    })
+    assert has_direct_change(chain) is True
+    t = buildup_table_from_change(chain, 100.0, window=50)
+    assert t.iloc[0]["call_state"] == SHORT_BUILDUP     # call OI+, price- = writing (bearish)
+    assert t.iloc[0]["put_state"] == LONG_BUILDUP       # put OI+, price+ = long buildup (bearish)
+    sig = buildup_signal(t, 100.0, window=50)
+    assert sig["bias"] == "bearish" and not sig["insufficient"]
+
+
+def test_has_direct_change_false_without_fields_or_all_nan():
+    plain = _chain([100], [10], [10], [5], [5])
+    from feeds.oi_buildup import has_direct_change, buildup_table_from_change
+    assert has_direct_change(plain) is False
+    assert buildup_table_from_change(plain, 100.0).empty     # falls back to the diff path elsewhere
+    nan_cols = plain.assign(call_oi_chg=np.nan, put_oi_chg=np.nan,
+                            call_ltp_chg=np.nan, put_ltp_chg=np.nan)
+    assert has_direct_change(nan_cols) is False              # present but empty -> not usable
+
+
 # ---- reversal levels (approx) ---------------------------------------------- #
 def test_reversal_levels_off_walls():
     summary = {"call_wall": {"strike": 24200}, "put_shelf": {"strike": 23800}}

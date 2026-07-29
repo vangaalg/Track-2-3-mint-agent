@@ -135,11 +135,15 @@ def record_once(instruments, fetchers, spot_fns=None, macro_fn=None,
             levels = wall_levels(summary, _offsets_for(inst, spot))
             # OI buildup vs the day-open baseline (None on the first cycle → insufficient).
             buildup = None
-            prev = oi_buildup.earliest_snapshot(
-                oi_store.load_history(name, day=str(pd.Timestamp(now).date()), base=oi_base))
-            if prev is not None:
+            if oi_buildup.has_direct_change(chain):       # Breeze gave per-strike ΔOI — 1 snapshot
                 buildup = oi_buildup.buildup_signal(
-                    oi_buildup.buildup_table(prev, chain, spot), spot)
+                    oi_buildup.buildup_table_from_change(chain, spot), spot)
+            else:
+                prev = oi_buildup.earliest_snapshot(
+                    oi_store.load_history(name, day=str(pd.Timestamp(now).date()), base=oi_base))
+                if prev is not None:
+                    buildup = oi_buildup.buildup_signal(
+                        oi_buildup.buildup_table(prev, chain, spot), spot)
             oi_store.save_chain(name, now, spot, chain, base=oi_base)
             oi_summary_store.append_summary(name, now, spot, summary, levels,
                                             buildup=buildup, root=summary_root)

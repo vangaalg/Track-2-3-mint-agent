@@ -294,9 +294,12 @@ def _oi_buildup(symbol: str, chain, spot, ts):
     if chain is None or getattr(chain, "empty", True) or spot is None:
         return oi_buildup.buildup_signal(None, spot or 0.0), None, None
     try:
-        day = str(pd.Timestamp(ts).date())
-        prev = oi_buildup.earliest_snapshot(oi_store.load_history(symbol, day=day))
-        tbl = oi_buildup.buildup_table(prev, chain, spot)
+        if oi_buildup.has_direct_change(chain):     # Breeze gave per-strike ΔOI/Δprice — 1 snapshot
+            tbl = oi_buildup.buildup_table_from_change(chain, spot)
+        else:                                        # else diff vs the day-open baseline
+            day = str(pd.Timestamp(ts).date())
+            prev = oi_buildup.earliest_snapshot(oi_store.load_history(symbol, day=day))
+            tbl = oi_buildup.buildup_table(prev, chain, spot)
         sig = oi_buildup.buildup_signal(tbl, spot)
         summary = summarise_chain(chain, spot)
         rev = reversal_levels(summary, offsets_for(get_instrument(symbol), spot), sig)

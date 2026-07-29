@@ -534,6 +534,7 @@ def _seed_oi_history(root, symbol="NIFTY"):
             {"pcr": pcr, "max_pain": mp, "atm": 24000.0,
              "call_wall": {"strike": cw, "oi": 9e6}, "put_shelf": {"strike": ps, "oi": 8e6}},
             {"resistance_ext": [cw + 37, cw + 72], "support_ext": [ps - 37, ps - 72]},
+            buildup={"bias": "bearish", "score": -0.3, "call_writing": 5e5, "put_writing": 1e5},
             root=root)
 
 
@@ -549,6 +550,9 @@ def test_oi_history_serves_pcr_timeseries(client, tmp_path, monkeypatch):
     r0 = d["rows"][0]
     assert r0["pcr"] == 1.05 and r0["max_pain"] == 24050.0 and r0["call_wall_strike"] == 24100.0
     assert r0["res_ext1"] == 24137.0 and r0["sup_ext1"] == 23863.0
+    # buyer/seller-over-time columns flow through for the buildup line + table
+    assert r0["buildup_bias"] == "bearish" and r0["buildup_score"] == -0.3
+    assert r0["call_writing"] == 5e5
     # filter to one session
     one = client.get("/api/oi-history?symbol=NIFTY&day=2026-06-23").json()
     assert len(one["rows"]) == 1 and one["rows"][0]["pcr"] == 1.20

@@ -17,11 +17,33 @@ import pandas as pd
 from loaders.breeze import get_breeze_client
 
 
+# Candidate Breeze field names for per-strike traded VOLUME and CHANGE-IN-OI. The
+# exact keys `get_option_chain_quotes` returns aren't verifiable in the egress-locked
+# sandbox, so we read the first candidate present and degrade to None otherwise. Fix
+# these to the real keys once confirmed on a live pull (the rest of the code already
+# handles the columns being present or all-None).
+_VOLUME_KEYS = ("total_quantity_traded", "volume", "traded_quantity", "ttq", "quantity_traded")
+_OI_CHANGE_KEYS = ("oi_change", "open_interest_change", "change_in_oi", "oi_chng")
+_LTP_CHANGE_KEYS = ("ltp_change", "change", "ltp_chng", "chng", "net_change")
+
+
+def _first(r: dict, keys) -> float | None:
+    for k in keys:
+        if k in r and r[k] not in (None, ""):
+            v = _f(r[k])
+            if v is not None:
+                return v
+    return None
+
+
 def merge_chain(call_rows: list[dict], put_rows: list[dict]) -> pd.DataFrame:
     """Merge Breeze call/put rows into the canonical chain frame.
 
-    Columns: ``strike, call_oi, put_oi, call_ltp, put_ltp`` — OI for the analysis
-    layer, LTP for the per-strike visualization.
+    Columns: ``strike, call_oi, put_oi, call_ltp, put_ltp`` (always) plus
+    ``call_vol/put_vol`` (traded volume) and ``call_oi_chg/put_oi_chg`` (change in OI)
+    when Breeze exposes them — all-None when it doesn't, so downstream stays safe. The
+    OI/LTP feed the analysis + visualization; volume + ΔOI power the buildup read (a
+    direct ΔOI field lets it classify from a SINGLE snapshot, no baseline needed).
     """
     def _index(rows):
         out = {}
@@ -30,18 +52,27 @@ def merge_chain(call_rows: list[dict], put_rows: list[dict]) -> pd.DataFrame:
                 k = float(r["strike_price"])
             except (KeyError, TypeError, ValueError):
                 continue
-            out[k] = (float(r.get("open_interest") or 0), _f(r.get("ltp")))
+            out[k] = (float(r.get("open_interest") or 0), _f(r.get("ltp")),
+                      _first(r, _VOLUME_KEYS), _first(r, _OI_CHANGE_KEYS),
+                      _first(r, _LTP_CHANGE_KEYS))
         return out
 
     calls, puts = _index(call_rows), _index(put_rows)
     strikes = sorted(set(calls) | set(puts))
+    blank = (0.0, None, None, None, None)
     return pd.DataFrame(
         {
             "strike": strikes,
-            "call_oi": [calls.get(s, (0.0, None))[0] for s in strikes],
-            "put_oi": [puts.get(s, (0.0, None))[0] for s in strikes],
-            "call_ltp": [calls.get(s, (0.0, None))[1] for s in strikes],
-            "put_ltp": [puts.get(s, (0.0, None))[1] for s in strikes],
+            "call_oi": [calls.get(s, blank)[0] for s in strikes],
+            "put_oi": [puts.get(s, blank)[0] for s in strikes],
+            "call_ltp": [calls.get(s, blank)[1] for s in strikes],
+            "put_ltp": [puts.get(s, blank)[1] for s in strikes],
+            "call_vol": [calls.get(s, blank)[2] for s in strikes],
+            "put_vol": [puts.get(s, blank)[2] for s in strikes],
+            "call_oi_chg": [calls.get(s, blank)[3] for s in strikes],
+            "put_oi_chg": [puts.get(s, blank)[3] for s in strikes],
+            "call_ltp_chg": [calls.get(s, blank)[4] for s in strikes],
+            "put_ltp_chg": [puts.get(s, blank)[4] for s in strikes],
         }
     )
 
