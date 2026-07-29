@@ -837,6 +837,15 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       absent-path, chain_table volume gating, single-snapshot buildup + `has_direct_change` false paths,
       oi-history buildup columns. node --check clean; suite green (374). LIVE-VERIFY: the actual Breeze
       quote field names for volume/ΔOI/Δprice (candidates are best-guess; the code is a no-op until they match).
+  - **CLEAR-lean alert (in-app beep + banner; confirmed w/ trader).** The buildup was display-only; now
+      `web/static/app.js maybeBuildupAlert` fires the existing `beep()` + `.flash` + a red/green
+      "⚠ CLEAR BULLISH/BEARISH" badge in the buildup header when the OI lean crosses into a **strong**
+      state (|score| ≥ `STRONG_BUILDUP` 0.4 = `analysis.trade1.BUILDUP_STRONG`), deduped per instrument
+      via `_buildupAlert` so it pings ONCE per transition (none→strong, or a bull↔bear flip), not every
+      15s poll; weakening below strong clears the badge and re-arms. In-app only (the cockpit tab must be
+      open on that instrument) — trader picked beep+banner over a recorder phone-push. Frontend-only; node
+      --check clean. FOLLOW-ON (deferred, offered): phone push (Telegram/ntfy) from the always-on recorder
+      so it reaches you tab-closed.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

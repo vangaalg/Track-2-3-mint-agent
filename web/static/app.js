@@ -20,6 +20,8 @@ let _mrDay = "all", _mrDays = [], _mrRows = [];  // saved "Market view" reads: d
 let _logDay = "all", _logStrat = "all", _logDays = [], _logRows = [];  // triggers+analysis log (all instruments)
 let _scanRows = [];                          // last scanner rows (for the 💬 full-read lookup)
 let _seenPending = new Set();                // pending trigger ts already alerted (one beep each)
+let _buildupAlert = {};                       // per-symbol last strong OI lean alerted (dedup)
+const STRONG_BUILDUP = 0.4;                   // |score| for a CLEAR lean (= analysis.trade1.BUILDUP_STRONG)
 
 async function poll() {
   try {
@@ -153,16 +155,38 @@ function renderChart(d) {
 }
 
 // LTPCalculator-style OI buildup: buyer-vs-seller meter + per-strike heatmap + approx reversal.
+// Beep + flash the buildup panel when the OI lean crosses into a CLEAR (strong) bull/bear
+// state — once per transition (not every poll), per instrument. In-app only (tab must be open).
+function maybeBuildupAlert(symbol, bu) {
+  const badge = $("buildupAlertBadge");
+  const strong = bu && !bu.insufficient && (bu.strength || 0) >= STRONG_BUILDUP
+    && (bu.bias === "bullish" || bu.bias === "bearish");
+  const state = strong ? bu.bias : "none";
+  if (strong) {
+    if (badge) { badge.hidden = false; badge.className = "balert " + (bu.bias === "bullish" ? "bull" : "bear");
+      badge.textContent = "⚠ CLEAR " + bu.bias.toUpperCase(); }
+    if (state !== _buildupAlert[symbol]) {            // new strong lean (or a flip) → ping once
+      const panel = $("buildupPanel");
+      panel.classList.remove("flash"); void panel.offsetWidth; panel.classList.add("flash");
+      beep();
+    }
+  } else if (badge) { badge.hidden = true; }          // weakened → clear badge, allow a re-alert later
+  _buildupAlert[symbol] = state;
+}
+
 function renderBuildup(d) {
   const panel = $("buildupPanel"), bu = d.oi_buildup, rows = d.oi_buildup_table || [], rev = d.oi_reversal;
+  const sym = d.symbol || currentSymbol;
   if (!bu || bu.insufficient) {                       // needs ≥2 snapshots (live/forward only)
     if (panel) { panel.hidden = false;
       $("buildupLabel").textContent = "buildup — not enough OI history yet today";
       $("buildupFill").style.width = "50%"; $("buildupFill").className = "bfill neutral";
-      $("buildupRev").textContent = ""; $("buildupTbl").innerHTML = ""; }
+      $("buildupRev").textContent = ""; $("buildupTbl").innerHTML = "";
+      $("buildupAlertBadge").hidden = true; _buildupAlert[sym] = "none"; }
     return;
   }
   panel.hidden = false;
+  maybeBuildupAlert(sym, bu);
   const score = bu.score || 0, pct = Math.round((score + 1) / 2 * 100);   // -1..+1 → 0..100
   const cls = bu.bias === "bullish" ? "bull" : bu.bias === "bearish" ? "bear" : "neutral";
   $("buildupFill").style.width = pct + "%"; $("buildupFill").className = "bfill " + cls;
