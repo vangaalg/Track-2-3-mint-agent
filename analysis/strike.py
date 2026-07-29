@@ -21,12 +21,30 @@ from __future__ import annotations
 import pandas as pd
 
 
+def _buildup_state_for(buildup_table, strike: int, right: str) -> str | None:
+    """Look up the buildup state (long_buildup/writing/…) for a strike + side."""
+    if buildup_table is None:
+        return None
+    try:
+        if getattr(buildup_table, "empty", True):
+            return None
+        row = buildup_table[buildup_table["strike"] == strike]
+        if row.empty:
+            return None
+        col = "call_state" if right == "CE" else "put_state"
+        val = row.iloc[0].get(col)
+        return None if val in (None, "flat", "unknown") else str(val)
+    except Exception:
+        return None
+
+
 def select_strike(
     table: pd.DataFrame,
     spot: float,
     direction: str,
     max_itm: float = 1000.0,
     max_extrinsic: float = 25.0,
+    buildup_table=None,
 ) -> dict | None:
     """Pick the ITM vehicle strike for a long (CE) / short (PE) trade.
 
@@ -37,10 +55,13 @@ def select_strike(
         direction: ``"long"`` (buy CE) or ``"short"`` (buy PE).
         max_itm: how deep ITM we'll go (points from spot).
         max_extrinsic: max time-value (theta proxy) we'll pay before stepping deeper.
+        buildup_table: optional ``feeds.oi_buildup.buildup_table`` frame — when
+            given, the picked strike is tagged with its OI buildup state (info only;
+            the extrinsic rule still decides the strike).
 
     Returns:
-        ``{"strike", "right", "ltp", "extrinsic", "intrinsic"}`` or ``None`` when
-        no ITM strike with a quoted LTP exists within ``max_itm``.
+        ``{"strike", "right", "ltp", "extrinsic", "intrinsic", "buildup_state"}`` or
+        ``None`` when no ITM strike with a quoted LTP exists within ``max_itm``.
     """
     if direction not in ("long", "short") or table is None or table.empty:
         return None
@@ -68,10 +89,12 @@ def select_strike(
 
     ltp = float(row[ltp_col])
     extrinsic = float(row[ext_col])
+    strike = int(row["strike"])
     return {
-        "strike": int(row["strike"]),
+        "strike": strike,
         "right": right,
         "ltp": round(ltp, 2),
         "extrinsic": round(extrinsic, 2),
         "intrinsic": round(ltp - extrinsic, 2),
+        "buildup_state": _buildup_state_for(buildup_table, strike, right),
     }

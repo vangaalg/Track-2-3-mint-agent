@@ -152,11 +152,47 @@ function renderChart(d) {
   $("diag").style.display = (d.notes && d.notes.length) ? "block" : "none";
 }
 
+// LTPCalculator-style OI buildup: buyer-vs-seller meter + per-strike heatmap + approx reversal.
+function renderBuildup(d) {
+  const panel = $("buildupPanel"), bu = d.oi_buildup, rows = d.oi_buildup_table || [], rev = d.oi_reversal;
+  if (!bu || bu.insufficient) {                       // needs ≥2 snapshots (live/forward only)
+    if (panel) { panel.hidden = false;
+      $("buildupLabel").textContent = "buildup — not enough OI history yet today";
+      $("buildupFill").style.width = "50%"; $("buildupFill").className = "bfill neutral";
+      $("buildupRev").textContent = ""; $("buildupTbl").innerHTML = ""; }
+    return;
+  }
+  panel.hidden = false;
+  const score = bu.score || 0, pct = Math.round((score + 1) / 2 * 100);   // -1..+1 → 0..100
+  const cls = bu.bias === "bullish" ? "bull" : bu.bias === "bearish" ? "bear" : "neutral";
+  $("buildupFill").style.width = pct + "%"; $("buildupFill").className = "bfill " + cls;
+  $("buildupLabel").innerHTML = `net <b>${bu.bias}</b> (score ${n(score)}) · `
+    + `call writing ${lakh(bu.call_writing)}L · put writing ${lakh(bu.put_writing)}L`;
+  $("buildupRev").innerHTML = rev && (rev.bull_reversal != null || rev.bear_reversal != null)
+    ? `reversal≈ 🟢${rev.bull_reversal ?? "—"} / 🔴${rev.bear_reversal ?? "—"} <span class="tag">approx</span>` : "";
+  const label = (s) => ({ long_buildup: "long build", writing: "writing", short_covering: "sh cover",
+    long_unwinding: "unwind", flat: "", unknown: "" }[s] || "");
+  // colour by BIAS (put-writing is bullish/support, call-writing is bearish/resistance), not the
+  // side-neutral state name; bias +1 → green, -1 → red.
+  const cell = (s, bias) => s && s !== "flat" && s !== "unknown"
+    ? `<span class="bstate ${bias > 0 ? "bpos" : bias < 0 ? "bneg" : ""}">${label(s)}</span>` : "";
+  let h = "<thead><tr><th>Call ΔOI</th><th>Call</th><th>Strike</th><th>Put</th><th>Put ΔOI</th></tr></thead><tbody>";
+  for (const r of rows) {
+    if ((r.call_state === "flat" || r.call_state === "unknown")
+        && (r.put_state === "flat" || r.put_state === "unknown")) continue;   // only movers
+    h += `<tr><td>${dOi(r.d_call_oi)}</td><td>${cell(r.call_state, r.call_bias)}</td><td>${r.strike}</td>`
+      + `<td>${cell(r.put_state, r.put_bias)}</td><td>${dOi(r.d_put_oi)}</td></tr>`;
+  }
+  $("buildupTbl").innerHTML = h + "</tbody>";
+}
+function dOi(x) { if (x == null || isNaN(x)) return ""; const s = x >= 0 ? "+" : ""; return s + lakh(x) + "L"; }
+
 function renderOI(d) {
   const oi = d.oi, chain = d.chain || [];
   if (oi) {
     $("oiSummary").innerHTML = `PCR <b>${n(oi.pcr)}</b> · max-pain <b>${oi.max_pain}</b> · ATM ${oi.atm}`;
   } else { $("oiSummary").textContent = "OI — unavailable (see diagnostics)"; }
+  renderBuildup(d);
   if (!chain.length) { $("walls").textContent = ""; $("chainTbl").innerHTML = ""; return; }
 
   const byCall = [...chain].filter(r => r.call_oi != null).sort((a, b) => b.call_oi - a.call_oi).slice(0, 2);

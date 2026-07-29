@@ -28,7 +28,8 @@ from indicators.directional import (
 from feeds.snapshot import build_snapshot, build_snapshot_at
 from feeds.breeze_oi import make_chain_fetcher
 from feeds.oi import chain_table, summarise_chain
-from feeds.oi_levels import wall_levels
+from feeds import oi_buildup
+from feeds.oi_levels import wall_levels, reversal_levels
 from feeds.td_macro import make_quote_fn, SCORECARD_SYMBOLS
 from feeds.macro import fetch_macro
 from feeds import oi_store, oi_summary_store, scanner
@@ -37,7 +38,8 @@ from feeds.instruments import (
     INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT,
     scanner_symbols)
 from analysis.trade1 import (
-    propose_trade1, apply_strike, apply_oi_boost, size_for_confidence, LOT_SIZE)
+    propose_trade1, apply_strike, apply_oi_boost, apply_oi_confidence,
+    size_for_confidence, LOT_SIZE)
 from analysis.cpr_st import propose_cpr_st
 from analysis.orb import propose_orb
 from analysis.condor import propose_condor, list_condor_triggers
@@ -156,6 +158,9 @@ _active: ContextVar = ContextVar("active_symbol", default=DEFAULT_INSTRUMENT)
 def _new_state() -> dict:
     return {
         "snap": None, "prop": None, "chain": None,
+        # LTPCalculator-style OI buildup: the aggregate signal + per-strike table (day-open
+        # baseline), recomputed each fresh OI bucket; feeds direction/size, strike tag, UI.
+        "buildup": None, "buildup_table": None, "reversal": None,
         "snap_at": 0.0, "oi_at": 0.0,
         "read": None, "analysed_bar": None,
         "chat": [],
@@ -230,10 +235,21 @@ def _refresh(symbol: str, size: int) -> None:
         table = (chain_table(chain, snap.spot, window=VIZ_POINTS)
                  if chain is not None and not chain.empty else None)
 
+        # LTPCalculator-style OI buildup (ΔOI × Δprice vs the day-open baseline) + the
+        # approximate reversal levels. Cached and stashed on snap.oi so the proposal
+        # confidence, the strike tag, the payload and Claude's prompt all read the same read.
+        bu_sig, bu_tbl, rev = _oi_buildup(symbol, chain, snap.spot, snap.ts)
+        _st()["buildup"], _st()["buildup_table"], _st()["reversal"] = bu_sig, bu_tbl, rev
+        if snap.oi is not None:
+            snap.oi["buildup"] = bu_sig
+            snap.oi["reversal"] = rev
+
         def _strike(p):
-            """LIVE strike agent: pick the ITM vehicle off the live chain (least theta)."""
+            """LIVE strike agent: pick the ITM vehicle off the live chain (least theta),
+            tagged with the strike's OI buildup state."""
             if table is not None and p.direction in ("long", "short"):
-                apply_strike(p, select_strike(table, snap.spot, p.direction))
+                apply_strike(p, select_strike(table, snap.spot, p.direction,
+                                              buildup_table=bu_tbl))
             return p
 
         prop = _strike(propose_trade1(snap, size))     # strike now; OI boost in _run_head_read
@@ -260,6 +276,7 @@ def _refresh(symbol: str, size: int) -> None:
                 summary = summarise_chain(chain, snap.spot)
                 levels = wall_levels(summary, offsets_for(inst, snap.spot))
                 oi_summary_store.append_summary(symbol, snap.ts, snap.spot, summary, levels,
+                                                buildup=_st().get("buildup"),
                                                 root=OI_SUMMARY_ROOT)
                 _st()["oi_logged_at"] = _st()["oi_at"]
             except Exception:
@@ -268,6 +285,24 @@ def _refresh(symbol: str, size: int) -> None:
         for s in STRATEGIES:        # cache today's triggers per strategy (throttled)
             _st()["queues"][s["id"]] = _apply_exits(
                 s["id"], _strategy_queue(s["id"], snap, size, lot_size=inst["lot_size"]))
+
+
+def _oi_buildup(symbol: str, chain, spot, ts):
+    """OI-buildup signal + per-strike table + approx reversal levels for the active
+    instrument, diffed against the day-open baseline in ``oi_store``. Degrades to an
+    ``insufficient`` signal (no prior snapshot yet) without raising."""
+    if chain is None or getattr(chain, "empty", True) or spot is None:
+        return oi_buildup.buildup_signal(None, spot or 0.0), None, None
+    try:
+        day = str(pd.Timestamp(ts).date())
+        prev = oi_buildup.earliest_snapshot(oi_store.load_history(symbol, day=day))
+        tbl = oi_buildup.buildup_table(prev, chain, spot)
+        sig = oi_buildup.buildup_signal(tbl, spot)
+        summary = summarise_chain(chain, spot)
+        rev = reversal_levels(summary, offsets_for(get_instrument(symbol), spot), sig)
+        return sig, tbl, rev
+    except Exception:
+        return oi_buildup.buildup_signal(None, spot or 0.0), None, None
 
 
 def _scale_rupee(prop, lot_size: int) -> None:
@@ -453,6 +488,13 @@ def _payload(symbol: str) -> dict:
                   "numbers": read.get("numbers", {}), "levels": read.get("levels", {})},
         "oi": snap.oi, "macro": snap.macro, "notes": snap.notes,
         "chain": rows,
+        # LTPCalculator-style OI buildup: the buyer/seller signal, the per-strike buildup
+        # table, and the approximate reversal levels (all None/insufficient pre-2-snapshots).
+        "oi_buildup": _st().get("buildup"),
+        "oi_buildup_table": (json.loads(_st()["buildup_table"].to_json(orient="records"))
+                             if _st().get("buildup_table") is not None
+                             and not _st()["buildup_table"].empty else []),
+        "oi_reversal": _st().get("reversal"),
         "proposal": prop.as_dict(),                                  # back-compat (Trade-1)
         "proposals": {sid: p.as_dict() for sid, p in props.items()},  # all 4 strategy streams
         # the GATED decision card per tab: the frozen actionable trigger + its cached
@@ -546,10 +588,12 @@ def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
         context={"chart_read": snap.chart_read, "oi": snap.oi, "macro": snap.macro,
                  "levels_source": levels_source},
     )
+    bu = _st().get("buildup")
     if table is not None and direction in ("long", "short"):
-        apply_strike(prop, select_strike(table, snap.spot, direction))
-    if direction in ("long", "short"):   # auto OI-confluence nudge on every directional tab
-        apply_oi_boost(prop, cached.get("oi_bias"))
+        apply_strike(prop, select_strike(table, snap.spot, direction,
+                                         buildup_table=_st().get("buildup_table")))
+    if direction in ("long", "short"):   # auto OI-confluence nudge (buildup + Claude lean)
+        apply_oi_confidence(prop, bu, cached.get("oi_bias"))
     return prop
 
 
@@ -563,7 +607,7 @@ def _run_head_read(sid: str, head: dict) -> dict:
     prop = _proposal_from_head(sid, head, snap, _st().get("table"))
     read = claude_read(snap, prop, memory, completer=READ_COMPLETER)
     if getattr(prop, "direction", None) in ("long", "short"):   # auto OI boost, all directional tabs
-        apply_oi_boost(prop, getattr(read, "oi_bias", None))
+        apply_oi_confidence(prop, _st().get("buildup"), getattr(read, "oi_bias", None))
     cached = asdict(read)
     # Claude DECIDES the levels on a directional trigger — sanity-rail them (correct side +
     # 2%-of-price stop cap), but NO R:R floor (min_rr=0): R:R is whatever Claude chose. Unusable

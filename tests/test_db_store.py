@@ -15,7 +15,8 @@ from feeds import db, oi_store, oi_summary_store, macro_store
 
 _SUM_INS = ["symbol", "ts", "spot", "pcr", "max_pain", "atm", "call_wall_strike",
             "call_wall_oi", "put_shelf_strike", "put_shelf_oi", "res_ext1", "res_ext2",
-            "sup_ext1", "sup_ext2"]
+            "sup_ext1", "sup_ext2",
+            "buildup_bias", "buildup_score", "call_writing", "put_writing"]
 _SUM_SEL = _SUM_INS[1:]                                       # drops symbol
 _CH_INS = ["symbol", "ts", "strike", "spot", "call_oi", "put_oi", "call_ltp", "put_ltp"]
 _CH_SEL = ["ts", "spot", "strike", "call_oi", "put_oi", "call_ltp", "put_ltp"]
@@ -102,6 +103,20 @@ def test_oi_summary_round_trip(pg):
     assert row["pcr"] == 0.77 and row["max_pain"] == 24000
     assert row["call_wall_strike"] == 24000 and row["res_ext1"] == 23837
     assert str(df.index[0]).startswith("2026-06-23T15:27:00")
+
+
+def test_oi_summary_carries_buildup_columns(pg):
+    buildup = {"bias": "bearish", "score": -0.42, "call_writing": 5000.0, "put_writing": 1200.0}
+    oi_summary_store.append_summary("NIFTY", "2026-06-23T13:00:00+05:30", 23800.0,
+                                    {"pcr": 0.9}, {}, buildup=buildup)
+    df = oi_summary_store.load_summary("NIFTY")
+    row = df.iloc[0]
+    assert row["buildup_bias"] == "bearish" and row["buildup_score"] == -0.42
+    assert row["call_writing"] == 5000.0 and row["put_writing"] == 1200.0
+    # buildup is optional — a row without it stores nulls, not a crash
+    oi_summary_store.append_summary("BANKNIFTY", "2026-06-23T13:00:00+05:30", 52000.0,
+                                    {"pcr": 1.1}, {})
+    assert oi_summary_store.load_summary("BANKNIFTY").iloc[0]["buildup_bias"] is None
 
 
 def test_oi_summary_dedup_on_ts(pg):

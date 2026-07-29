@@ -32,6 +32,7 @@ except Exception:                                     # pragma: no cover
 
 from feeds import oi_store, oi_summary_store, macro_store
 from feeds.oi import summarise_chain
+from feeds import oi_buildup
 from feeds.oi_levels import wall_levels, scaled_offsets
 
 OPEN, CLOSE = dtime(9, 15), dtime(15, 30)
@@ -132,8 +133,16 @@ def record_once(instruments, fetchers, spot_fns=None, macro_fn=None,
                 spot = implied_spot(chain)
             summary = summarise_chain(chain, spot)
             levels = wall_levels(summary, _offsets_for(inst, spot))
+            # OI buildup vs the day-open baseline (None on the first cycle → insufficient).
+            buildup = None
+            prev = oi_buildup.earliest_snapshot(
+                oi_store.load_history(name, day=str(pd.Timestamp(now).date()), base=oi_base))
+            if prev is not None:
+                buildup = oi_buildup.buildup_signal(
+                    oi_buildup.buildup_table(prev, chain, spot), spot)
             oi_store.save_chain(name, now, spot, chain, base=oi_base)
-            oi_summary_store.append_summary(name, now, spot, summary, levels, root=summary_root)
+            oi_summary_store.append_summary(name, now, spot, summary, levels,
+                                            buildup=buildup, root=summary_root)
             saved.append(name)
         except Exception as exc:
             if errors is not None:

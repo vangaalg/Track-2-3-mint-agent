@@ -114,6 +114,29 @@ def test_snapshot_returns_chart_oi_chain_proposal(client):
         assert p["selected_strike"] is not None and p["vehicle_extrinsic"] is not None
 
 
+def test_snapshot_carries_oi_buildup_insufficient_without_baseline(client, monkeypatch):
+    # no prior snapshot today -> deterministic 'insufficient' buildup regardless of on-disk history
+    monkeypatch.setattr(srv.oi_store, "load_history", lambda *a, **k: None)
+    d = client.get("/api/snapshot").json()
+    assert d["oi_buildup"]["insufficient"] is True and d["oi_buildup_table"] == []
+    assert d["oi_reversal"]["source"] == "approx"                  # levels off the walls
+    assert d["oi"]["reversal"]["source"] == "approx"              # also on snap.oi for Claude's prompt
+
+
+def test_snapshot_computes_oi_buildup_when_baseline_present(client, monkeypatch):
+    # a day-open baseline with less call OI + richer call premium -> call writing now (bearish)
+    prev = _chain()
+    prev["call_oi"] = prev["call_oi"] * 0.5          # current call_oi > baseline -> ΔOI up
+    prev["call_ltp"] = prev["call_ltp"] + 20         # current call_ltp < baseline -> Δprice down
+    prev["ts"] = "2024-01-01T09:15:00+05:30"
+    monkeypatch.setattr(srv.oi_store, "load_history", lambda *a, **k: prev)
+    d = client.get("/api/snapshot").json()
+    bu = d["oi_buildup"]
+    assert bu["insufficient"] is False and bu["bias"] in ("bullish", "bearish", "neutral")
+    assert d["oi_buildup_table"], "per-strike buildup rows exposed"
+    assert bu["call_writing"] >= 0
+
+
 def test_snapshot_exposes_all_four_strategy_proposals(client):
     d = client.get("/api/snapshot").json()
     # back-compat: the singular proposal is still Trade-1.

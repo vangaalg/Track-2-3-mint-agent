@@ -45,3 +45,36 @@ def wall_levels(summary: dict, offsets: list[float]) -> dict:
         "resistance_ext": [round(res + o, 2) for o in offsets] if res is not None else [],
         "support_ext": [round(sup - o, 2) for o in offsets] if sup is not None else [],
     }
+
+
+def reversal_levels(summary: dict, offsets: list[float], buildup: dict | None = None) -> dict:
+    """APPROXIMATE bullish/bearish reversal levels off the OI walls + extension bands.
+
+    LTPCalculator surfaces "EOS" (a bullish decision level) and "EOR" (a bearish one)
+    from *proprietary* Reversal-Price / COA / 9:20 models we cannot reproduce. This is a
+    transparent stand-in built only from data we already have: the put shelf (support)
+    anchors the **bull reversal** level (bounce zone) and the call wall (resistance)
+    anchors the **bear reversal** level (rejection zone); the first extension band gives
+    the "+1" overshoot LTPCalc marks beyond each. When a ``buildup`` signal is present,
+    a *defended* wall (fresh writing on that side) is treated as the firmer level (noted
+    in ``defended``). ``source="approx"`` flags that this is NOT LTPCalc's formula.
+    """
+    cw = (summary or {}).get("call_wall") or {}
+    ps = (summary or {}).get("put_shelf") or {}
+    res = cw.get("strike")     # resistance = call wall
+    sup = ps.get("strike")     # support    = put shelf
+    o1 = offsets[0] if offsets else 0.0
+    bu = buildup or {}
+    defended = None
+    if bu.get("put_writing", 0) > abs(bu.get("call_writing", 0)):
+        defended = "support"           # puts being written → support firmer (bullish)
+    elif bu.get("call_writing", 0) > abs(bu.get("put_writing", 0)):
+        defended = "resistance"        # calls being written → resistance firmer (bearish)
+    return {
+        "source": "approx",            # NOT LTPCalculator's proprietary EOS/EOR/COA math
+        "bull_reversal": sup,                                            # ≈ EOS (support bounce)
+        "bull_reversal_ext": round(sup - o1, 2) if sup is not None else None,   # ≈ EOS-1 overshoot
+        "bear_reversal": res,                                           # ≈ EOR (resistance reject)
+        "bear_reversal_ext": round(res + o1, 2) if res is not None else None,   # ≈ EOR+1 overshoot
+        "defended": defended,
+    }

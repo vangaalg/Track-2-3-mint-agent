@@ -114,6 +114,16 @@
       <h2>🧮 Option chain</h2>
       <div class="row" id="oiSummary">—</div>
       <div class="row small" id="walls">—</div>
+
+      <!-- OI buildup (LTPCalculator-style ΔOI × Δprice) -->
+      <div id="buildupPanel" class="buildup" hidden>
+        <div class="bhdr">🔀 OI buildup <span class="tag">since day open</span>
+          <span id="buildupRev" class="brev"></span></div>
+        <div id="buildupMeter" class="bmeter"><div id="buildupFill" class="bfill"></div>
+          <span id="buildupLabel" class="blabel">—</span></div>
+        <div class="tablewrap"><table id="buildupTbl"></table></div>
+      </div>
+
       <div id="oichart" class="chart"></div>
       <div class="tablewrap"><table id="chainTbl"></table></div>
 

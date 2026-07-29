@@ -793,6 +793,36 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       `place_order` param strings, option exit (opposite-sell vs square_off), `expiry_date` format, a
       pre-trade token probe, NSE-50 lots (irrelevant for equity). config.example + this file updated.
 
+- [x] **LTPCalculator-style OI-buildup indicator (direction + strike + reversal levels; confirmed
+      w/ trader).** OI was snapshot-only (PCR/walls/max-pain) and OI's only pull on DIRECTION was
+      Claude's subjective `oi_bias` (+1). Added the missing piece — **change-in-OI over time**. New pure
+      `feeds/oi_buildup.py`: `buildup_table` diffs a current chain vs the **day-open baseline** and
+      classifies each strike with the standard matrix (ΔOI × Δprice → long/short buildup · covering ·
+      unwinding, per side), `buildup_signal` aggregates ΔOI-weighted bull-vs-bear mass into a
+      **buyer-vs-seller lean** (`bias`/`score`/`strength` + call/put writing). Wired into **all four**
+      surfaces (trader's call): (1) CONFIDENCE — `analysis/trade1.oi_confidence_boost` (weighted +2 strong /
+      +1 mild / −1 conflict, +1 Claude agreement, cap +2) + `apply_oi_confidence` replaces the flat +1 at
+      both boost sites in `web/server.py` (`apply_oi_boost` kept for back-compat); direction stays
+      chart-driven (OI moves conviction/size, never flips — voter contract untouched). (2) STRIKE — 
+      `select_strike(buildup_table=)` tags the picked vehicle's buildup state (`apply_strike` surfaces it).
+      (3) COCKPIT PANEL — `_oi_buildup` in `_refresh` (baseline from `oi_store.load_history`) caches the
+      signal/table/reversal, `_payload` exposes `oi_buildup`/`oi_buildup_table`/`oi_reversal`; a 🔀 buildup
+      card (buyer/seller meter + per-strike heatmap coloured by BIAS + approx reversal + honest
+      "not enough history yet" empty state). (4) CLAUDE — the buildup read + reversal levels feed
+      `agent/prompt.py`. **Approximate reversal levels** (`feeds/oi_levels.reversal_levels`, `source:"approx"`)
+      stand in for LTPCalc's closed-source EOS/EOR/COA off the walls + ±37/72 bands — explicitly NOT their
+      formula. Persisted: 4 buildup columns (`buildup_bias/score`, `call/put_writing`) on the
+      `oi_summary` series (`feeds/oi_summary_store` + `feeds/db` CREATE + idempotent `ADD COLUMN`
+      migration) written by BOTH the cockpit `_refresh` and `feeds/recorder.record_once`, so
+      `/api/oi-history` gains buyer/seller-over-time. HONEST CAVEAT (code + UI): ΔOI needs ≥2 snapshots →
+      LIVE/forward off the OI flywheel, NOT historically backtestable except where recorder data accrued.
+      Tested in tests/test_oi_buildup.py (8-cell matrix, aggregate lean, insufficient/overlap/window,
+      earliest_snapshot, reversal, boost weighting) + extended test_strike/test_db_store/test_recorder/
+      test_agent_read/test_web_server. node --check clean; suite green (370). OPEN (live-only): whether
+      Breeze exposes a direct per-strike ΔOI/volume field (would skip the snapshot-diff); retune the
+      strong/mild strength thresholds once watched live; weighted OI boost (+2/+1/−1) supersedes the older
+      "refine the flat +1" roadmap item.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

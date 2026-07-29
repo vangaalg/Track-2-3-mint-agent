@@ -81,3 +81,18 @@ def test_window_cap_and_empty():
     # flat / no chain -> None
     assert select_strike(t, spot, "flat") is None
     assert select_strike(pd.DataFrame(), spot, "long") is None
+
+
+def test_buildup_tag_attaches_when_given():
+    spot = 24000.0
+    t = _table(spot, lambda s: max(spot - s, 0) + 5, lambda s: max(s - spot, 0) + 5)
+    pick0 = select_strike(t, spot, "long")
+    assert pick0["buildup_state"] is None            # no buildup table -> null tag, selection unchanged
+    bt = pd.DataFrame({"strike": [pick0["strike"]], "call_state": ["long_buildup"],
+                       "put_state": ["flat"]})
+    pick1 = select_strike(t, spot, "long", buildup_table=bt)
+    assert pick1["strike"] == pick0["strike"]        # tag is additive; strike identical
+    assert pick1["buildup_state"] == "long_buildup"
+    # a 'flat'/'unknown' state is dropped to None (only real states surface)
+    bt2 = pd.DataFrame({"strike": [pick0["strike"]], "call_state": ["flat"], "put_state": ["flat"]})
+    assert select_strike(t, spot, "long", buildup_table=bt2)["buildup_state"] is None

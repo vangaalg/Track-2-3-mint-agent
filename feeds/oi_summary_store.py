@@ -34,11 +34,12 @@ def load_summary(symbol: str, root: str | Path | None = None) -> pd.DataFrame | 
     return df[~df.index.duplicated(keep="last")].sort_index()
 
 
-def _row(ts, spot, summary: dict, levels: dict) -> dict:
+def _row(ts, spot, summary: dict, levels: dict, buildup: dict | None = None) -> dict:
     cw = (summary or {}).get("call_wall") or {}
     ps = (summary or {}).get("put_shelf") or {}
     res_ext = (levels or {}).get("resistance_ext") or []
     sup_ext = (levels or {}).get("support_ext") or []
+    bu = buildup or {}
     pick = lambda seq, i: seq[i] if len(seq) > i else None
     return {
         "ts": pd.Timestamp(ts).isoformat(),
@@ -52,13 +53,19 @@ def _row(ts, spot, summary: dict, levels: dict) -> dict:
         "put_shelf_oi": ps.get("oi"),
         "res_ext1": pick(res_ext, 0), "res_ext2": pick(res_ext, 1),
         "sup_ext1": pick(sup_ext, 0), "sup_ext2": pick(sup_ext, 1),
+        # OI-buildup aggregate (LTPCalculator-style; None until 2+ snapshots exist).
+        "buildup_bias": bu.get("bias"),
+        "buildup_score": bu.get("score"),
+        "call_writing": bu.get("call_writing"),
+        "put_writing": bu.get("put_writing"),
     }
 
 
 def append_summary(symbol: str, ts, spot, summary: dict, levels: dict,
+                   buildup: dict | None = None,
                    root: str | Path | None = None) -> pd.DataFrame:
     """Append one summary row, dedup on ts (newest wins), persist, return combined."""
-    row = _row(ts, spot, summary, levels)
+    row = _row(ts, spot, summary, levels, buildup)
     if db.enabled():
         return db.oi_summary_append(symbol, row)
     new = pd.DataFrame([row]).set_index("ts")

@@ -27,7 +27,9 @@ _schema_ready = False
 
 _SUMMARY_COLS = ["spot", "pcr", "max_pain", "atm", "call_wall_strike", "call_wall_oi",
                  "put_shelf_strike", "put_shelf_oi", "res_ext1", "res_ext2",
-                 "sup_ext1", "sup_ext2"]
+                 "sup_ext1", "sup_ext2",
+                 "buildup_bias", "buildup_score", "call_writing", "put_writing"]
+_TEXT_COLS = {"buildup_bias"}          # summary cols that are text, not float
 _CHAIN_COLS = ["ts", "spot", "strike", "call_oi", "put_oi", "call_ltp", "put_ltp"]
 
 
@@ -101,7 +103,14 @@ _SCHEMA = [
         put_shelf_strike double precision, put_shelf_oi double precision,
         res_ext1 double precision, res_ext2 double precision,
         sup_ext1 double precision, sup_ext2 double precision,
+        buildup_bias text, buildup_score double precision,
+        call_writing double precision, put_writing double precision,
         PRIMARY KEY (symbol, ts))""",
+    # Additive migration for tables created before the buildup columns existed.
+    "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS buildup_bias text",
+    "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS buildup_score double precision",
+    "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS call_writing double precision",
+    "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS put_writing double precision",
     """CREATE TABLE IF NOT EXISTS oi_chain (
         symbol text NOT NULL, ts timestamptz NOT NULL, strike double precision NOT NULL,
         spot double precision, call_oi double precision, put_oi double precision,
@@ -151,7 +160,8 @@ def oi_summary_append(symbol: str, row: dict) -> pd.DataFrame | None:
     """Upsert one summary row (the dict from oi_summary_store._row), return the series."""
     _ensure_schema()
     cols = ["symbol", "ts"] + _SUMMARY_COLS
-    vals = [symbol, row["ts"]] + [_f(row.get(c)) for c in _SUMMARY_COLS]
+    vals = [symbol, row["ts"]] + [
+        (row.get(c) if c in _TEXT_COLS else _f(row.get(c))) for c in _SUMMARY_COLS]
     updates = ", ".join(f"{c}=EXCLUDED.{c}" for c in _SUMMARY_COLS)
     _run(f"INSERT INTO oi_summary ({', '.join(cols)}) "
          f"VALUES ({', '.join(['%s'] * len(cols))}) "

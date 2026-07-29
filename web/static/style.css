@@ -220,3 +220,27 @@ td.conf { font-weight:600; white-space:nowrap; }
 .livepos { margin:8px 0; padding:8px 10px; border:1px solid var(--red); border-radius:8px;
   background:rgba(228,87,86,.08); font-weight:600; font-size:13px; }
 .livepos .btn { margin-left:8px; padding:2px 9px; }
+
+/* OI buildup panel (LTPCalculator-style ΔOI × Δprice) */
+.buildup { margin:8px 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+  background:var(--tile); }
+.buildup .bhdr { font-size:12px; color:var(--muted); font-weight:600; display:flex;
+  align-items:center; gap:6px; }
+.buildup .tag { font-size:10px; font-weight:600; color:var(--muted); border:1px solid var(--line);
+  border-radius:4px; padding:0 4px; }
+.buildup .brev { margin-left:auto; font-size:11px; color:var(--txt); font-weight:500; }
+.bmeter { position:relative; height:18px; border-radius:9px; margin:6px 0; overflow:hidden;
+  background:linear-gradient(90deg, rgba(226,59,59,.22), rgba(180,180,180,.15), rgba(46,158,75,.22)); }
+.bfill { position:absolute; top:0; bottom:0; left:0; width:50%; opacity:.35; transition:width .4s; }
+.bfill.bull { background:var(--green); } .bfill.bear { background:var(--red); }
+.bfill.neutral { background:var(--muted); }
+.blabel { position:relative; z-index:1; display:block; text-align:center; font-size:11px;
+  line-height:18px; color:var(--txt); }
+#buildupTbl { width:100%; border-collapse:collapse; font-size:11px; }
+#buildupTbl th { color:var(--muted); font-weight:600; text-align:right; padding:2px 6px; }
+#buildupTbl th:nth-child(3) { text-align:center; }
+#buildupTbl td { text-align:right; padding:2px 6px; border-top:1px solid var(--line); }
+#buildupTbl td:nth-child(3) { text-align:center; font-weight:600; }
+.bstate { font-size:10px; padding:0 5px; border-radius:4px; font-weight:600; white-space:nowrap; }
+.bstate.bpos { background:rgba(46,158,75,.16); color:var(--green); }
+.bstate.bneg { background:rgba(226,59,59,.16); color:var(--red); }

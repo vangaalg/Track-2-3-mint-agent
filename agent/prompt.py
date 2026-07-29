@@ -67,6 +67,20 @@ def build_user(snapshot, proposal) -> str:
             f"{_fmt((oi.get('put_shelf') or {}).get('strike'))}, max-pain "
             f"{_fmt(oi.get('max_pain'))}"
         )
+        bu = oi.get("buildup") or {}
+        if bu and not bu.get("insufficient", True):
+            parts.append(
+                f"  OI buildup (ΔOI vs day open) — net {bu.get('bias')} "
+                f"(score {_fmt(bu.get('score'))}); call writing {_fmt(bu.get('call_writing'))} "
+                f"@ {_fmt(bu.get('dominant_call_strike'))} (resistance), put writing "
+                f"{_fmt(bu.get('put_writing'))} @ {_fmt(bu.get('dominant_put_strike'))} (support)"
+            )
+        rev = oi.get("reversal") or {}
+        if rev.get("bull_reversal") is not None or rev.get("bear_reversal") is not None:
+            parts.append(
+                f"  OI reversal levels (approx) — bull {_fmt(rev.get('bull_reversal'))}, "
+                f"bear {_fmt(rev.get('bear_reversal'))}"
+            )
     else:
         parts.append("  OI — unavailable")
     parts.append(f"  Macro — {_fmt(macro)}")
@@ -88,8 +102,9 @@ def build_user(snapshot, proposal) -> str:
         "Spar with this. Weigh the WHOLE stack (RSI/MACD/CPR/Supertrend/EMAs + OI), "
         "give your thesis, challenge the trader's most likely trap for THIS setup, "
         "say whether you agree with the engine, and recommend ENTER or STAND_DOWN. "
-        "Set oi_bias to the chain's directional lean (bullish/bearish/neutral) — the "
-        "trade earns +1 conviction when it agrees with the trigger. "
+        "Set oi_bias to the chain's directional lean (bullish/bearish/neutral) — weigh the "
+        "deterministic OI buildup above (writing = fresh supply defending a level) and say if "
+        "you disagree with it. OI confluence adds conviction/size when it agrees with the trigger. "
         "If you recommend ENTER, set proposed_target and proposed_stop to YOUR own "
         "levels for this trade — read the target off chart structure (CPR/walls/swing) "
         "and place the stop where the idea is wrong, keeping reward:risk at least 1.5. "

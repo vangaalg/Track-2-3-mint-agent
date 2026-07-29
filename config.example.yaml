@@ -168,6 +168,20 @@ feeds:
     atm_window: 600            # summary walls picked within ± this many points of spot
     viz_points: 1000           # ± points shown in the chain TABLE (time-value view)
     chart_strikes: 10          # ± strikes shown in the mirrored OI bar chart
+  # LTPCalculator-style OI buildup (feeds/oi_buildup.py): change-in-OI × change-in-price
+  # per strike -> long/short buildup, covering, unwinding -> a deterministic buyer-vs-seller
+  # DIRECTION lean + strike tags. Feeds conviction/size (weighted), the strike agent, the
+  # cockpit panel and Claude's prompt. Needs >=2 chain snapshots (LIVE/forward off the OI
+  # flywheel; NOT historically backtestable). Reversal levels off the walls are an
+  # APPROXIMATION of LTPCalc's EOS/EOR/COA (proprietary) — labelled source:"approx".
+  oi_buildup:
+    baseline: day_open         # diff against the session's first snapshot (LTPCalc's basis)
+    table_window: 1000         # ± points of spot for the per-strike buildup table
+    signal_window: 600         # ± points of spot for the aggregate buyer/seller lean
+    # conviction boost (analysis/trade1.oi_confidence_boost): strong-agree +2, mild +1,
+    # conflict -1; Claude's oi_bias agreement adds +1; total OI boost capped at +2.
+    strong_strength: 0.4       # |score| >= this + agrees -> +2
+    mild_strength: 0.15        # |score| >= this + agrees -> +1
   macro:
     # scorecard sources live in feeds/td_macro.py: crude (WTI/USD), USD/INR,
     # US30/Dow (DJI), Nasdaq (IXIC) via Twelve Data; India VIX via Breeze.

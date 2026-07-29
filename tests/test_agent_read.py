@@ -56,6 +56,22 @@ def test_build_user_carries_snapshot_and_proposal_facts():
     assert "23600 CE" in user
 
 
+def test_build_user_includes_oi_buildup_when_present():
+    snap = _snapshot()
+    snap.oi["buildup"] = {"bias": "bearish", "score": -0.42, "call_writing": 5000,
+                          "put_writing": 1000, "dominant_call_strike": 24000,
+                          "dominant_put_strike": 23800, "insufficient": False}
+    snap.oi["reversal"] = {"source": "approx", "bull_reversal": 23800, "bear_reversal": 24000,
+                           "bull_reversal_ext": 23763, "bear_reversal_ext": 24037}
+    user = build_user(snap, _proposal())
+    assert "OI buildup" in user and "bearish" in user
+    assert "reversal levels (approx)" in user
+    # an insufficient buildup is silent (no line), never a crash
+    snap.oi["buildup"] = {"insufficient": True}
+    snap.oi.pop("reversal")
+    assert "OI buildup (ΔOI" not in build_user(snap, _proposal())
+
+
 def test_claude_read_uses_injected_completer():
     captured = {}
 

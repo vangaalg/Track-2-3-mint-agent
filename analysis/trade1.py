@@ -49,14 +49,75 @@ def apply_strike(prop: "TradeProposal", pick: dict | None) -> "TradeProposal":
     prop.selected_strike = pick["strike"]
     prop.vehicle_ltp = pick["ltp"]
     prop.vehicle_extrinsic = pick["extrinsic"]
+    state = pick.get("buildup_state")
+    tag = f", OI {state.replace('_', ' ')}" if state else ""
     prop.vehicle = (f"{prop.instrument} {pick['strike']} {pick['right']} "
-                    f"@{pick['ltp']:.0f} (ITM, time-value {pick['extrinsic']:.0f})")
+                    f"@{pick['ltp']:.0f} (ITM, time-value {pick['extrinsic']:.0f}{tag})")
     return prop
 
 
 def _oi_agrees(oi_bias: str | None, direction: str) -> bool:
     return ((oi_bias == "bullish" and direction == "long")
             or (oi_bias == "bearish" and direction == "short"))
+
+
+def _oi_conflicts(oi_bias: str | None, direction: str) -> bool:
+    return ((oi_bias == "bullish" and direction == "short")
+            or (oi_bias == "bearish" and direction == "long"))
+
+
+# Deterministic OI-buildup boost weights (strength thresholds on |score| 0..1).
+BUILDUP_STRONG = 0.4       # |score| >= this + agrees -> +2 conviction
+BUILDUP_MILD = 0.15        # |score| >= this + agrees -> +1 (below = neutral)
+OI_BOOST_CAP = 2           # max positive OI boost (buildup + Claude combined)
+
+
+def oi_confidence_boost(direction: str, buildup: dict | None,
+                        oi_bias: str | None) -> int:
+    """Weighted OI conviction boost from the deterministic buildup + Claude's lean.
+
+    Buildup (``feeds.oi_buildup.buildup_signal``) is primary: strong agreement +2,
+    mild +1, conflict −1, neutral/insufficient 0. Claude's ``oi_bias`` agreement adds
+    a further +1. The total is clamped to ``[-1, OI_BOOST_CAP]``. With no buildup
+    signal this reduces to the legacy Claude-only +1 (see ``apply_oi_boost``).
+    """
+    base = 0
+    bu = buildup or {}
+    if not bu.get("insufficient", True) and bu.get("bias") not in (None, "neutral"):
+        strength = float(bu.get("strength", 0.0) or 0.0)
+        if _oi_agrees(bu.get("bias"), direction):
+            base = 2 if strength >= BUILDUP_STRONG else (1 if strength >= BUILDUP_MILD else 0)
+        elif _oi_conflicts(bu.get("bias"), direction):
+            base = -1
+    claude = 1 if _oi_agrees(oi_bias, direction) else 0
+    return max(-1, min(OI_BOOST_CAP, base + claude))
+
+
+def apply_oi_confidence(prop: "TradeProposal", buildup: dict | None,
+                        oi_bias: str | None) -> "TradeProposal":
+    """LIVE OI confluence with the deterministic buildup read (LTPCalculator-style).
+
+    Sets a weighted ``oi_confidence_boost`` (buildup + Claude) and re-nudges size
+    across the lot band. Records the buildup bias/score on the proposal context.
+    Idempotent — recomputes from ``mtf_confidence`` each call.
+    """
+    boost = oi_confidence_boost(prop.direction, buildup, oi_bias)
+    prop.oi_bias = oi_bias
+    prop.oi_confidence_boost = boost
+    final = max(0, min(5, int(prop.mtf_confidence or 0) + boost))
+    prop.final_confidence = final
+    if buildup and not buildup.get("insufficient", True):
+        prop.context = {**(prop.context or {}), "oi_buildup": {
+            "bias": buildup.get("bias"), "score": buildup.get("score"),
+            "strength": buildup.get("strength"),
+            "call_writing": buildup.get("call_writing"),
+            "put_writing": buildup.get("put_writing"),
+        }}
+    if (prop.recommendation is Recommendation.ENTER
+            and prop.entry is not None and prop.stop is not None):
+        prop.size_lots = size_for_confidence(final)
+        prop.rupee_risk = round(abs(prop.entry - prop.stop) * LOT_SIZE * prop.size_lots, 2)
+    return prop
 
 
 def apply_oi_boost(prop: "TradeProposal", oi_bias: str | None) -> "TradeProposal":
