@@ -859,7 +859,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       in-app beep is instant); tab-closed reach is the point. Setup: @BotFather /newbot → token, @userinfobot
       → chat id, DM the bot once. Tested in tests/test_notify.py (send/env/gating/text) + test_recorder
       (push-once + dedup + flip + no-op without notify_fn). config.example + DEPLOY.md env table updated.
-      Suite green.
+      Suite green. **DEFERRED by trader (2026-07-30): code is BUILT + merged-ready but NOT enabled — the
+      `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` env vars are unset, so it's a no-op. To turn on later: do the
+      @BotFather/@userinfobot setup, add the two env vars on Railway, done (no code change needed).**
+  - **Dashboard: labelled Support/Resistance + EOS/EOR reversal levels (trader couldn't see them).** The
+      buildup card only showed a tiny unlabelled `reversal≈ X / Y approx`. Now `web/static/app.js
+      renderBuildupLevels` renders an explicit row — 🟢 **Support (EOS≈)** `bull_reversal` (↓ext = EOS-1),
+      🔴 **Resistance (EOR≈)** `bear_reversal` (↑ext = EOR+1), + a "put/call writing → level firmer"
+      defended note — shown **even when the ΔOI buildup is still insufficient** (the levels come from the
+      walls, always available). The option-chain walls line is relabelled **Resistance (call walls)** /
+      **Support (put shelves)** so the words appear there too. Frontend-only (index.html/app.js/style.css);
+      the `bull_reversal_ext`/`bear_reversal_ext` were already in the `oi_reversal` payload. node --check
+      clean; test_web_server asserts the ext fields reach the payload. Suite green.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

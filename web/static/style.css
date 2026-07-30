@@ -253,3 +253,12 @@ td.conf { font-weight:600; white-space:nowrap; }
 .balert { font-size:11px; font-weight:700; padding:1px 7px; border-radius:5px; letter-spacing:.3px; }
 .balert.bull { background:var(--green); color:#fff; }
 .balert.bear { background:var(--red); color:#fff; }
+
+/* Support/Resistance + EOS/EOR reversal levels row in the OI-buildup card */
+.blevels { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:6px 0 2px;
+  font-size:12px; }
+.blevels .lvl { padding:1px 7px; border-radius:5px; }
+.blevels .lvl.sup { background:rgba(46,158,75,.12); }
+.blevels .lvl.res { background:rgba(226,59,59,.12); }
+.blevels .lvl b { font-size:13px; }
+.blevels .ext { color:var(--muted); font-size:11px; }

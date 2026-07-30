@@ -174,15 +174,38 @@ function maybeBuildupAlert(symbol, bu) {
   _buildupAlert[symbol] = state;
 }
 
+// Support/Resistance + the LTPCalculator-style EOS/EOR reversal levels (approx: from
+// the put-shelf / call-wall + the extension bands). EOS≈support (bullish bounce),
+// EOR≈resistance (bearish reject); the ext is the overshoot beyond (EOS-1 / EOR+1).
+function renderBuildupLevels(rev) {
+  const el = $("buildupLevels");
+  if (!el) return;
+  if (!rev || (rev.bull_reversal == null && rev.bear_reversal == null)) {
+    el.hidden = true; el.innerHTML = ""; return;
+  }
+  const sup = rev.bull_reversal, supx = rev.bull_reversal_ext;   // EOS / EOS-1
+  const res = rev.bear_reversal, resx = rev.bear_reversal_ext;   // EOR / EOR+1
+  const def = rev.defended === "support" ? ` · <span class="bup">put writing → support firmer</span>`
+    : rev.defended === "resistance" ? ` · <span class="bdn">call writing → resistance firmer</span>` : "";
+  el.hidden = false;
+  el.innerHTML =
+    `<span class="lvl sup">🟢 Support (EOS≈) <b>${sup ?? "—"}</b>`
+    + (supx != null ? ` <span class="ext">↓${supx}</span>` : "") + `</span>`
+    + `<span class="lvl res">🔴 Resistance (EOR≈) <b>${res ?? "—"}</b>`
+    + (resx != null ? ` <span class="ext">↑${resx}</span>` : "") + `</span>`
+    + `<span class="tag">approx</span>${def}`;
+}
+
 function renderBuildup(d) {
   const panel = $("buildupPanel"), bu = d.oi_buildup, rows = d.oi_buildup_table || [], rev = d.oi_reversal;
   const sym = d.symbol || currentSymbol;
   if (!bu || bu.insufficient) {                       // needs ≥2 snapshots (live/forward only)
     if (panel) { panel.hidden = false;
-      $("buildupLabel").textContent = "buildup — not enough OI history yet today";
+      $("buildupLabel").textContent = "buildup lean — not enough OI history yet today";
       $("buildupFill").style.width = "50%"; $("buildupFill").className = "bfill neutral";
       $("buildupRev").textContent = ""; $("buildupTbl").innerHTML = "";
-      $("buildupAlertBadge").hidden = true; _buildupAlert[sym] = "none"; }
+      $("buildupAlertBadge").hidden = true; _buildupAlert[sym] = "none";
+      renderBuildupLevels(rev); }        // S/R + EOS/EOR come from the walls — show them regardless
     return;
   }
   panel.hidden = false;
@@ -192,8 +215,8 @@ function renderBuildup(d) {
   $("buildupFill").style.width = pct + "%"; $("buildupFill").className = "bfill " + cls;
   $("buildupLabel").innerHTML = `net <b>${bu.bias}</b> (score ${n(score)}) · `
     + `call writing ${lakh(bu.call_writing)}L · put writing ${lakh(bu.put_writing)}L`;
-  $("buildupRev").innerHTML = rev && (rev.bull_reversal != null || rev.bear_reversal != null)
-    ? `reversal≈ 🟢${rev.bull_reversal ?? "—"} / 🔴${rev.bear_reversal ?? "—"} <span class="tag">approx</span>` : "";
+  $("buildupRev").textContent = "";                     // detail moved to the labelled levels block
+  renderBuildupLevels(rev);
   const label = (s) => ({ long_buildup: "long build", writing: "writing", short_covering: "sh cover",
     long_unwinding: "unwind", flat: "", unknown: "" }[s] || "");
   // colour by BIAS (put-writing is bullish/support, call-writing is bearish/resistance), not the
@@ -221,8 +244,8 @@ function renderOI(d) {
 
   const byCall = [...chain].filter(r => r.call_oi != null).sort((a, b) => b.call_oi - a.call_oi).slice(0, 2);
   const byPut = [...chain].filter(r => r.put_oi != null).sort((a, b) => b.put_oi - a.put_oi).slice(0, 2);
-  $("walls").innerHTML = `🔴 Call walls: ${byCall.map(r => `${r.strike} (${lakh(r.call_oi)}L)`).join(" · ")}`
-    + ` &nbsp;|&nbsp; 🟢 Put shelves: ${byPut.map(r => `${r.strike} (${lakh(r.put_oi)}L)`).join(" · ")}`;
+  $("walls").innerHTML = `🔴 Resistance (call walls): ${byCall.map(r => `${r.strike} (${lakh(r.call_oi)}L)`).join(" · ")}`
+    + ` &nbsp;|&nbsp; 🟢 Support (put shelves): ${byPut.map(r => `${r.strike} (${lakh(r.put_oi)}L)`).join(" · ")}`;
   const cwS = new Set(byCall.map(r => r.strike)), psS = new Set(byPut.map(r => r.strike));
   const atm = oi ? oi.atm : null;
 

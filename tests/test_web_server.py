@@ -120,6 +120,9 @@ def test_snapshot_carries_oi_buildup_insufficient_without_baseline(client, monke
     d = client.get("/api/snapshot").json()
     assert d["oi_buildup"]["insufficient"] is True and d["oi_buildup_table"] == []
     assert d["oi_reversal"]["source"] == "approx"                  # levels off the walls
+    # support/resistance (EOS/EOR) + their extension bands reach the UI even when buildup is insufficient
+    for k in ("bull_reversal", "bear_reversal", "bull_reversal_ext", "bear_reversal_ext"):
+        assert k in d["oi_reversal"]
     assert d["oi"]["reversal"]["source"] == "approx"              # also on snap.oi for Claude's prompt
 
 
