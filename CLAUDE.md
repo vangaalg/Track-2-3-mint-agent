@@ -871,6 +871,24 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       **Support (put shelves)** so the words appear there too. Frontend-only (index.html/app.js/style.css);
       the `bull_reversal_ext`/`bear_reversal_ext` were already in the `oi_reversal` payload. node --check
       clean; test_web_server asserts the ext fields reach the payload. Suite green.
+  - **Value-for-money strike ladder + trader-picked vehicle → order (confirmed w/ trader).** The strike
+      agent's fixed 25-pt ABSOLUTE time-value cutoff pushed it needlessly deep in rich options (near-money
+      ITM carries ≫25 pts, so it walked deep until ext ≤ 25 = capital-heavy strike). Replaced the rule with
+      **time value ≤ % of premium** (`STRIKE_MAX_PCT`, default **10%**) — scales with option price, lands
+      near the trader's deep-ITM ₹-signature vehicle. New `analysis/strike.rank_strikes` returns the **top-N
+      candidates** (best = closest-to-money that clears the %-bar, then deeper qualifying strikes); each
+      carries `ltp/extrinsic/extrinsic_pct/intrinsic/buildup_state`. `select_strike` = `rank_strikes[0]`;
+      `max_extrinsic` kept for the old absolute path (back-compat). Web: `_strike`/`_proposal_from_head`
+      attach `prop.strike_candidates` (new `TradeProposal` field) + default to the best; `_apply_chosen_strike`
+      re-points the vehicle to the strike the trader picked so the ORDER uses exactly that; `/api/decision`
+      gains a `strike` Form param threaded via `_order_params`. Frontend: a **Strike dropdown** in the order
+      ticket (index only) listing the ladder (strike · ₹LTP · time-value % · ★best) + an intrinsic/TV/OI
+      info line; the pick rides the existing approve → `build_orders` → Breeze path (LIVE-gated, unchanged).
+      Env `STRIKE_MAX_PCT`/`STRIKE_CANDIDATES`; config.example `oi.strike` block. Tested: %-rule pick, top-3
+      ladder, absolute back-compat (test_strike); `/api/decision strike=` drives the order strike +
+      proposal exposes `strike_candidates` (test_web_server). node --check clean; suite green (384). NOTE:
+      execution stays cockpit-approve-gated (Claude/agent never auto-fires); the %-bar + candidate count are
+      env-tunable once watched live.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

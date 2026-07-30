@@ -159,6 +159,10 @@
         </div>
         <!-- Order ticket: what gets sent to the broker on Approve (propose-only unless LIVE+armed) -->
         <div id="orderTicket" class="orderticket">
+          <div class="otrow" id="otStrikeRow">
+            <label>Strike <select id="otStrike"></select></label>
+            <span id="otStrikeInfo" class="small muted"></span>
+          </div>
           <div class="otrow">
             <label>Type
               <select id="otType"><option value="market">Market</option><option value="limit">Limit</option></select>

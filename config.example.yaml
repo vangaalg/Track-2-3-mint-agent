@@ -168,6 +168,13 @@ feeds:
     atm_window: 600            # summary walls picked within ± this many points of spot
     viz_points: 1000           # ± points shown in the chain TABLE (time-value view)
     chart_strikes: 10          # ± strikes shown in the mirrored OI bar chart
+  # Strike agent (analysis/strike.py) — the "value-for-money" ITM vehicle. Rule: closest
+  # ITM strike whose TIME VALUE ≤ strike_max_pct of its premium (scales with price → lands
+  # near the trader's deep-ITM ₹-signature vehicle). The order ticket shows the top-N
+  # candidates (best first) to pick from before ordering. Env: STRIKE_MAX_PCT / STRIKE_CANDIDATES.
+  strike:
+    strike_max_pct: 0.10       # time value must be ≤ 10% of premium (value-for-money bar)
+    candidates: 3              # how many ITM candidates the order ticket offers
   # LTPCalculator-style OI buildup (feeds/oi_buildup.py): change-in-OI × change-in-price
   # per strike -> long/short buildup, covering, unwinding -> a deterministic buyer-vs-seller
   # DIRECTION lean + strike tags. Feeds conviction/size (weighted), the strike agent, the

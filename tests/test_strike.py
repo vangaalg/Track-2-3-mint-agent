@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from feeds.oi import chain_table
-from analysis.strike import select_strike
+from analysis.strike import select_strike, rank_strikes
 
 
 def _table(spot, call_ltp_fn, put_ltp_fn, lo=23000, hi=25000, step=50):
@@ -21,21 +21,39 @@ def _table(spot, call_ltp_fn, put_ltp_fn, lo=23000, hi=25000, step=50):
     return chain_table(df, spot=spot, window=1000)
 
 
-def test_long_takes_nearest_itm_within_tolerance():
+def test_long_takes_nearest_itm_within_pct_of_premium():
     spot = 24000.0
-    # CE extrinsic grows the nearer to money you go; 23500 has extrinsic 10 (<=25).
-    # call_ltp = intrinsic + extrinsic, extrinsic = (strike-23000)/50 * 5  -> 23500 -> 50pts? tune:
     def call_ltp(s):
         intrinsic = max(spot - s, 0)
-        extrinsic = max(0, (s - 23000) / 100.0)   # 23000->0, 23500->5, 23900->9
+        extrinsic = max(0, (s - 23000) / 100.0)   # 23000->0, 23900->9, 23950->9.5
         return intrinsic + extrinsic
     t = _table(spot, call_ltp, lambda s: max(s - spot, 0) + 50)
-    pick = select_strike(t, spot, "long")
+    pick = select_strike(t, spot, "long")         # default = time value <= 10% of premium
     assert pick["right"] == "CE"
-    # nearest-to-money strike whose extrinsic <= 25 — that's the highest (23950) here,
-    # since even 23950 extrinsic = 9.5 <= 25.
-    assert pick["strike"] == 23950 and pick["extrinsic"] <= 25
+    # 23950: ext 9.5 / ltp 59.5 = 16% (fails); 23900: ext 9 / ltp 109 = 8.3% (nearest that clears).
+    assert pick["strike"] == 23900 and pick["extrinsic_pct"] <= 0.10
     assert pick["intrinsic"] == round(pick["ltp"] - pick["extrinsic"], 2)
+
+
+def test_rank_returns_top3_ladder_best_first():
+    spot = 24000.0
+    def call_ltp(s):
+        return max(spot - s, 0) + max(0, (s - 23000) / 100.0)
+    t = _table(spot, call_ltp, lambda s: max(s - spot, 0) + 50)
+    picks = rank_strikes(t, spot, "long", top_n=3)
+    assert [p["strike"] for p in picks] == [23900, 23850, 23800]   # best (nearest qualifying) + deeper
+    assert all(p["extrinsic_pct"] <= 0.10 for p in picks)
+    assert picks[0]["strike"] == select_strike(t, spot, "long")["strike"]
+
+
+def test_absolute_cutoff_still_available_for_backcompat():
+    spot = 24000.0
+    def call_ltp(s):
+        return max(spot - s, 0) + max(0, (s - 23000) / 100.0)
+    t = _table(spot, call_ltp, lambda s: max(s - spot, 0) + 50)
+    # with the old absolute 25-pt cutoff, even 23950 (ext 9.5) clears -> nearest-to-money wins
+    pick = select_strike(t, spot, "long", max_extrinsic=25.0)
+    assert pick["strike"] == 23950 and pick["extrinsic"] <= 25
 
 
 def test_long_steps_deeper_when_near_strike_is_rich():

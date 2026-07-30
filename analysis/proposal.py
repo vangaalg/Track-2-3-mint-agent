@@ -48,6 +48,8 @@ class TradeProposal:
     selected_strike: int | None = None
     vehicle_ltp: float | None = None
     vehicle_extrinsic: float | None = None      # time value = theta proxy
+    # Top value-for-money ITM candidates (best first) the trader picks from before order.
+    strike_candidates: list = field(default_factory=list)
 
     # LIVE-only OI confluence: Claude's chain lean + the auto +1 it earns.
     oi_bias: str | None = None                  # "bullish" | "bearish" | "neutral"

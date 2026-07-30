@@ -107,7 +107,7 @@ def test_snapshot_returns_chart_oi_chain_proposal(client):
     # Live strike-agent + OI-boost fields are always present on the proposal.
     p = d["proposal"]
     for k in ("selected_strike", "vehicle_extrinsic", "oi_bias",
-              "oi_confidence_boost", "final_confidence"):
+              "oi_confidence_boost", "final_confidence", "strike_candidates"):
         assert k in p
     # A directional read picks an ITM vehicle off the live chain.
     if p["direction"] in ("long", "short"):
@@ -1110,6 +1110,32 @@ def test_live_order_places_when_armed(client, monkeypatch):
     r2 = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
                                             "ts": _ETS, "live": "true"})
     assert r2.status_code == 409 and len(fb.entries) == 1
+
+
+def test_live_order_uses_trader_picked_strike(client, monkeypatch):
+    """The trader picks a strike from the value-for-money ladder → the ORDER uses it."""
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    from analysis.proposal import TradeProposal, Recommendation
+    cands = [
+        {"strike": 23600, "right": "CE", "ltp": 620.0, "extrinsic": 40.0,
+         "extrinsic_pct": 0.06, "intrinsic": 580.0, "buildup_state": None},
+        {"strike": 23500, "right": "CE", "ltp": 715.0, "extrinsic": 35.0,
+         "extrinsic_pct": 0.05, "intrinsic": 680.0, "buildup_state": None},
+    ]
+    monkeypatch.setattr(srv, "_proposal_from_head", lambda sid, head, snap, table:
+                        TradeProposal(instrument="NIFTY", trade_type=sid, ts=head["ts"],
+                                      direction="long", entry=24000.0, stop=23980.0,
+                                      target=24060.0, size_lots=1, vehicle="NIFTY 23600 CE (ITM)",
+                                      recommendation=Recommendation.ENTER,
+                                      selected_strike=23600, strike_candidates=cands))
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={
+        "action": "approve", "strategy": "trade1", "ts": _ETS, "live": "true",
+        "order_type": "market", "strike": "23500"})       # pick the deeper candidate
+    assert r.json()["status"] == "placed"
+    assert fb.entries[0].strike_price == 23500             # order uses the trader's pick, not 23600
 
 
 def test_stock_enter_places_equity_capped(client, monkeypatch):

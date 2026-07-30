@@ -2,23 +2,30 @@
 
 The trader trades a deep-enough ITM option (~0.8-1.0 delta) but does NOT want to
 overpay theta: among ITM strikes within ~1000 points of spot, take the one
-**nearest to money whose time-value (extrinsic = LTP - intrinsic) is low** — the
-least-deep strike (least premium / capital) that still has little to decay. Only
-step deeper when the nearer strike's extrinsic is too rich.
+**nearest to money whose time-value is a small fraction of its premium** — the
+least-deep strike (least premium / capital) that is still mostly intrinsic (little
+to decay). Only step deeper when the nearer strike's time value is too rich.
 
-Rule (confirmed with the trader): nearest-to-money ITM strike with
-``extrinsic <= max_extrinsic`` (≈25 pts); if none within ``max_itm`` qualifies,
-fall back to the lowest-extrinsic strike. Example: spot 24000, up-trend —
-23500 CE @510 (extrinsic 10) is taken; at @550 (extrinsic 50) it steps deeper.
+Rule (confirmed with the trader): "value for money" = nearest-to-money ITM strike
+whose **time value (extrinsic = LTP − intrinsic) ≤ ``max_pct`` of the premium**
+(default 10%). The %-of-premium test scales with the option price, so it lands near
+the trader's deep-ITM ₹-signature vehicle instead of walking needlessly deep the way
+an absolute points cutoff does. If nothing within ``max_itm`` qualifies, fall back to
+the lowest time-value strikes. Pass ``max_extrinsic`` (points) to use the old
+ABSOLUTE cutoff instead (back-compat).
 
-Operates on the per-strike table from ``feeds.oi.chain_table`` (which already
-computes ``call_extrinsic`` / ``put_extrinsic``). LIVE only: needs the live
-per-strike chain LTPs, so this runs in the web layer, not in ``propose_trade1``.
+``rank_strikes`` returns the top-N candidates (best first) so the trader can pick;
+``select_strike`` returns just the best. Operates on the per-strike table from
+``feeds.oi.chain_table`` (which already computes ``call_extrinsic`` /
+``put_extrinsic``). LIVE only: needs the live per-strike chain LTPs, so this runs in
+the web layer, not in ``propose_trade1``.
 """
 
 from __future__ import annotations
 
 import pandas as pd
+
+DEFAULT_MAX_PCT = 0.10          # time value must be <= this fraction of premium (10%)
 
 
 def _buildup_state_for(buildup_table, strike: int, right: str) -> str | None:
@@ -38,38 +45,37 @@ def _buildup_state_for(buildup_table, strike: int, right: str) -> str | None:
         return None
 
 
-def select_strike(
+def _extrinsic_pct(extrinsic: float, ltp: float) -> float:
+    return (extrinsic / ltp) if ltp and ltp > 0 else float("inf")
+
+
+def rank_strikes(
     table: pd.DataFrame,
     spot: float,
     direction: str,
     max_itm: float = 1000.0,
-    max_extrinsic: float = 25.0,
+    max_pct: float = DEFAULT_MAX_PCT,
+    max_extrinsic: float | None = None,
+    top_n: int = 3,
     buildup_table=None,
-) -> dict | None:
-    """Pick the ITM vehicle strike for a long (CE) / short (PE) trade.
+) -> list[dict]:
+    """Top value-for-money ITM vehicle strikes for a long (CE) / short (PE), best first.
 
-    Args:
-        table: the ``chain_table`` frame — needs ``strike``, ``call_ltp`` /
-            ``put_ltp`` and ``call_extrinsic`` / ``put_extrinsic``.
-        spot: current spot.
-        direction: ``"long"`` (buy CE) or ``"short"`` (buy PE).
-        max_itm: how deep ITM we'll go (points from spot).
-        max_extrinsic: max time-value (theta proxy) we'll pay before stepping deeper.
-        buildup_table: optional ``feeds.oi_buildup.buildup_table`` frame — when
-            given, the picked strike is tagged with its OI buildup state (info only;
-            the extrinsic rule still decides the strike).
+    The best pick is the CLOSEST-to-money ITM strike whose time value clears the bar
+    (``extrinsic <= max_pct*ltp``, or ``<= max_extrinsic`` points when that's given);
+    the rest of the ladder is the next deeper qualifying strikes (progressively less
+    theta / more capital). When nothing qualifies, the lowest-time-value strikes.
 
-    Returns:
-        ``{"strike", "right", "ltp", "extrinsic", "intrinsic", "buildup_state"}`` or
-        ``None`` when no ITM strike with a quoted LTP exists within ``max_itm``.
+    Each candidate: ``{strike, right, ltp, extrinsic, extrinsic_pct, intrinsic,
+    buildup_state}``. Empty list when there's no ITM strike with a quoted LTP.
     """
     if direction not in ("long", "short") or table is None or table.empty:
-        return None
+        return []
     long = direction == "long"
     right = "CE" if long else "PE"
     ltp_col, ext_col = ("call_ltp", "call_extrinsic") if long else ("put_ltp", "put_extrinsic")
     if ltp_col not in table.columns or ext_col not in table.columns:
-        return None
+        return []
 
     if long:   # CE is ITM below spot; nearest-to-money first = highest strike
         cand = table[(table["strike"] < spot) & (spot - table["strike"] <= max_itm)]
@@ -78,23 +84,39 @@ def select_strike(
         cand = table[(table["strike"] > spot) & (table["strike"] - spot <= max_itm)]
         cand = cand.sort_values("strike", ascending=True)
 
-    cand = cand[pd.to_numeric(cand[ltp_col], errors="coerce").notna()]
+    cand = cand[pd.to_numeric(cand[ltp_col], errors="coerce").notna()].reset_index(drop=True)
     if cand.empty:
-        return None
+        return []
 
-    ext = pd.to_numeric(cand[ext_col], errors="coerce")
-    ok = cand[ext <= max_extrinsic]
-    # nearest-to-money that clears the theta bar, else the lowest-extrinsic strike
-    row = ok.iloc[0] if not ok.empty else cand.iloc[ext.reset_index(drop=True).idxmin()]
+    rows = []
+    for _, r in cand.iterrows():
+        ltp, ext = float(r[ltp_col]), float(r[ext_col])
+        rows.append({
+            "strike": int(r["strike"]), "right": right,
+            "ltp": round(ltp, 2), "extrinsic": round(ext, 2),
+            "extrinsic_pct": round(_extrinsic_pct(ext, ltp), 4),
+            "intrinsic": round(ltp - ext, 2),
+            "buildup_state": _buildup_state_for(buildup_table, int(r["strike"]), right),
+        })
 
-    ltp = float(row[ltp_col])
-    extrinsic = float(row[ext_col])
-    strike = int(row["strike"])
-    return {
-        "strike": strike,
-        "right": right,
-        "ltp": round(ltp, 2),
-        "extrinsic": round(extrinsic, 2),
-        "intrinsic": round(ltp - extrinsic, 2),
-        "buildup_state": _buildup_state_for(buildup_table, strike, right),
-    }
+    if max_extrinsic is not None:                       # back-compat absolute-points cutoff
+        qual = [x for x in rows if x["extrinsic"] <= max_extrinsic]
+    else:
+        qual = [x for x in rows if x["extrinsic_pct"] <= max_pct]
+    ranked = qual if qual else sorted(rows, key=lambda x: x["extrinsic_pct"])
+    return ranked[:max(1, top_n)]
+
+
+def select_strike(
+    table: pd.DataFrame,
+    spot: float,
+    direction: str,
+    max_itm: float = 1000.0,
+    max_pct: float = DEFAULT_MAX_PCT,
+    max_extrinsic: float | None = None,
+    buildup_table=None,
+) -> dict | None:
+    """The single best value-for-money ITM vehicle (``rank_strikes[0]``), or None."""
+    picks = rank_strikes(table, spot, direction, max_itm=max_itm, max_pct=max_pct,
+                         max_extrinsic=max_extrinsic, buildup_table=buildup_table, top_n=1)
+    return picks[0] if picks else None

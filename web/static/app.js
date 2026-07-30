@@ -550,6 +550,31 @@ function fillTicket(head) {
   $("otMaxWrap").hidden = !stock;
   if (stock) { recomputeStockQty(); }
   else { $("otQty").value = head.size_lots != null ? head.size_lots : 1; $("otQtyCalc").textContent = "lots"; }
+  fillStrikes(stock);
+}
+
+// Value-for-money ITM strike ladder (top-N, best first) the trader picks from before ordering.
+// Candidates come off the CURRENT proposal for the active strategy (the vehicle is picked "now").
+function fillStrikes(stock) {
+  const row = $("otStrikeRow"), sel = $("otStrike");
+  const prop = lastPayload && lastPayload.proposals && lastPayload.proposals[currentStrat];
+  const cands = (!stock && prop && prop.strike_candidates) || [];
+  if (!cands.length) { row.hidden = true; sel.innerHTML = ""; $("otStrikeInfo").textContent = ""; return; }
+  row.hidden = false;
+  sel.innerHTML = cands.map((c, i) =>
+    `<option value="${c.strike}">${c.strike} ${c.right} · ₹${n(c.ltp)} · TV ${n(c.extrinsic)} (${Math.round((c.extrinsic_pct || 0) * 100)}%)${i === 0 ? " ★" : ""}</option>`
+  ).join("");
+  sel.value = String((prop.selected_strike != null ? prop.selected_strike : cands[0].strike));
+  showStrikeInfo();
+}
+
+function showStrikeInfo() {
+  const prop = lastPayload && lastPayload.proposals && lastPayload.proposals[currentStrat];
+  const cands = (prop && prop.strike_candidates) || [];
+  const c = cands.find((x) => String(x.strike) === $("otStrike").value);
+  $("otStrikeInfo").textContent = c
+    ? `intrinsic ₹${n(c.intrinsic)} · time value ${Math.round((c.extrinsic_pct || 0) * 100)}% of premium`
+    + (c.buildup_state ? ` · OI ${c.buildup_state.replace("_", " ")}` : "") : "";
 }
 
 function recomputeStockQty() {
@@ -870,8 +895,9 @@ function appendTicket(fd) {
   if (t === "limit" && $("otPrice").value) fd.append("limit_price", $("otPrice").value);
   if (lastPayload && lastPayload.is_stock) {
     if ($("otMax").value) fd.append("max_amount", $("otMax").value);
-  } else if ($("otQty").value) {
-    fd.append("qty", $("otQty").value);          // LOTS for an index option
+  } else {
+    if ($("otQty").value) fd.append("qty", $("otQty").value);   // LOTS for an index option
+    if ($("otStrike").value) fd.append("strike", $("otStrike").value);   // trader-picked vehicle
   }
   if ($("otSl").value) fd.append("sl", $("otSl").value);
   if ($("otTarget").value) fd.append("target_px", $("otTarget").value);
@@ -1001,6 +1027,7 @@ $("otType").addEventListener("change", (e) => {
     $("otPrice").value = currentHead.entry != null ? currentHead.entry : "";
 });
 $("otMax").addEventListener("input", recomputeStockQty);
+$("otStrike").addEventListener("change", showStrikeInfo);
 $("tokenBtn").onclick = () => { $("tokenForm").hidden = !$("tokenForm").hidden; };
 $("tokenSave").onclick = postToken;
 $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });

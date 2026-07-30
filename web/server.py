@@ -43,7 +43,7 @@ from analysis.trade1 import (
 from analysis.cpr_st import propose_cpr_st
 from analysis.orb import propose_orb
 from analysis.condor import propose_condor, list_condor_triggers
-from analysis.strike import select_strike
+from analysis.strike import select_strike, rank_strikes
 from analysis.triggers import replay_today, list_triggers, simulate_intraday
 from analysis.proposal import Recommendation, TradeProposal
 from agent.memory import load_decisions, distill_memory, distill_context
@@ -91,6 +91,9 @@ _STRAT = {s["id"]: s for s in STRATEGIES}
 BROKER = None
 LIVE_STRATEGIES = {"trade1"}                                # which strategies may go live
 STOCK_MAX_AMOUNT = float(os.environ.get("STOCK_MAX_AMOUNT", "10000"))
+# "Value-for-money" strike rule: time value <= this fraction of premium (10% default).
+STRIKE_MAX_PCT = float(os.environ.get("STRIKE_MAX_PCT", "0.10"))
+STRIKE_CANDIDATES = int(os.environ.get("STRIKE_CANDIDATES", "3"))
 
 JOURNAL_DB = os.environ.get("JOURNAL_DB", store.DB_PATH)   # full-context SQLite store
 DEFAULT_LOG = os.environ.get("DECISIONS_LOG", DEFAULT_LOG)  # append-only decision log
@@ -245,11 +248,14 @@ def _refresh(symbol: str, size: int) -> None:
             snap.oi["reversal"] = rev
 
         def _strike(p):
-            """LIVE strike agent: pick the ITM vehicle off the live chain (least theta),
-            tagged with the strike's OI buildup state."""
+            """LIVE strike agent: rank the value-for-money ITM vehicles off the live chain
+            (time value <= STRIKE_MAX_PCT of premium), attach the top-N candidates for the
+            trader to pick from, and default to the best. Tagged with the OI buildup state."""
             if table is not None and p.direction in ("long", "short"):
-                apply_strike(p, select_strike(table, snap.spot, p.direction,
-                                              buildup_table=bu_tbl))
+                picks = rank_strikes(table, snap.spot, p.direction, max_pct=STRIKE_MAX_PCT,
+                                     top_n=STRIKE_CANDIDATES, buildup_table=bu_tbl)
+                p.strike_candidates = picks
+                apply_strike(p, picks[0] if picks else None)
             return p
 
         prop = _strike(propose_trade1(snap, size))     # strike now; OI boost in _run_head_read
@@ -593,8 +599,10 @@ def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
     )
     bu = _st().get("buildup")
     if table is not None and direction in ("long", "short"):
-        apply_strike(prop, select_strike(table, snap.spot, direction,
-                                         buildup_table=_st().get("buildup_table")))
+        picks = rank_strikes(table, snap.spot, direction, max_pct=STRIKE_MAX_PCT,
+                             top_n=STRIKE_CANDIDATES, buildup_table=_st().get("buildup_table"))
+        prop.strike_candidates = picks
+        apply_strike(prop, picks[0] if picks else None)
     if direction in ("long", "short"):   # auto OI-confluence nudge (buildup + Claude lean)
         apply_oi_confidence(prop, bu, cached.get("oi_bias"))
     return prop
@@ -1695,7 +1703,7 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
              order_type: str = Form("market"), limit_price: float | None = Form(None),
              qty: int | None = Form(None), sl: float | None = Form(None),
              target_px: float | None = Form(None), tsl: float | None = Form(None),
-             max_amount: float | None = Form(None)):
+             max_amount: float | None = Form(None), strike: int | None = Form(None)):
     """Approve/reject/skip the FROZEN queue HEAD for ``strategy`` (identified by ``ts``).
     Acts on the trigger the trader actually saw — not a moved-on live bar — and marks it
     actioned so the next open trigger surfaces (returned as ``next_head`` so the card
@@ -1724,17 +1732,33 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     if action == "skip":                              # silent — no journal, no execution
         _st()["actioned"][key] = "skipped"
         return {"status": "skipped", "next_head": _advance_head(strategy)}
-    params = _order_params(order_type, limit_price, qty, sl, target_px, tsl, max_amount)
+    params = _order_params(order_type, limit_price, qty, sl, target_px, tsl, max_amount, strike)
     return _record_decision(strategy, target, action, symbol=symbol, label=label,
                             live=live, is_head=is_head, params=params)
 
 
 def _order_params(order_type="market", limit_price=None, qty=None, sl=None,
-                  target_px=None, tsl=None, max_amount=None) -> dict:
+                  target_px=None, tsl=None, max_amount=None, strike=None) -> dict:
     """Normalize the order-ticket form fields into one dict threaded through the approve path."""
     return {"order_type": "limit" if order_type == "limit" else "market",
             "limit_price": limit_price, "qty": qty, "sl": sl, "target": target_px,
-            "tsl": tsl, "max_amount": max_amount}
+            "tsl": tsl, "max_amount": max_amount, "strike": strike}
+
+
+def _apply_chosen_strike(prop, strike) -> None:
+    """Re-point the proposal's option vehicle to the strike the trader picked from the
+    candidate ladder (so the ORDER uses exactly what they chose). No-op if the strike
+    isn't among the candidates (keeps the agent's default)."""
+    if strike is None:
+        return
+    try:
+        strike = int(strike)
+    except (TypeError, ValueError):
+        return
+    for c in (prop.strike_candidates or []):
+        if int(c.get("strike")) == strike:
+            apply_strike(prop, c)
+            return
 
 
 def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,
@@ -1751,6 +1775,7 @@ def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,
     if cached is not None:
         _st()["read"] = cached
     prop = _proposal_from_head(strategy, target, _st()["snap"], _st().get("table"))
+    _apply_chosen_strike(prop, (params or {}).get("strike"))   # trader-picked vehicle strike
     if action == "approve":
         flat = None
         if is_head:    # one position at a time only governs the LIVE head, not a back-decision
