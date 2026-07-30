@@ -1138,6 +1138,40 @@ def test_live_order_uses_trader_picked_strike(client, monkeypatch):
     assert fb.entries[0].strike_price == 23500             # order uses the trader's pick, not 23600
 
 
+def _seed_custom_strike_case(client, monkeypatch, fb):
+    from analysis.proposal import TradeProposal, Recommendation
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    cands = [{"strike": 23600, "right": "CE", "ltp": 620.0, "extrinsic": 40.0,
+              "extrinsic_pct": 0.06, "intrinsic": 580.0, "buildup_state": None}]
+    monkeypatch.setattr(srv, "_proposal_from_head", lambda sid, head, snap, table:
+                        TradeProposal(instrument="NIFTY", trade_type=sid, ts=head["ts"],
+                                      direction="long", entry=24000.0, stop=23980.0,
+                                      target=24060.0, size_lots=1, vehicle="NIFTY 23600 CE (ITM)",
+                                      recommendation=Recommendation.ENTER,
+                                      selected_strike=23600, strike_candidates=cands))
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+
+
+def test_live_order_accepts_custom_strike_override(client, monkeypatch):
+    """Trader doesn't like any proposed strike → types a real one; it's priced off the live
+    chain and the ORDER uses it (23700 is a real ITM call in the fixture chain, not proposed)."""
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    _seed_custom_strike_case(client, monkeypatch, fb)
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1", "ts": _ETS,
+                                           "live": "true", "order_type": "market", "strike": "23700"})
+    assert r.json()["status"] == "placed" and fb.entries[0].strike_price == 23700
+
+
+def test_live_order_rejects_offchain_custom_strike(client, monkeypatch):
+    """A strike that isn't a quoted option is refused (never silently swapped for the default)."""
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    _seed_custom_strike_case(client, monkeypatch, fb)
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1", "ts": _ETS,
+                                           "live": "true", "strike": "99999"})
+    assert r.status_code == 400 and fb.entries == []
+
+
 def test_stock_enter_places_equity_capped(client, monkeypatch):
     fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
     monkeypatch.setenv("EXECUTION_LIVE", "1")

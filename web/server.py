@@ -1745,20 +1745,50 @@ def _order_params(order_type="market", limit_price=None, qty=None, sl=None,
             "tsl": tsl, "max_amount": max_amount, "strike": strike}
 
 
+def _pick_from_table(table, strike: int, right: str) -> dict | None:
+    """Build a strike-pick dict for a CUSTOM strike off the live chain table (so a
+    trader-typed override is priced from real quotes). None when the strike has no
+    quoted LTP on that side in the current chain."""
+    if table is None or getattr(table, "empty", True):
+        return None
+    row = table[table["strike"] == strike]
+    if row.empty:
+        return None
+    r = row.iloc[0]
+    ltp_col, ext_col = ("call_ltp", "call_extrinsic") if right == "CE" else ("put_ltp", "put_extrinsic")
+    ltp, ext = r.get(ltp_col), r.get(ext_col)
+    if ltp is None or pd.isna(ltp):
+        return None
+    ext = float(ext) if (ext is not None and pd.notna(ext)) else 0.0
+    return {"strike": int(strike), "right": right, "ltp": round(float(ltp), 2),
+            "extrinsic": round(ext, 2), "intrinsic": round(float(ltp) - ext, 2),
+            "buildup_state": None}
+
+
 def _apply_chosen_strike(prop, strike) -> None:
-    """Re-point the proposal's option vehicle to the strike the trader picked from the
-    candidate ladder (so the ORDER uses exactly what they chose). No-op if the strike
-    isn't among the candidates (keeps the agent's default)."""
+    """Re-point the proposal's option vehicle to the strike the trader picked, so the
+    ORDER uses exactly that. Accepts a proposed candidate OR a CUSTOM strike the trader
+    typed (priced off the live chain). Raises 400 if a custom strike isn't a real, quoted
+    option on the correct side — never silently orders a different strike than intended."""
     if strike is None:
         return
     try:
         strike = int(strike)
     except (TypeError, ValueError):
         return
-    for c in (prop.strike_candidates or []):
+    for c in (prop.strike_candidates or []):          # a proposed candidate → use it
         if int(c.get("strike")) == strike:
             apply_strike(prop, c)
             return
+    if prop.selected_strike == strike:                # already the vehicle (nothing to change)
+        return
+    right = "CE" if prop.direction == "long" else "PE"
+    pick = _pick_from_table(_st().get("table"), strike, right)
+    if pick is None:
+        raise HTTPException(status_code=400,
+                            detail=f"strike {strike} {right} isn't a quoted option in the current "
+                                   "chain — pick a proposed strike or enter a valid one")
+    apply_strike(prop, pick)
 
 
 def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,

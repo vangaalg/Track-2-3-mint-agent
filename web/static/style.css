@@ -262,3 +262,6 @@ td.conf { font-weight:600; white-space:nowrap; }
 .blevels .lvl.res { background:rgba(226,59,59,.12); }
 .blevels .lvl b { font-size:13px; }
 .blevels .ext { color:var(--muted); font-size:11px; }
+
+/* inline warning text (e.g. custom-strike override note) */
+.warn { color:var(--amber); }

@@ -889,6 +889,13 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       proposal exposes `strike_candidates` (test_web_server). node --check clean; suite green (384). NOTE:
       execution stays cockpit-approve-gated (Claude/agent never auto-fires); the %-bar + candidate count are
       env-tunable once watched live.
+  - **Editable strike override (confirmed w/ trader).** Beyond the top-3 ladder, the trader can now type ANY
+      strike. Order ticket gains an `#otStrikeCustom` number input; `chosenStrike()` = the typed override
+      else the dropdown pick, sent as `strike`. Server `_apply_chosen_strike` accepts a proposed candidate OR
+      a custom strike priced off the live chain via new `_pick_from_table` (looks up LTP/extrinsic for the
+      correct side CE/PE); an off-chain / unquoted strike **raises 400** (never silently swaps in the default
+      — real-money safety). node --check clean; tested: custom in-chain strike drives the order, off-chain
+      rejected (test_web_server). Suite green (386).
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
