@@ -896,6 +896,28 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       correct side CE/PE); an off-chain / unquoted strike **raises 400** (never silently swaps in the default
       — real-money safety). node --check clean; tested: custom in-chain strike drives the order, off-chain
       rejected (test_web_server). Suite green (386).
+  - **OI-buildup WATCHLIST across indices + the day's most-liquid F&O stocks (confirmed w/ trader).** The
+      buildup read was single-instrument; now a watchlist flags WHICH scripts are CLEAR bull/bear with their
+      EOS/EOR + S/R + the strike where OI is SHIFTING, so the trader focuses on the right shares + strikes.
+      Confirmed w/ trader: **read from the recorder store** (zero extra Breeze pulls; freshness = recorder
+      cadence 15m indices / 60m stocks) + **top-20 = the day's MOST-LIQUID** F&O stocks (dynamic). New pure
+      `feeds/liquidity.rank_by_liquidity` (traded value = close×volume off the scanner's daily OHLCV — free)
+      + `feeds/buildup_scan` (`build_card`/`scan`: latest `oi_summary` row → bias/clear/EOS/EOR/S-R/shift
+      strike; CLEAR = |score|≥0.4 directional; clear-first sort). `feeds/instruments` gains **FINNIFTY**
+      (primary index; loader symbol/lot/weekday PROVISIONAL — live-verify) + `buildup_indices()`; recorder
+      `DEFAULT_INSTRUMENTS` += FINNIFTY. **Shifting strikes persisted**: 2 new `oi_summary` columns
+      `buildup_call_strike`/`buildup_put_strike` (from the signal's dominant ΔOI strikes; `oi_summary_store`
+      + `feeds/db` CREATE + idempotent ADD COLUMN) written by both the cockpit + recorder. `web/server`:
+      `_buildup_watchlist` (indices + top-20 liquid from `_SCAN`), `_run_buildup_scan` (reads summaries),
+      `GET /api/buildup-scan?refresh=` (60s TTL cache, honest empty state). Frontend: a 🔦 watchlist card
+      (CLEAR 🟢bull/🔴bear rows highlighted + first, Support/EOS · Resist/EOR · OI-shift strike · Focus→
+      loads that script's cockpit), polled. Env `BUILDUP_STOCKS` (default 20). Tested in tests/test_liquidity
+      (rank/missing/cap) + test_buildup_scan (8-cell card, clear-first, no-data) + extended test_db_store
+      (2 new cols) + test_instruments (FINNIFTY primary) + test_web_server (scan highlights clear lean +
+      empty state; pending inbox now 3 indices). node --check clean; suite green (395; 1 pre-existing
+      unrelated oi_store fail). NOTE: recording FINNIFTY + stock OI is LIVE-ONLY (egress-locked sandbox
+      can't verify the Breeze symbols/expiries); needs the recorder running with SCAN_STOCKS for stock
+      volume + OI to accrue.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

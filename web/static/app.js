@@ -38,6 +38,7 @@ async function poll() {
     renderChart(d); renderOI(d); renderStrategy();
     fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending(); fetchBreadth();
     fetchMarketReads();                               // saved Market-view reads (browse all day)
+    fetchBuildupScan();                               // OI buildup watchlist (clear bull/bear scripts)
     fetchTriggersLog();                               // triggers + analysis log (all instruments)
     fetchLivePos();                                   // open LIVE broker position (fill + trailing stop)
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
@@ -286,6 +287,56 @@ function renderOI(d) {
 // NSE-50 scanner: poll the cached scan; highlight stocks where trigger + OI + Claude agree.
 async function fetchScanner() {
   try { renderScanner(await (await fetch("/api/scanner")).json()); } catch (e) { /* keep last */ }
+}
+
+// OI buildup watchlist: which scripts are CLEAR bullish/bearish + their EOS/EOR, S/R and
+// the strike where OI is shifting. Reads the recorder's stored OI (no Breeze pulls).
+async function fetchBuildupScan(refresh) {
+  try {
+    const u = "/api/buildup-scan" + (refresh ? "?refresh=true" : "");
+    renderBuildupScan(await (await fetch(u, refresh ? { method: "GET" } : {})).json());
+  } catch (e) { /* keep last */ }
+}
+
+async function buScanRefresh() {
+  $("buScanRefresh").disabled = true; $("buScanStatus").textContent = "refreshing…";
+  await fetchBuildupScan(true);
+  $("buScanRefresh").disabled = false;
+}
+
+function renderBuildupScan(d) {
+  const rows = d.rows || [];
+  $("buScanStatus").innerHTML = d.error ? `<span class="loss-txt">error</span>`
+    : `${d.clear || 0} CLEAR · ${d.with_data || 0}/${d.count || 0} with OI`
+      + (d.generated ? ` · ${String(d.generated).slice(11, 16)}` : "");
+  if (!rows.length) {
+    $("buScanTbl").innerHTML = "<tbody><tr><td class='muted'>No recorded OI yet — the recorder "
+      + "accumulates it live (indices ~15m, stocks ~60m).</td></tr></tbody>";
+    return;
+  }
+  const lean = (r) => r.bias === "bullish" ? `<span class="bup">🟢 ${r.clear ? "CLEAR " : ""}BULL</span>`
+    : r.bias === "bearish" ? `<span class="bdn">🔴 ${r.clear ? "CLEAR " : ""}BEAR</span>`
+    : `<span class="muted">neutral</span>`;
+  let h = "<thead><tr><th>Script</th><th>Lean</th><th>Score</th><th>Support/EOS</th>"
+    + "<th>Resist/EOR</th><th>OI shift</th><th>Spot</th><th></th></tr></thead><tbody>";
+  for (const r of rows) {
+    if (!r.has_data) {
+      h += `<tr class="nodata"><td>${r.label || r.symbol}</td><td colspan="6" class="muted small">OI pending</td>`
+        + `<td><button class="btn mini" data-bufocus="${r.symbol}">Focus</button></td></tr>`;
+      continue;
+    }
+    const shift = r.shift_strike != null ? r.shift_strike
+      : (r.shifting_call_strike != null || r.shifting_put_strike != null
+         ? `C${r.shifting_call_strike ?? "—"}/P${r.shifting_put_strike ?? "—"}` : "—");
+    h += `<tr class="${r.clear ? (r.bias === "bullish" ? "clearbull" : "clearbear") : ""}">`
+      + `<td><b>${r.label || r.symbol}</b> <span class="tag">${r.kind}</span></td>`
+      + `<td>${lean(r)}</td><td>${n(r.score)}</td>`
+      + `<td>${r.support ?? "—"}${r.eos_ext != null ? ` <span class="ext">↓${r.eos_ext}</span>` : ""}</td>`
+      + `<td>${r.resistance ?? "—"}${r.eor_ext != null ? ` <span class="ext">↑${r.eor_ext}</span>` : ""}</td>`
+      + `<td>${shift}</td><td>${n(r.spot, 1)}</td>`
+      + `<td><button class="btn mini" data-bufocus="${r.symbol}">Focus</button></td></tr>`;
+  }
+  $("buScanTbl").innerHTML = h + "</tbody>";
 }
 
 async function scanRescan() {
@@ -1220,6 +1271,11 @@ $("logTbl").addEventListener("click", (e) => {     // open a trigger's full Clau
                       title: `${sy} · ${row.strategy} · ${row.date} ${row.time}` });
 });
 $("scanRefresh").onclick = scanRescan;
+$("buScanRefresh").onclick = buScanRefresh;
+$("buScanTbl").addEventListener("click", (e) => {   // Focus a watchlist script's cockpit
+  const f = e.target.closest("button[data-bufocus]");
+  if (f) focusInstrument(f.dataset.bufocus);
+});
 $("scanAuto").checked = localStorage.getItem("scanAuto") !== "0";   // restore the toggle
 $("scanAuto").addEventListener("change", (e) => {
   localStorage.setItem("scanAuto", e.target.checked ? "1" : "0");

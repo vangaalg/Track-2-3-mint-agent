@@ -265,3 +265,13 @@ td.conf { font-weight:600; white-space:nowrap; }
 
 /* inline warning text (e.g. custom-strike override note) */
 .warn { color:var(--amber); }
+
+/* OI buildup watchlist — CLEAR-lean row highlights */
+#buScanTbl { width:100%; border-collapse:collapse; font-size:12px; }
+#buScanTbl th { color:var(--muted); font-weight:600; text-align:left; padding:3px 8px; }
+#buScanTbl td { padding:3px 8px; border-top:1px solid var(--line); }
+#buScanTbl tr.clearbull { background:rgba(46,158,75,.12); }
+#buScanTbl tr.clearbear { background:rgba(226,59,59,.12); }
+#buScanTbl tr.nodata td { color:var(--muted); }
+#buScanTbl .ext { color:var(--muted); font-size:11px; }
+.btn.mini { padding:1px 8px; font-size:11px; }

@@ -35,6 +35,13 @@ INSTRUMENTS: dict[str, dict] = {
         "lot_size": 30, "weekday": 1, "monthly": True, "band": "scale",
         "primary": True,
     },
+    # Fin Nifty — monthly last-Tuesday expiry (weekly discontinued). loader_symbol +
+    # lot size + weekday are PROVISIONAL; confirm on the open-network machine.
+    "FINNIFTY": {
+        "label": "Fin Nifty", "loader_symbol": "FINNIFTY", "exchange": "NFO",
+        "lot_size": 65, "weekday": 1, "monthly": True, "band": "scale",
+        "primary": True,
+    },
 }
 
 # NSE-50 option stocks for the scanner. Registered so get_instrument() / the cockpit can
@@ -83,3 +90,9 @@ def instrument_list() -> list[dict]:
 def scanner_symbols() -> list[str]:
     """The NSE-50 option stocks the scanner screens (non-primary registry entries)."""
     return [sym for sym, cfg in INSTRUMENTS.items() if not cfg.get("primary")]
+
+
+def buildup_indices() -> list[str]:
+    """Index underlyings always shown in the OI-buildup watchlist (NIFTY, Bank Nifty,
+    Fin Nifty). Stocks are added dynamically = the day's most-liquid F&O names."""
+    return [sym for sym, cfg in INSTRUMENTS.items() if cfg.get("primary")]

@@ -30,7 +30,7 @@ def test_instrument_list_is_primary_only():
     lst = instrument_list()
     assert {"id": "NIFTY", "label": "NIFTY"} in lst
     assert any(i["id"] == "BANKNIFTY" and i["label"] == "Bank Nifty" for i in lst)
-    assert all(i["id"] in ("NIFTY", "BANKNIFTY") for i in lst)   # stocks NOT in the dropdown
+    assert all(i["id"] in ("NIFTY", "BANKNIFTY", "FINNIFTY") for i in lst)   # indices only; no stocks
 
 
 def test_nse50_stocks_registered_for_scanner():

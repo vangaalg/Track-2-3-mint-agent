@@ -561,6 +561,39 @@ def test_oi_history_serves_pcr_timeseries(client, tmp_path, monkeypatch):
     assert len(one["rows"]) == 1 and one["rows"][0]["pcr"] == 1.20
 
 
+def test_buildup_scan_highlights_clear_lean(client, tmp_path, monkeypatch):
+    """The watchlist reads recorded OI summaries and flags CLEAR bull/bear scripts first."""
+    from feeds import oi_summary_store
+    root = tmp_path / "oi_summary"
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(root))
+    # NIFTY strongly bearish, BANKNIFTY quiet — both indices are always in the watchlist.
+    oi_summary_store.append_summary(
+        "NIFTY", "2026-07-30T13:00:00+05:30", 24010.0,
+        {"pcr": 0.8, "max_pain": 24000, "atm": 24000,
+         "call_wall": {"strike": 24200, "oi": 9e6}, "put_shelf": {"strike": 23800, "oi": 8e6}},
+        {"resistance_ext": [24237, 24272], "support_ext": [23763, 23728]},
+        buildup={"bias": "bearish", "score": -0.62, "call_writing": 5e5, "put_writing": 1e5,
+                 "dominant_call_strike": 24300, "dominant_put_strike": 23700},
+        root=root)
+    oi_summary_store.append_summary(
+        "BANKNIFTY", "2026-07-30T13:00:00+05:30", 52000.0, {"pcr": 1.0}, {},
+        buildup={"bias": "neutral", "score": 0.02}, root=root)
+    d = client.get("/api/buildup-scan?refresh=true").json()
+    assert d["clear"] >= 1
+    nifty = next(r for r in d["rows"] if r["symbol"] == "NIFTY")
+    assert nifty["clear"] is True and nifty["bias"] == "bearish"
+    assert nifty["resistance"] == 24200 and nifty["eos"] == 23800
+    assert nifty["shift_strike"] == 24300           # bearish → the call-writing (resistance) strike
+    assert d["rows"][0]["clear"] is True            # clear leans sort first
+
+
+def test_buildup_scan_empty_when_unrecorded(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
+    d = client.get("/api/buildup-scan?refresh=true").json()
+    # indices still listed, just with no OI data yet
+    assert d["clear"] == 0 and all(not r["has_data"] for r in d["rows"])
+
+
 def test_oi_history_empty_when_unrecorded(client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
     d = client.get("/api/oi-history?symbol=BANKNIFTY").json()
@@ -870,18 +903,19 @@ def test_pending_inbox_is_cross_instrument(client, monkeypatch):
     }]})
     client.get("/api/snapshot")                          # builds NIFTY (active); pending builds the rest
     d = client.get("/api/pending").json()
-    assert d["index_count"] == 2 and d["stock_count"] == 1 and d["count"] == 3
+    # 3 index underlyings (NIFTY + Bank Nifty + Fin Nifty) each trigger + 1 highlighted stock
+    assert d["index_count"] == 3 and d["stock_count"] == 1 and d["count"] == 4
     idx = {r["symbol"] for r in d["rows"] if r["kind"] == "index"}
-    assert idx == {"NIFTY", "BANKNIFTY"}
+    assert idx == {"NIFTY", "BANKNIFTY", "FINNIFTY"}
     stock = next(r for r in d["rows"] if r["kind"] == "stock")
     assert stock["symbol"] == "ACME" and stock["highlight"] and stock["claude_full"]
     assert d["rows"][0]["kind"] == "stock"               # highlights sort first
-    # decide the Bank-Nifty row on its OWN instrument → it leaves the inbox, NIFTY stays
+    # decide the Bank-Nifty row on its OWN instrument → it leaves the inbox, the others stay
     client.post("/api/decision",
                 data={"action": "skip", "strategy": "trade1", "ts": t1["ts"], "symbol": "BANKNIFTY"})
     d2 = client.get("/api/pending").json()
-    assert d2["index_count"] == 1
-    assert {r["symbol"] for r in d2["rows"] if r["kind"] == "index"} == {"NIFTY"}
+    assert d2["index_count"] == 2
+    assert {r["symbol"] for r in d2["rows"] if r["kind"] == "index"} == {"NIFTY", "FINNIFTY"}
 
 
 def test_trigger_read_persists_and_survives_restart(client, monkeypatch):

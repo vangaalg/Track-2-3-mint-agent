@@ -175,6 +175,13 @@ feeds:
   strike:
     strike_max_pct: 0.10       # time value must be ≤ 10% of premium (value-for-money bar)
     candidates: 3              # how many ITM candidates the order ticket offers
+  # OI-buildup WATCHLIST (feeds/buildup_scan.py): NIFTY + Bank Nifty + Fin Nifty + the day's
+  # top-N most-liquid F&O stocks (ranked by traded value from the scanner's daily volume).
+  # Reads the recorder's stored OI (no extra Breeze pulls) → flags CLEAR bull/bear scripts +
+  # their EOS/EOR + S/R + the shifting strike. Needs the recorder running (+ SCAN_STOCKS for
+  # stock volume). Env: BUILDUP_STOCKS (top-N, default 20). /api/buildup-scan.
+  buildup_watchlist:
+    stocks: 20                 # how many of the day's most-liquid F&O stocks to include
   # LTPCalculator-style OI buildup (feeds/oi_buildup.py): change-in-OI × change-in-price
   # per strike -> long/short buildup, covering, unwinding -> a deterministic buyer-vs-seller
   # DIRECTION lean + strike tags. Feeds conviction/size (weighted), the strike agent, the

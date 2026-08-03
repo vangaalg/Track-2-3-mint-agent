@@ -58,6 +58,9 @@ def _row(ts, spot, summary: dict, levels: dict, buildup: dict | None = None) -> 
         "buildup_score": bu.get("score"),
         "call_writing": bu.get("call_writing"),
         "put_writing": bu.get("put_writing"),
+        # the strikes where fresh OI is SHIFTING most (dominant ΔOI) — the "focus" strikes.
+        "buildup_call_strike": bu.get("dominant_call_strike"),
+        "buildup_put_strike": bu.get("dominant_put_strike"),
     }
 
 

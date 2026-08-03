@@ -16,7 +16,8 @@ from feeds import db, oi_store, oi_summary_store, macro_store
 _SUM_INS = ["symbol", "ts", "spot", "pcr", "max_pain", "atm", "call_wall_strike",
             "call_wall_oi", "put_shelf_strike", "put_shelf_oi", "res_ext1", "res_ext2",
             "sup_ext1", "sup_ext2",
-            "buildup_bias", "buildup_score", "call_writing", "put_writing"]
+            "buildup_bias", "buildup_score", "call_writing", "put_writing",
+            "buildup_call_strike", "buildup_put_strike"]
 _SUM_SEL = _SUM_INS[1:]                                       # drops symbol
 _CH_INS = ["symbol", "ts", "strike", "spot", "call_oi", "put_oi", "call_ltp", "put_ltp"]
 _CH_SEL = ["ts", "spot", "strike", "call_oi", "put_oi", "call_ltp", "put_ltp"]

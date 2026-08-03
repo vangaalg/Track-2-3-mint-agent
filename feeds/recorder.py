@@ -57,6 +57,8 @@ DEFAULT_INSTRUMENTS = [
      "weekday": 1, "band": [37.0, 72.0]},
     {"name": "BANKNIFTY", "symbol": "CNXBAN", "exchange": "NFO", "klass": "index",
      "weekday": 1, "monthly": True, "band": "scale"},       # last-Tuesday monthly expiry
+    {"name": "FINNIFTY", "symbol": "FINNIFTY", "exchange": "NFO", "klass": "index",
+     "weekday": 1, "monthly": True, "band": "scale"},       # monthly expiry — verify symbol live
     {"name": "SENSEX", "symbol": "SENSEX", "exchange": "BFO", "klass": "index",
      "weekday": 1, "monthly": True, "band": "scale", "enabled": False},   # BSE — verify before enabling
 ]

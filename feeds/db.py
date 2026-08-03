@@ -28,7 +28,8 @@ _schema_ready = False
 _SUMMARY_COLS = ["spot", "pcr", "max_pain", "atm", "call_wall_strike", "call_wall_oi",
                  "put_shelf_strike", "put_shelf_oi", "res_ext1", "res_ext2",
                  "sup_ext1", "sup_ext2",
-                 "buildup_bias", "buildup_score", "call_writing", "put_writing"]
+                 "buildup_bias", "buildup_score", "call_writing", "put_writing",
+                 "buildup_call_strike", "buildup_put_strike"]
 _TEXT_COLS = {"buildup_bias"}          # summary cols that are text, not float
 _CHAIN_COLS = ["ts", "spot", "strike", "call_oi", "put_oi", "call_ltp", "put_ltp"]
 
@@ -105,12 +106,15 @@ _SCHEMA = [
         sup_ext1 double precision, sup_ext2 double precision,
         buildup_bias text, buildup_score double precision,
         call_writing double precision, put_writing double precision,
+        buildup_call_strike double precision, buildup_put_strike double precision,
         PRIMARY KEY (symbol, ts))""",
     # Additive migration for tables created before the buildup columns existed.
     "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS buildup_bias text",
     "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS buildup_score double precision",
     "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS call_writing double precision",
     "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS put_writing double precision",
+    "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS buildup_call_strike double precision",
+    "ALTER TABLE oi_summary ADD COLUMN IF NOT EXISTS buildup_put_strike double precision",
     """CREATE TABLE IF NOT EXISTS oi_chain (
         symbol text NOT NULL, ts timestamptz NOT NULL, strike double precision NOT NULL,
         spot double precision, call_oi double precision, put_oi double precision,

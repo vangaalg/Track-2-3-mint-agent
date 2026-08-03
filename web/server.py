@@ -36,7 +36,8 @@ from feeds import oi_store, oi_summary_store, scanner
 from feeds.breadth import compute_breadth
 from feeds.instruments import (
     INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT,
-    scanner_symbols)
+    scanner_symbols, buildup_indices)
+from feeds import buildup_scan, liquidity
 from analysis.trade1 import (
     propose_trade1, apply_strike, apply_oi_boost, apply_oi_confidence,
     size_for_confidence, LOT_SIZE)
@@ -1029,6 +1030,50 @@ def scanner_refresh():
     Runs inline — for ~50 stocks this takes a few seconds of paced pulls."""
     _run_scan()
     return _scan_payload()
+
+
+_BUILDUP_SCAN: dict = {"at": 0.0, "data": None}
+BUILDUP_SCAN_TTL = 60          # seconds — the watchlist reads the store, so it's cheap to refresh
+BUILDUP_STOCKS_N = int(os.environ.get("BUILDUP_STOCKS", "20"))
+
+
+def _buildup_watchlist() -> list[str]:
+    """Indices (always) + the day's top-N most-liquid F&O stocks (by traded value from the
+    scanner's daily volume). Falls back to the registered stock list when the scanner is idle."""
+    stocks = liquidity.rank_by_liquidity(_SCAN.get("rows") or [], n=BUILDUP_STOCKS_N)
+    if not stocks:
+        stocks = scanner_symbols()[:BUILDUP_STOCKS_N]
+    return buildup_indices() + stocks
+
+
+def _run_buildup_scan() -> dict:
+    """Build the OI-buildup watchlist from the recorded summaries (no Breeze pulls)."""
+    syms = _buildup_watchlist()
+    idx = set(buildup_indices())
+    load = lambda s: oi_summary_store.load_summary(s.upper(), root=OI_SUMMARY_ROOT)
+    cards = buildup_scan.scan(syms, load)
+    for c in cards:
+        c["kind"] = "index" if c["symbol"] in idx else "stock"
+        c["label"] = get_instrument(c["symbol"]).get("label", c["symbol"])
+    data = {"rows": cards, "clear": sum(1 for c in cards if c["clear"]),
+            "with_data": sum(1 for c in cards if c["has_data"]),
+            "count": len(cards), "generated": datetime.now().isoformat(timespec="seconds")}
+    _BUILDUP_SCAN.update(at=time.time(), data=data)
+    return data
+
+
+@app.get("/api/buildup-scan")
+def buildup_scan_get(refresh: bool = False):
+    """OI-buildup watchlist across NIFTY / Bank Nifty / Fin Nifty + the day's most-liquid
+    F&O stocks. Each row: the net lean (CLEAR bull/bear highlighted + sorted first), the
+    Support/Resistance + EOS/EOR levels, and the strike where OI is SHIFTING most — read
+    from the recorder's stored OI (no Breeze pulls). Honest empty state until OI accrues."""
+    if refresh or _BUILDUP_SCAN["data"] is None or time.time() - _BUILDUP_SCAN["at"] > BUILDUP_SCAN_TTL:
+        try:
+            return _run_buildup_scan()
+        except Exception as exc:
+            return {"rows": [], "clear": 0, "with_data": 0, "count": 0, "error": str(exc)}
+    return _BUILDUP_SCAN["data"]
 
 
 @app.get("/api/breadth")
