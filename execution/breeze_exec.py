@@ -86,13 +86,16 @@ def build_orders(
     exchange: str = "NFO",
     expiry_date: str | None = None,
     client_tag: str | None = None,
+    symbol: str | None = None,
 ) -> Order:
     """Translate an APPROVED proposal into a neutral ``Order`` (no placement).
 
     ``segment="option"`` (index/option vehicle) → an NFO BUY of the deep-ITM CE/PE
     (qty = lots × lot_size). ``segment="equity"`` (NSE-50 stock) → an NSE cash BUY,
     long-only, qty capped to ``floor(max_amount / share_price)``. Entry is MARKET by
-    default; ``order_type="limit"`` carries ``limit_price``.
+    default; ``order_type="limit"`` carries ``limit_price``. ``symbol`` overrides the
+    stock_code sent to the broker — pass the instrument's BREEZE code (e.g. Bank Nifty
+    trades as ``CNXBAN``, not the cockpit's ``BANKNIFTY``).
     """
     if proposal.direction not in ("long", "short"):
         raise ValueError("cannot build an order for a non-directional proposal")
@@ -105,7 +108,7 @@ def build_orders(
             share_price=share_price)
         if qty <= 0:
             raise ValueError("equity order sizes to 0 — check max_amount / share price")
-        return Order(segment="equity", symbol=proposal.instrument, exchange="NSE",
+        return Order(segment="equity", symbol=(symbol or proposal.instrument), exchange="NSE",
                      action="buy", order_type=order_type, quantity=int(qty),
                      product=STOCK_PRODUCT, price=price, client_tag=client_tag)
 
@@ -117,7 +120,7 @@ def build_orders(
         segment="option", lots=proposal.size_lots, lot_size=lot_size)
     if qty <= 0:
         raise ValueError("option order sizes to 0 — check size_lots / lot_size")
-    return Order(segment="option", symbol=m["sym"], exchange=exchange, action="buy",
+    return Order(segment="option", symbol=(symbol or m["sym"]), exchange=exchange, action="buy",
                  order_type=order_type, quantity=int(qty), product="options", price=price,
                  right=("call" if m["right"] == "CE" else "put"),
                  strike_price=int(m["strike"]), expiry_date=expiry_date,
@@ -145,14 +148,26 @@ class BreezeBroker(Broker):
     def _cl(self):
         tok = os.environ.get("BREEZE_SESSION_TOKEN")
         if self._client is None or tok != self._token:
-            if self._client is None:
-                factory = self._factory
-                if factory is None:
-                    from loaders.breeze import get_breeze_client
-                    factory = get_breeze_client
-                self._client = factory()
+            factory = self._factory
+            if factory is None:
+                from loaders.breeze import get_breeze_client
+                factory = get_breeze_client
+            # REBUILD on a token change (not just first use) — the daily 🔑 refresh rotates
+            # the env token and the old session client is dead; keeping it meant every order
+            # after rotation errored until a restart.
+            self._client = factory()
             self._token = tok
         return self._client
+
+    def probe(self) -> OrderResult:
+        """Cheap pre-trade session check (funds call). ``placed`` = session alive; ``error``
+        carries the reason (bad/expired token, missing creds) — so a dead token surfaces
+        BEFORE an order is risked, not as a mid-trade surprise."""
+        try:
+            self._cl().get_funds()
+            return OrderResult(status="placed", message="session ok")
+        except Exception as exc:
+            return OrderResult(status="error", message=str(exc))
 
     # -- placement ---------------------------------------------------------- #
     def _place(self, order: Order) -> OrderResult:

@@ -232,6 +232,44 @@ def load_trigger_reads(symbol: str, path: str | Path = DB_PATH) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# Actioned triggers — which (symbol, strategy, ts) the trader already decided
+# (approved/rejected/skipped). In-memory before; now persisted so a Railway
+# restart doesn't refill the pending inbox, re-beep, re-freeze old heads, or
+# re-spend Claude tokens on triggers that were already dealt with.
+# --------------------------------------------------------------------------- #
+def init_actioned(path: str | Path = DB_PATH) -> None:
+    with _connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS actioned ("
+            "symbol TEXT, strategy TEXT, ts TEXT, action TEXT, logged_at TEXT, "
+            "PRIMARY KEY (symbol, strategy, ts))")
+
+
+def save_actioned(symbol: str, strategy: str, ts: str, action: str,
+                  path: str | Path = DB_PATH) -> None:
+    """Record one decided trigger (idempotent upsert — latest action wins)."""
+    init_actioned(path)
+    with _connect(path) as conn:
+        conn.execute(
+            "INSERT INTO actioned (symbol, strategy, ts, action, logged_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(symbol, strategy, ts) DO UPDATE SET action=excluded.action, "
+            "logged_at=excluded.logged_at",
+            (symbol, strategy, ts, action, datetime.now(timezone.utc).isoformat()))
+
+
+def load_actioned(symbol: str, path: str | Path = DB_PATH) -> dict:
+    """``{(strategy, ts): action}`` for one symbol — seeds the in-memory set on refresh."""
+    if not Path(path).exists():
+        return {}
+    init_actioned(path)
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT strategy, ts, action FROM actioned WHERE symbol=?", (symbol,)).fetchall()
+    return {(r["strategy"], r["ts"]): r["action"] for r in rows}
+
+
+# --------------------------------------------------------------------------- #
 # Market reads — Claude's on-demand "Market view" reads (no trigger). Own table
 # so the day's reads can be browsed/re-opened. ``ts`` is the IST moment the read
 # was generated (used for the day picker + display).

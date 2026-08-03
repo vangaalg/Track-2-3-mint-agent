@@ -13,8 +13,9 @@ and runs the recorder + a git-sync loop in background threads. Data persists by 
 
 ## 1. Create the Railway service
 - New Project → **Deploy from GitHub repo** → pick this repo (branch `claude/dazzling-lamport-7d0je8`).
-- Railway auto-detects Python (nixpacks) and uses the `Procfile`:
-  `web: uvicorn web.recorder_service:app --host 0.0.0.0 --port ${PORT:-8000}`
+- Railway auto-detects Python (nixpacks) and uses the repo's `Procfile`
+  (`web: uvicorn web.cockpit_service:app …` — the COMBINED cockpit+recorder service; only
+  override to `web.recorder_service:app` if you deliberately split the recorder out).
 - It exposes a public HTTPS URL (you'll POST the token to it from your phone).
 
 ## 2. Set environment variables (Railway → Variables)
@@ -114,7 +115,8 @@ intraday OI (which can't be backfilled). The journal still uses SQLite in the jo
 | `JOURNAL_REPO_URL` | a **separate** private repo for the journal, `https://<PAT>@github.com/vangaalg/mint-journal.git` (must DIFFER from `DATA_REPO_URL`) |
 | `RECORDER_INSTRUMENTS` | optional, e.g. `NIFTY,BANKNIFTY` (default = enabled defaults) |
 | `RECORDER_STOCKS` / `INDEX_EVERY_MIN` / `STOCK_EVERY_MIN` | optional recorder knobs (default `15` / `60` min) |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | optional — **FREE** phone push when an OI-buildup lean turns CLEAR (strong bull/bear). Unset = off. Get them in ~2 min: message **@BotFather** `/newbot` → the token; message **@userinfobot** → your numeric chat id; then DM your new bot once. Deduped to one push per transition/day (recorder cadence ≈15 min, so not instant — the in-app beep is the instant one). |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | optional — **FREE** phone push: fresh TRIGGERS, order fills/rejections, SL/target/TSL exits, and CLEAR OI-buildup leans. Unset = off. Get them in ~2 min: message **@BotFather** `/newbot` → the token; message **@userinfobot** → your numeric chat id; then DM your new bot once. |
+| `EXECUTION_LIVE` | **`1` (the literal string) to ARM live order placement.** Without it every approve is a dry-run — the header **EXEC chip** shows ⚪ OFF with the reason. Also needs the Breeze creds + today's token; each real order still needs the per-trade 🔴 LIVE tick + a confirm. The in-app kill-switch (click the EXEC chip) can arm/disarm at runtime. |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |
 | `SYNC_EVERY_MIN` | optional, data + journal push cadence, default `30` |
 

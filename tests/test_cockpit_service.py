@@ -171,6 +171,27 @@ def test_combined_starts_recorder_and_writes_data(monkeypatch):
     assert cs.STATUS["recorder"] == "running"
 
 
+def test_status_shows_execution_disarmed_explicitly(monkeypatch):
+    """/healthz must carry the armed/disarmed truth even when execution is OFF — an absent
+    key used to read as nothing at all (the trader couldn't tell disarmed from broken)."""
+    monkeypatch.setenv("RECORDER_TOKEN_SECRET", "s3cret")
+    monkeypatch.setenv("COCKPIT_PASSWORD", "pw")
+    monkeypatch.delenv("EXECUTION_LIVE", raising=False)
+    monkeypatch.delenv("DATA_REPO_URL", raising=False)
+    monkeypatch.delenv("JOURNAL_REPO_URL", raising=False)
+    import web.cockpit_service as cs
+    from web import server
+    monkeypatch.setattr(server, "BROKER", None)
+    monkeypatch.setattr(cs.control, "start_repo_sync", lambda *a, **kw: None)
+    monkeypatch.setattr(cs.control, "restore_token", lambda: False)
+    monkeypatch.setattr(cs.threading, "Thread",
+                        lambda target, daemon=False: type("T", (), {"start": lambda self: None})())
+    cs._start_background()
+    assert cs.STATUS["broker"] == "off"
+    assert cs.STATUS["exit_monitor"] == "off"
+    assert cs.STATUS["execution"] == "off"
+
+
 def test_cockpit_routes_reachable_through_mount(monkeypatch):
     """The mounted cockpit is served under the auth-gated outer app."""
     c = _client(monkeypatch)

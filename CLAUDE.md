@@ -919,6 +919,53 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       can't verify the Breeze symbols/expiries); needs the recorder running with SCAN_STOCKS for stock
       volume + OI to accrue.
 
+- [x] **DASHBOARD OVERHAUL — arm & explain execution, notify on triggers, fix the full audit list
+      (confirmed w/ trader: "everything now"; channels in-app + browser + Telegram).** Root causes found by
+      two audits: (1) "can't execute" = `EXECUTION_LIVE` missing from DEPLOY's env table → broker never
+      injected (boot-only) → every approve returned an UNEXPLAINED dry_run with reasons/messages dropped;
+      (2) "no trigger notifications" = the triggers-table date LATCHED once per page load (overnight tab
+      showed yesterday forever), leaky per-call AudioContext beeps went silent, no browser/phone push for
+      triggers, and money-at-risk events (SL/target/TSL fires, fills, rejections) alerted nothing.
+      EXECUTION: `server._ensure_broker()` lazily arms whenever EXECUTION_LIVE=1 (boot, per-order, or via
+      the FIXED kill-switch which now also injects; `BROKER_FACTORY` test seam); `_execute_entry` returns a
+      `reason` on EVERY non-placed path (live_unticked / env unset / no broker / strategy propose-only /
+      stocks long-only / build+broker messages) and the idempotent re-send says `duplicate` (was a false
+      "placed"); `_record_decision` forwards reason/message; `_payload().execution` {armed/broker/reason/
+      live_strategies} drives a header **EXEC chip** (🔴 ARMED / ⚪ OFF + why, click = kill-switch w/
+      confirm); `decisionMsg` renders status+reason coloured; LIVE tick hidden on non-live strategies +
+      confirm() before a real order; `BreezeBroker._cl()` REBUILDS the client on daily token rotation (was
+      stale→every order errored until restart) + `probe()` pre-trade session check; `build_orders(symbol=)`
+      sends the BREEZE code (CNXBAN, loader_symbol) not the cockpit symbol; cockpit STATUS always prints
+      broker/exit_monitor/execution ("off", never absent); DEPLOY.md env table gains EXECUTION_LIVE + fixes
+      the stale recorder-service Procfile note. NOTIFICATIONS: `_push_event` ring + `GET /api/events?since=`
+      — fresh HEAD triggers (any watched instrument, deduped per symbol/strategy/ts), order placed/failed,
+      fills (exit-monitor), SL/target/TSL exits, exit FAILURES (position left open), auto-flatten — each
+      pushed to Telegram via the existing `feeds.notify` (env-gated) AND surfaced in-app: one SHARED
+      AudioContext resumed on first gesture (+ 🔔 header toggle w/ Notification-permission request),
+      browser notifications when backgrounded, title-bar badge, an event feed under the live-position
+      panel; watchlist CLEAR leans alert cross-instrument (shared per-symbol dedup). FRESHNESS: `_trigDate`
+      re-validated every fetch + "Today" button + IST-rollover reset (+ selector rebuilds compare content
+      not length). PERSISTENCE: new journal `actioned` table + `_mark_actioned` write-through +
+      `_load_actioned` on refresh → decided triggers survive a redeploy (no phantom inbox/re-beeps/Claude
+      re-spend). REACH: `/api/pending` now covers focused stocks + runs `_recompute_heads` per watched
+      instrument (Claude column fills, reads cached/deduped). RELIABILITY: `getJson` (r.ok) + per-panel
+      error lines (was 17 silent catches rendering empty panels); head-read/OI-log failures land in
+      snap.notes; buildup ERROR flagged distinct from "not enough history"; chain age chip in the header
+      meta (`oi_age_s`); `/api/record` settle throttled to every 5th poll, triggers-log every 4th. UX:
+      pending inbox moved to TOP of page; trigger markers now also on 1m/15m (ts floored to the bar);
+      logStrat server-driven (was hard-coded, missing condor); inline exit price form replaces prompt();
+      livePos renders broker.error + flashes on TSL moves + delegated square-off; sendChat/modal-reask
+      error handling fixed (no empty bubbles / accumulating buttons); order-ticket clobber fixed (the
+      `otTicketTouched` guard element never existed — real `_ticketTouched` flag per trigger); mobile pass
+      (header wrap, 700px breakpoint, horizontal table scroll, bigger tap targets). Tested: +11 —
+      dry-run reasons per gate, execution payload, kill-switch lazy-arm, events+telegram push-once,
+      actioned survives restart, duplicate-not-placed (test_web_server); token-rotation rebuild, probe,
+      symbol override (test_breeze_exec); STATUS disarmed-explicit (test_cockpit_service); actioned
+      round-trip (test_journal_store). node --check both JS files; suite green (406; 1 pre-existing
+      unrelated oi_store fail). FOR THE TRADER: to place real orders set `EXECUTION_LIVE=1` on Railway
+      (now in the env table) — the EXEC chip confirms ARMED; Telegram still needs the two env vars
+      (deferred earlier, unchanged).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

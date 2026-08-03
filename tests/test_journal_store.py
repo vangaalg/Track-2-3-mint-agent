@@ -120,3 +120,18 @@ def test_trigger_label_and_reason_round_trip(tmp_path):
     store.update_reason(rid, "genuine: ...", trigger_label="false", path=db)
     assert store.load_records(db)[0]["trigger_label"] == "false"
 
+
+
+def test_actioned_round_trip_and_upsert(tmp_path):
+    db = tmp_path / "journal.db"
+    store.save_actioned("NIFTY", "trade1", "2026-08-03T09:18:00+05:30", "rejected", path=db)
+    store.save_actioned("NIFTY", "cpr_st", "2026-08-03T09:21:00+05:30", "approved", path=db)
+    store.save_actioned("BANKNIFTY", "trade1", "2026-08-03T09:18:00+05:30", "skipped", path=db)
+    got = store.load_actioned("NIFTY", path=db)
+    assert got[("trade1", "2026-08-03T09:18:00+05:30")] == "rejected"
+    assert got[("cpr_st", "2026-08-03T09:21:00+05:30")] == "approved"
+    assert len(got) == 2                                   # scoped per symbol
+    # upsert: a later action on the same trigger wins
+    store.save_actioned("NIFTY", "trade1", "2026-08-03T09:18:00+05:30", "approved", path=db)
+    assert store.load_actioned("NIFTY", path=db)[("trade1", "2026-08-03T09:18:00+05:30")] == "approved"
+    assert store.load_actioned("NIFTY", path=tmp_path / "missing.db") == {}

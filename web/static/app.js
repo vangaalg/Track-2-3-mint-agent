@@ -23,7 +23,32 @@ let _seenPending = new Set();                // pending trigger ts already alert
 let _buildupAlert = {};                       // per-symbol last strong OI lean alerted (dedup)
 const STRONG_BUILDUP = 0.4;                   // |score| for a CLEAR lean (= analysis.trade1.BUILDUP_STRONG)
 
+let _pollN = 0;                                       // poll counter — throttles heavy fetches
+let _istDay = null;                                   // IST session-date rollover detection
+
+function _istToday() {
+  // IST = UTC+5:30 — the date the NSE session belongs to.
+  return new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+}
+
+
+// fetch → parsed JSON, throwing the server's error detail on a non-2xx (fetch alone only
+// rejects on network failure, so HTTP errors used to flow into renderers as empty panels).
+async function getJson(url, opts) {
+  const r = await fetch(url, opts || {});
+  let d = null;
+  try { d = await r.json(); } catch (e) { /* non-JSON body */ }
+  if (!r.ok) throw new Error((d && d.detail) || r.statusText || ("HTTP " + r.status));
+  return d;
+}
+
 async function poll() {
+  _pollN += 1;
+  const today = _istToday();
+  if (_istDay !== null && today !== _istDay) {        // new IST day → drop yesterday's pins
+    _trigDate = null; _seenPending.clear(); _trigPage = 0;
+  }
+  _istDay = today;
   try {
     const r = await fetch(`/api/snapshot?symbol=${sym()}`);
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
@@ -33,23 +58,48 @@ async function poll() {
     if (d.symbol && d.symbol !== currentSymbol) return;
     lastPayload = d;
     $("dot").className = "dot live";
-    $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}`;
+    const age = d.oi_age_s != null && d.oi_age_s > 90 ? ` · chain ${Math.round(d.oi_age_s / 60)}m old` : "";
+    $("meta").textContent = `as of ${d.ts} · fetched ${d.fetched_at}${age}`;
+    renderExecChip(d.execution);
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchRecord(); fetchTable(); fetchPcrHistory(); fetchPending(); fetchBreadth();
+    fetchChart(); fetchTable(); fetchPending(); fetchEvents(); fetchLivePos();
+    fetchPcrHistory(); fetchBreadth(); fetchBuildupScan();
     fetchMarketReads();                               // saved Market-view reads (browse all day)
-    fetchBuildupScan();                               // OI buildup watchlist (clear bull/bear scripts)
-    fetchTriggersLog();                               // triggers + analysis log (all instruments)
-    fetchLivePos();                                   // open LIVE broker position (fill + trailing stop)
+    // Heavier calls are throttled: /api/record runs settlement (+ possible Claude
+    // post-mortems) server-side, and the triggers-log refetches every instrument+day.
+    if (_pollN % 5 === 1) fetchRecord();
+    if (_pollN % 4 === 1) fetchTriggersLog();
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
-    // The token banner is driven by the real Breeze connection state (refreshTokenStatus),
-    // NOT by benign OI notes — so a valid token no longer re-prompts on every refresh.
-    // No client-side auto-analyse: Claude auto-fires server-side once per new trigger
-    // (all four tabs); the frozen head carries its cached read.
   } catch (e) {
     $("dot").className = "dot err"; $("meta").textContent = "error: " + e.message;
     flagTokenNeeded(true);     // a failing poll is often an expired token — offer entry
   }
+}
+
+// Header EXEC chip: the armed/disarmed truth + WHY it's off; click = kill switch.
+function renderExecChip(ex) {
+  const chip = $("execChip");
+  if (!chip || !ex) return;
+  chip.className = "execchip " + (ex.armed ? "armed" : "off");
+  chip.textContent = ex.armed ? "🔴 EXEC ARMED" : "⚪ EXEC OFF";
+  chip.title = ex.armed
+    ? `LIVE execution ARMED (broker: ${ex.broker || "?"}; strategies: ${(ex.live_strategies || []).join(",")}) — click to disarm`
+    : `LIVE execution OFF — ${ex.reason || "unknown"}. Click to try arming (needs EXECUTION_LIVE=1 + Breeze creds on the server).`;
+}
+
+async function toggleKillSwitch() {
+  const armed = lastPayload && lastPayload.execution && lastPayload.execution.armed;
+  const msg = armed ? "DISARM live execution? New orders become dry-run (open positions still managed)."
+    : "ARM live execution? Approvals with the 🔴 LIVE tick will place REAL Breeze orders.";
+  if (!confirm(msg)) return;
+  try {
+    const fd = new FormData(); fd.append("on", armed ? "false" : "true");
+    const r = await fetch("/api/kill-switch", { method: "POST", body: fd });
+    const d = await r.json();
+    renderExecChip(d);
+    if (!d.armed && !armed) alert("Could not arm: " + (d.reason || "unknown"));
+  } catch (e) { alert("Kill-switch failed: " + e.message); }
 }
 
 // Surface the token entry when the feed looks unauthenticated (amber button + open form).
@@ -116,6 +166,7 @@ function renderStrategy() {
 
 function setStrat(strat) {
   currentStrat = strat;
+  _ticketTouched = false; _ticketTs = null;          // fresh strategy → fresh ticket
   document.querySelectorAll("#stratTabs button").forEach((b) =>
     b.classList.toggle("on", b.dataset.strat === strat));
   renderStrategy();
@@ -202,7 +253,10 @@ function renderBuildup(d) {
   const sym = d.symbol || currentSymbol;
   if (!bu || bu.insufficient) {                       // needs ≥2 snapshots (live/forward only)
     if (panel) { panel.hidden = false;
-      $("buildupLabel").textContent = "buildup lean — not enough OI history yet today";
+      // a computation ERROR is not the same as "no history yet" — say which one it is
+      $("buildupLabel").textContent = bu && bu.error
+        ? "buildup — computation error (see diagnostics)"
+        : "buildup lean — not enough OI history yet today";
       $("buildupFill").style.width = "50%"; $("buildupFill").className = "bfill neutral";
       $("buildupRev").textContent = ""; $("buildupTbl").innerHTML = "";
       $("buildupAlertBadge").hidden = true; _buildupAlert[sym] = "none";
@@ -286,16 +340,16 @@ function renderOI(d) {
 
 // NSE-50 scanner: poll the cached scan; highlight stocks where trigger + OI + Claude agree.
 async function fetchScanner() {
-  try { renderScanner(await (await fetch("/api/scanner")).json()); } catch (e) { /* keep last */ }
+  try { renderScanner(await getJson("/api/scanner")); panelErr("scanStatus", null); }
+  catch (e) { panelErr("scanStatus", "scanner: " + e.message); }
 }
 
 // OI buildup watchlist: which scripts are CLEAR bullish/bearish + their EOS/EOR, S/R and
 // the strike where OI is shifting. Reads the recorder's stored OI (no Breeze pulls).
 async function fetchBuildupScan(refresh) {
   try {
-    const u = "/api/buildup-scan" + (refresh ? "?refresh=true" : "");
-    renderBuildupScan(await (await fetch(u, refresh ? { method: "GET" } : {})).json());
-  } catch (e) { /* keep last */ }
+    renderBuildupScan(await getJson("/api/buildup-scan" + (refresh ? "?refresh=true" : "")));
+  } catch (e) { panelErr("buScanStatus", "watchlist: " + e.message); }
 }
 
 async function buScanRefresh() {
@@ -309,6 +363,17 @@ function renderBuildupScan(d) {
   $("buScanStatus").innerHTML = d.error ? `<span class="loss-txt">error</span>`
     : `${d.clear || 0} CLEAR · ${d.with_data || 0}/${d.count || 0} with OI`
       + (d.generated ? ` · ${String(d.generated).slice(11, 16)}` : "");
+  // alert when ANY watchlist script crosses into a CLEAR lean (not just the active one) —
+  // per-symbol dedup shared with the active-instrument panel, so no double beeps
+  for (const r of rows) {
+    if (!r.has_data) continue;
+    const state = r.clear ? r.bias : "none";
+    if (r.clear && _buildupAlert[r.symbol] !== state) {
+      notifyEvent("clear_lean", `🔦 ${r.symbol} CLEAR ${String(r.bias).toUpperCase()}`,
+        `score ${n(r.score)} · S ${r.support ?? "—"} / R ${r.resistance ?? "—"} · shift ${r.shift_strike ?? "—"}`);
+    }
+    _buildupAlert[r.symbol] = state;
+  }
   if (!rows.length) {
     $("buScanTbl").innerHTML = "<tbody><tr><td class='muted'>No recorded OI yet — the recorder "
       + "accumulates it live (indices ~15m, stocks ~60m).</td></tr></tbody>";
@@ -521,13 +586,22 @@ function renderMarketReads() {
 // Cross-instrument review/export (not tied to the active symbol), built from the journal.
 async function fetchTriggersLog() {
   try {
-    const d = await (await fetch(`/api/triggers-log?symbol=all&date=${_logDay}&strategy=${_logStrat}`)).json();
+    const d = await getJson(`/api/triggers-log?symbol=all&date=${_logDay}&strategy=${_logStrat}`);
     if (d.days) { _logDays = d.days; populateLogDays(); }
+    populateLogStrats();                        // server-driven options (was hard-coded, missing condor)
     _logRows = d.rows || [];
     $("logCount").textContent = `${d.count || 0} trigger${(d.count || 0) === 1 ? "" : "s"}`;
     $("logCsv").href = `/api/triggers-export?symbol=all&date=${_logDay}&strategy=${_logStrat}`;
     renderTriggersLog();
   } catch (e) { /* keep last */ }
+}
+function populateLogStrats() {
+  const ss = $("logStrat");
+  const strats = (lastPayload && lastPayload.strategies) || [];
+  const want = `<option value="all">All</option>`
+    + strats.map((s2) => `<option value="${s2.id}">${s2.label}</option>`).join("");
+  if (ss.dataset.opts !== want) { ss.innerHTML = want; ss.dataset.opts = want; }
+  ss.value = _logStrat;
 }
 function populateLogDays() {
   const sel = $("logDay");
@@ -590,18 +664,38 @@ function renderHead(head) {
 
 // Prefill the order ticket from the frozen trigger (entry/stop/target/lots). Stock instruments
 // trade equity (cash) sized by a Max-₹ cap; indices trade the option vehicle sized in lots.
+// _ticketTouched: a REAL edited-flag (the old `$("otTicketTouched")` element never existed,
+// so the guard was permanently off and every poll clobbered in-progress edits).
+let _ticketTouched = false;
+let _ticketTs = null;                          // the trigger ts the ticket was filled for
+
 function fillTicket(head) {
   const stock = !!(lastPayload && lastPayload.is_stock);
+  const newTrigger = head.ts !== _ticketTs;
+  if (newTrigger) { _ticketTouched = false; _ticketTs = head.ts; }
+  if (_ticketTouched && !newTrigger) {         // trader mid-edit on the SAME trigger → hands off
+    $("otQtyWrap").hidden = stock; $("otMaxWrap").hidden = !stock;
+    // LIVE tick visibility still tracks the strategy (see below)
+    $("otLive").closest("label").hidden = !isLiveStrategy();
+    return;
+  }
   $("otSl").value = head.stop != null ? head.stop : "";
   $("otTarget").value = head.target != null ? head.target : "";
-  if (!$("otTicketTouched")) {                 // don't clobber a price the trader is editing
-    $("otType").value = "market"; $("otPriceWrap").hidden = true;
-  }
+  $("otType").value = "market"; $("otPriceWrap").hidden = true;
   $("otQtyWrap").hidden = stock;
   $("otMaxWrap").hidden = !stock;
   if (stock) { recomputeStockQty(); }
   else { $("otQty").value = head.size_lots != null ? head.size_lots : 1; $("otQtyCalc").textContent = "lots"; }
   fillStrikes(stock);
+  // the 🔴 LIVE tick only appears where a live order can actually fire (trade1 this phase) —
+  // it used to render on CPR-ST/ORB/condor and silently do nothing
+  $("otLive").closest("label").hidden = !isLiveStrategy();
+  if (!isLiveStrategy()) $("otLive").checked = false;
+}
+
+function isLiveStrategy() {
+  const ls = (lastPayload && lastPayload.execution && lastPayload.execution.live_strategies) || ["trade1"];
+  return ls.includes(currentStrat);
 }
 
 // Value-for-money ITM strike ladder (top-N, best first) the trader picks from before ordering.
@@ -616,7 +710,7 @@ function fillStrikes(stock) {
     `<option value="${c.strike}">${c.strike} ${c.right} · ₹${n(c.ltp)} · TV ${n(c.extrinsic)} (${Math.round((c.extrinsic_pct || 0) * 100)}%)${i === 0 ? " ★" : ""}</option>`
   ).join("");
   sel.value = String((prop.selected_strike != null ? prop.selected_strike : cands[0].strike));
-  if (!$("otTicketTouched")) $("otStrikeCustom").value = "";     // clear override on a fresh trigger
+  if (!_ticketTouched) $("otStrikeCustom").value = "";     // clear override on a fresh trigger only
   showStrikeInfo();
 }
 
@@ -690,17 +784,24 @@ async function fetchTable() {
   try {
     let url = `/api/triggers?strategy=${_trigStrat}&symbol=${sym()}`;
     if (_trigDate) url += `&date=${_trigDate}`;
-    const d = await (await fetch(url)).json();
+    const r = await fetch(url);
+    if (!r.ok) { panelErr("trigSummary", `triggers: ${(await r.json()).detail || r.statusText}`); return; }
+    const d = await r.json();
     _trigRows = d.triggers || [];
     _trigSummary = d.summary || {};
     _trigPending = d.pending || 0;
     _trigLast = d.last; _trigSession = d.session;
     if (d.dates) _trigDates = d.dates;
     if (d.strategies) _trigStrats = d.strategies;
-    if (_trigDate === null && _trigDates.length) _trigDate = _trigDates[0];   // newest first
+    // Pick the newest session by default AND re-validate a pinned date every fetch: the old
+    // code latched _trigDate once per page load, so an overnight tab silently showed
+    // YESTERDAY's triggers/badge forever (and a date aged out of the 3-day pull window left
+    // a blank selector querying a session with no bars).
+    if ((_trigDate === null || !_trigDates.includes(_trigDate)) && _trigDates.length)
+      _trigDate = _trigDates[0];                                       // newest first = today
     populateTrigSelectors();
     renderTriggers();
-  } catch (e) { /* keep last */ }
+  } catch (e) { panelErr("trigSummary", "triggers: " + e.message); }
 }
 
 // Populate the instrument selector from the snapshot's instrument list.
@@ -719,16 +820,30 @@ function renderInstruments(d) {
 
 function populateTrigSelectors() {
   const ds = $("trigDate");
-  if (ds.options.length !== _trigDates.length) {
-    ds.innerHTML = _trigDates.map((x) => `<option value="${x}">${x}</option>`).join("");
-  }
+  // compare CONTENT, not length — a rolling window (drop Mon, add Thu) keeps the same
+  // length but different dates, which used to leave stale option values behind
+  const want = _trigDates.map((x) => `<option value="${x}">${x}</option>`).join("");
+  if (ds.dataset.opts !== want) { ds.innerHTML = want; ds.dataset.opts = want; }
   ds.value = _trigDate || "";
   const ss = $("trigStrat");
-  if (ss.options.length !== _trigStrats.length + 1) {
-    ss.innerHTML = `<option value="all">All</option>`
-      + _trigStrats.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
-  }
+  const wantS = `<option value="all">All</option>`
+    + _trigStrats.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
+  if (ss.dataset.opts !== wantS) { ss.innerHTML = wantS; ss.dataset.opts = wantS; }
   ss.value = _trigStrat;
+}
+
+// Per-panel fetch-error line: writes a small red note into the given element (or clears
+// it with null) so an HTTP failure is visibly different from "no data".
+const _panelErrPrev = {};
+function panelErr(elId, msg) {
+  const el = $(elId);
+  if (!el) return;
+  if (msg) {
+    if (_panelErrPrev[elId] === undefined) _panelErrPrev[elId] = el.innerHTML;
+    el.innerHTML = `<span class="fetch-err">⚠ ${msg}</span>`;
+  } else if (_panelErrPrev[elId] !== undefined) {
+    delete _panelErrPrev[elId];
+  }
 }
 
 function renderTriggers() {
@@ -809,26 +924,39 @@ function renderTriggers() {
 
 // Manually close an OPEN trigger at a price (defaults to the live spot) → realized P&L into
 // the track record; the row flips to "exit". You square off on your own broker (propose-only).
-async function exitTrigger(ts, strat) {
+// Inline mini-form in the row instead of window.prompt() (blocked/painful on mobile).
+function exitTrigger(ts, strat, btn) {
   const spot = lastPayload ? lastPayload.spot : null;
-  const ans = prompt("Exit at price?", spot != null ? n(spot) : "");
-  if (ans === null) return;                        // cancelled
-  const px = parseFloat(ans);
+  const cell = btn && btn.parentElement;
+  if (!cell) { _sendExit(ts, strat, spot); return; }      // no cell context → straight to spot
+  cell.dataset.prev = cell.innerHTML;
+  cell.innerHTML = `<input type="number" step="0.05" class="exitpx" value="${spot != null ? Number(spot).toFixed(2) : ""}" style="width:90px" />
+    <button class="btn ok" data-exitok="${ts}" data-strat="${strat || currentStrat}">OK</button>
+    <button class="btn" data-exitcancel="1">✕</button>`;
+  cell.querySelector("input").focus();
+}
+
+async function _sendExit(ts, strat, px, cell) {
   const fd = new FormData();
   fd.append("strategy", strat || currentStrat); fd.append("ts", ts);
   fd.append("symbol", currentSymbol);
-  if (!Number.isNaN(px)) fd.append("exit_px", px);
-  const r = await fetch("/api/exit", { method: "POST", body: fd });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) { alert("Exit failed: " + (d.detail || r.statusText)); return; }
+  if (px != null && !Number.isNaN(px)) fd.append("exit_px", px);
+  try {
+    const r = await fetch("/api/exit", { method: "POST", body: fd });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || r.statusText);
+  } catch (e) {
+    if (cell) cell.innerHTML = `<span class="fetch-err">exit failed: ${e.message}</span>`;
+    return;
+  }
   fetchTable(); fetchRecord();                      // refresh the table + track record
 }
 
 async function fetchChart() {
   initCharts();
   if (!LW) return;
-  try { renderLW(await (await fetch(`/api/chart?tf=${chartTF}&bars=200&symbol=${sym()}`)).json()); }
-  catch (e) { /* keep last */ }
+  try { renderLW(await getJson(`/api/chart?tf=${chartTF}&bars=200&symbol=${sym()}`)); }
+  catch (e) { /* keep the last candles; the header dot/meta shows poll errors */ }
 }
 
 async function fetchRecord() {
@@ -932,6 +1060,9 @@ function advanceTo(nextHead) {
 
 async function decide(action) {
   if (!currentHead) { $("decisionMsg").textContent = "No active trigger to decide."; return; }
+  // a REAL order needs an explicit confirm — the LIVE tick alone is too easy to fat-finger
+  if (action === "approve" && $("otLive").checked
+      && !confirm(`Send a REAL ${currentStrat} order to the broker for ${currentSymbol}?`)) return;
   const acted = currentHead;
   const fd = new FormData();
   fd.append("action", action); fd.append("strategy", currentStrat); fd.append("ts", acted.ts);
@@ -939,16 +1070,36 @@ async function decide(action) {
   const lbl = document.querySelector('input[name="liveLabel"]:checked');
   if (lbl) fd.append("label", lbl.value);
   if (action === "approve") appendTicket(fd);            // order ticket → broker params
-  const r = await fetch("/api/decision", { method: "POST", body: fd });
-  const d = await r.json();
-  if (!r.ok) { $("decisionMsg").textContent = "⚠ " + (d.detail || "decision failed"); return; }
+  let r, d;
+  try {
+    r = await fetch("/api/decision", { method: "POST", body: fd });
+    d = await r.json();
+  } catch (e) {
+    $("decisionMsg").className = "muted small err";
+    $("decisionMsg").textContent = "⚠ decision failed: " + e.message + " — NOT sent, retry";
+    return;
+  }
+  if (!r.ok) {
+    $("decisionMsg").className = "muted small err";
+    $("decisionMsg").textContent = "⚠ " + (d.detail || "decision failed");
+    return;
+  }
   const verb = action === "approve" ? "Approved" : action === "skip" ? "Skipped" : "Rejected";
   const conv = acted.mtf_confidence != null ? ` · conviction ${acted.mtf_confidence}/5` : "";
+  // show WHAT happened AND WHY — dry_run/error/rejected now carry the gate reason or the
+  // broker's message instead of a bare unexplained word
+  const why = d.reason || d.message;
+  const cls = d.status === "placed" ? "ok" : (d.status === "error" || d.status === "rejected")
+    ? "err" : d.status === "dry_run" ? "warn2" : "";
+  $("decisionMsg").className = "small decmsg " + cls;
   $("decisionMsg").textContent = `${verb} ${currentStrat} ${(acted.ts || "").slice(11, 16)}` + conv
     + (action === "skip" ? " · not recorded"
-       : ` · logged ${d.logged} · ${d.status || "—"}` + (lbl ? ` · trigger ${lbl.value}` : ""));
+       : ` · logged ${d.logged} · ${(d.status || "—").toUpperCase()}`
+         + (d.broker_order_id ? ` #${d.broker_order_id}` : "")
+         + (why ? ` — ${why}` : "") + (lbl ? ` · trigger ${lbl.value}` : ""));
+  _ticketTouched = false;                                // decision done — ticket may refill
   advanceTo(d.next_head);        // instant swap to the next pending trigger (if any)
-  if (action === "approve") { fetchLivePos(); }
+  if (action === "approve") { fetchLivePos(); fetchEvents(); }
 }
 
 // Pack the order-ticket fields into the decision/stock-enter form.
@@ -972,24 +1123,33 @@ function appendTicket(fd) {
 // Live broker position panel: fill state, live (trailing) stop, manual square-off.
 async function fetchLivePos() {
   try {
-    const d = await (await fetch(`/api/order-status?symbol=${sym()}&strategy=${currentStrat}`)).json();
-    renderLivePos(d);
-  } catch (e) { /* keep */ }
+    renderLivePos(await getJson(`/api/order-status?symbol=${sym()}&strategy=${currentStrat}`));
+  } catch (e) { /* keep the last panel — a blip must not hide an open position */ }
 }
+let _lastLiveStop = null;                      // flash when the trailing stop actually moves
 function renderLivePos(d) {
   const el = $("livePos");
   if (!el) return;
-  if (!d || !d.open) { el.hidden = true; el.innerHTML = ""; return; }
+  if (!d || !d.open) { el.hidden = true; el.innerHTML = ""; _lastLiveStop = null; return; }
   const p = d.position || {}, b = d.broker || {};
   el.hidden = false;
+  // surface a broker-side error prominently (it used to be silently dropped)
+  const berr = b && (b.error || (b.status && b.status !== "placed" && b.message))
+    ? `<br><span class="fetch-err">⚠ broker: ${b.error || b.message || b.status}</span>` : "";
   el.innerHTML = `🔴 LIVE ${(p.direction || "").toUpperCase()} ${p.symbol} `
     + `<span class="muted">${(p.ts || "").slice(11, 16)}</span> · ${p.qty} ${p.segment === "equity" ? "sh" : "qty"}`
-    + `<br>Entry ${n(p.entry)} · Stop ${n(p.stop)}${p.tsl_points ? ` <span class="muted">(TSL ${p.tsl_points})</span>` : ""} · Target ${n(p.target)}`
-    + `<br><span class="small muted">${p.entry_filled ? "filled" : "pending fill"}`
+    + `<br>Entry ${n(p.entry)} · Stop <b>${n(p.stop)}</b>${p.tsl_points ? ` <span class="muted">(TSL ${p.tsl_points})</span>` : ""} · Target ${n(p.target)}`
+    + `<br><span class="small muted">${p.entry_filled ? "filled ✅" : "pending fill…"}`
     + `${b && b.status ? " · broker " + b.status : ""}${p.broker_order_id ? " · #" + p.broker_order_id : ""}</span>`
+    + berr
     + ` <button id="sqOff" class="btn no" title="Square off this position at market now">⛔ Square off</button>`;
-  $("sqOff").onclick = squareOff;
+  if (_lastLiveStop !== null && p.stop !== _lastLiveStop) {   // trailing stop moved → flash
+    el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+  }
+  _lastLiveStop = p.stop;
 }
+// delegated (survives the innerHTML rebuild each poll — a click can't land between rebinds)
+document.addEventListener("click", (e) => { if (e.target.closest("#sqOff")) squareOff(); });
 async function squareOff() {
   if (!confirm("Square off the live position at market now?")) return;
   const fd = new FormData(); fd.append("symbol", currentSymbol); fd.append("strategy", currentStrat);
@@ -1007,8 +1167,13 @@ async function sendChat(ev) {
   if (file) fd.append("files", file);
   appendMsg("user", text, file);
   $("chatText").value = ""; $("chatFile").value = "";
-  const r = await fetch("/api/chat", { method: "POST", body: fd });
-  const d = await r.json(); appendMsg("assistant", d.reply);
+  try {                                          // a failed turn used to render an EMPTY bubble
+    const r = await fetch("/api/chat", { method: "POST", body: fd });
+    const d = await r.json();
+    appendMsg("assistant", r.ok ? d.reply : `⚠ ${d.detail || "chat failed"}`);
+  } catch (e) {
+    appendMsg("assistant", "⚠ chat failed: " + e.message);
+  }
 }
 
 function appendMsgTo(logId, role, text, file) {
@@ -1040,13 +1205,21 @@ function closeAnalysisModal() { $("analysisModal").hidden = true; }
 
 function _modalReaskButton() {
   if (!_modal.ts && _modal.kind !== "market") return;   // market reads re-ask without a ts
+  const old = $("modalReaskBtn");                       // idempotent — never accumulate buttons
+  if (old) old.remove();
   const b = document.createElement("button");
+  b.id = "modalReaskBtn";
   b.className = "btn"; b.style.marginTop = "6px"; b.textContent = "🔄 re-ask Claude";
   b.onclick = _modalReask;
   $("modalBody").appendChild(b);
 }
+function _modalStatus(msg) {                            // one replaceable status line, not a pile
+  const old = $("modalStatusLine");
+  if (old) old.remove();
+  if (msg) $("modalBody").insertAdjacentHTML("beforeend", `<div id="modalStatusLine" class='muted'>${msg}</div>`);
+}
 async function _modalReask() {
-  $("modalBody").insertAdjacentHTML("beforeend", "<div class='muted'>re-asking Claude…</div>");
+  _modalStatus("re-asking Claude…");
   try {
     if (_modal.kind === "market") {                      // fresh market view (no trigger ts)
       const r = await fetch(`/api/market-read?symbol=${encodeURIComponent(_modal.symbol)}`, { method: "POST" });
@@ -1062,7 +1235,7 @@ async function _modalReask() {
     if (!r.ok) throw new Error(d.detail || r.statusText);
     renderReadInto($("modalBody"), d); _modalReaskButton();
     fetchTable(); fetchPending();
-  } catch (e) { $("modalBody").insertAdjacentHTML("beforeend", `<div class='muted'>re-ask failed: ${e.message}</div>`); }
+  } catch (e) { _modalStatus("re-ask failed: " + e.message); _modalReaskButton(); }
 }
 async function modalSendChat(ev) {
   ev.preventDefault();
@@ -1097,8 +1270,21 @@ $("tokenBtn").onclick = () => { $("tokenForm").hidden = !$("tokenForm").hidden; 
 $("tokenSave").onclick = postToken;
 $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") postToken(); });
 $("trigTbl").addEventListener("click", (e) => {     // per-row actions on the triggers table
+  const ok = e.target.closest("button[data-exitok]");     // inline exit form: confirm
+  if (ok) {
+    const cell = ok.parentElement;
+    const px = parseFloat(cell.querySelector("input.exitpx").value);
+    _sendExit(ok.dataset.exitok, ok.dataset.strat, px, cell);
+    return;
+  }
+  const cancel = e.target.closest("button[data-exitcancel]");   // inline exit form: cancel
+  if (cancel) {
+    const cell = cancel.parentElement;
+    if (cell.dataset.prev !== undefined) { cell.innerHTML = cell.dataset.prev; delete cell.dataset.prev; }
+    return;
+  }
   const ex = e.target.closest("button[data-exit-ts]");
-  if (ex) { exitTrigger(ex.dataset.exitTs, ex.dataset.strat); return; }
+  if (ex) { exitTrigger(ex.dataset.exitTs, ex.dataset.strat, ex); return; }
   const dc = e.target.closest("button[data-decide]");
   if (dc) { decideTrigger(dc.dataset.ts, dc.dataset.strat, dc.dataset.decide); return; }
   const ds = e.target.closest("button[data-discuss]");
@@ -1139,25 +1325,117 @@ async function discussTrigger(ts, strat, symbol) {
     read: (rd && rd.recommendation) ? rd : null });
 }
 
-// One-shot alert tone for a fresh trigger (best-effort; browsers may gate audio on a gesture).
+// --- notifications: ONE shared AudioContext (the old per-call context leaked and hit
+// Chrome's ~6-context cap → beeps went permanently silent), resumed on the first user
+// gesture so the autoplay policy can't mute the first alert of the day. Browser
+// Notification API + a title badge cover a backgrounded tab.
+let _audioCtx = null;
+let _titleBadge = 0;
+const _baseTitle = document.title;
+
+function _ctx() {
+  if (!_audioCtx) {
+    try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch (e) { return null; }
+  }
+  if (_audioCtx.state === "suspended") { try { _audioCtx.resume(); } catch (e) {} }
+  return _audioCtx;
+}
+// prime audio on the first gesture anywhere (autoplay policy) — once
+document.addEventListener("pointerdown", () => _ctx(), { once: true });
+
 function beep() {
+  if (localStorage.getItem("notifyOn") === "0") return;      // 🔕 muted by the trader
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _ctx();
+    if (!ctx) return;
     const o = ctx.createOscillator(), g = ctx.createGain();
     o.connect(g); g.connect(ctx.destination);
     o.type = "sine"; o.frequency.value = 880;
     g.gain.setValueAtTime(0.12, ctx.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
     o.start(); o.stop(ctx.currentTime + 0.25);
-  } catch (e) { /* audio blocked until a user gesture — silent is fine */ }
+  } catch (e) { /* audio unavailable — the visual channels still fire */ }
+}
+
+// One event → every channel: beep + browser notification (works backgrounded once the
+// trader granted permission via 🔔) + a title-bar counter cleared on focus.
+function notifyEvent(kind, title, body) {
+  beep();
+  if (document.hidden) {
+    _titleBadge += 1;
+    document.title = `(${_titleBadge}) ${_baseTitle}`;
+  }
+  try {
+    if (localStorage.getItem("notifyOn") !== "0" && "Notification" in window
+        && Notification.permission === "granted") {
+      new Notification(title, { body: body || "", tag: kind + "|" + title });
+    }
+  } catch (e) { /* notification API unavailable — beep/title already fired */ }
+}
+window.addEventListener("focus", () => { _titleBadge = 0; document.title = _baseTitle; });
+
+function refreshNotifyBtn() {
+  const on = localStorage.getItem("notifyOn") !== "0";
+  const granted = ("Notification" in window) && Notification.permission === "granted";
+  $("notifyBtn").textContent = on ? (granted ? "🔔" : "🔔!") : "🔕";
+  $("notifyBtn").title = !on ? "Alerts muted — click to enable sound + notifications"
+    : granted ? "Alerts on (sound + browser notifications) — click to mute"
+    : "Sound on — click to also allow browser notifications";
+}
+
+async function toggleNotify() {
+  const on = localStorage.getItem("notifyOn") !== "0";
+  if (on && ("Notification" in window) && Notification.permission !== "granted") {
+    try { await Notification.requestPermission(); } catch (e) {}
+  } else {
+    localStorage.setItem("notifyOn", on ? "0" : "1");
+  }
+  _ctx();                                        // user gesture — prime/resume audio now
+  refreshNotifyBtn();
+}
+
+// --- cross-instrument event feed (/api/events): fills, SL/target exits, broker errors,
+// fresh triggers on ANY watched instrument. Notifies once per event id.
+let _lastEventId = Number(localStorage.getItem("lastEventId") || 0);
+const _EVENT_ICON = { trigger: "🔔", order_placed: "🟢", order_filled: "✅", order_failed: "🛑",
+                      position_exit: "🏁", exit_failed: "🛑", auto_flatten: "🔁", kill_switch: "⚡" };
+
+async function fetchEvents() {
+  try {
+    const r = await fetch(`/api/events?since=${_lastEventId}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    const evs = d.events || [];
+    for (const ev of evs) {
+      _lastEventId = Math.max(_lastEventId, ev.id || 0);
+      // money-at-risk events always notify; plain triggers notify too (that's the point)
+      notifyEvent(ev.kind, `${_EVENT_ICON[ev.kind] || "•"} ${ev.symbol || ""} ${ev.kind}`, ev.text);
+    }
+    if (evs.length) {
+      localStorage.setItem("lastEventId", String(_lastEventId));
+      renderEventFeed(evs);
+    }
+  } catch (e) { /* network blip — retry next poll */ }
+}
+
+let _eventLog = [];
+function renderEventFeed(newEvents) {
+  _eventLog = (_eventLog.concat(newEvents)).slice(-12);
+  const el = $("eventFeed");
+  if (!el) return;
+  el.hidden = false;
+  el.innerHTML = "<b class='small muted'>Events</b>" + _eventLog.slice().reverse().map((e) =>
+    `<div class="evrow ${e.kind}"><span class="muted">${(e.ts || "").slice(11, 19)}</span> `
+    + `${_EVENT_ICON[e.kind] || "•"} ${e.symbol ? `<b>${e.symbol}</b> ` : ""}${e.text}</div>`).join("");
 }
 
 // Live pending-trigger inbox: poll today's undecided triggers, alert on a new one.
 async function fetchPending() {
   try {
-    const d = await (await fetch(`/api/pending?symbol=${sym()}`)).json();
+    const d = await getJson(`/api/pending?symbol=${sym()}`);
     renderPending(d.rows || [], d.count || 0);
-  } catch (e) { /* keep last */ }
+  } catch (e) { /* transient — the inbox keeps its last rows; the poll dot shows errors */ }
 }
 
 let _pendingRows = [];                               // last inbox rows (for the stock 💬 lookup)
@@ -1205,7 +1483,8 @@ function discussStock(key) {
 }
 // NIFTY-50 breadth: advance/decline tally + top-20 heavyweights' contribution to the index.
 async function fetchBreadth() {
-  try { renderBreadth(await (await fetch("/api/breadth")).json()); } catch (e) { /* keep last */ }
+  try { renderBreadth(await getJson("/api/breadth")); }
+  catch (e) { panelErr("breadthTally", "breadth: " + e.message); }
 }
 
 function renderBreadth(d) {
@@ -1237,6 +1516,7 @@ function renderBreadth(d) {
 // Switch the whole cockpit to an instrument (index dropdown OR a scanner stock).
 function focusInstrument(symbolName) {
   currentSymbol = symbolName;
+  _ticketTouched = false; _ticketTs = null;          // fresh instrument → fresh ticket
   _trigDate = null; _trigPage = 0; _triggers = []; currentHead = null;
   _pcrDay = "all"; _pcrDays = [];                  // PCR history follows the active instrument
   _mrDay = "all"; _mrDays = []; _mrRows = [];      // market reads follow the active instrument
@@ -1316,6 +1596,13 @@ $("analysisModal").addEventListener("click", (e) => { if (e.target.dataset.close
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("analysisModal").hidden) closeAnalysisModal(); });
 document.querySelectorAll("#stratTabs button").forEach((b) =>
   b.addEventListener("click", () => setStrat(b.dataset.strat)));
+// order-ticket edits arm the don't-clobber guard (any field, incl. the strike override)
+["otType", "otPrice", "otQty", "otMax", "otSl", "otTarget", "otTsl", "otStrike", "otStrikeCustom"]
+  .forEach((id) => { const el = $(id); if (el) el.addEventListener("input", () => { _ticketTouched = true; }); });
+$("notifyBtn").onclick = toggleNotify;
+$("execChip").onclick = toggleKillSwitch;
+$("trigToday").onclick = () => { _trigDate = null; _trigPage = 0; fetchTable(); };
+refreshNotifyBtn();
 wireChartUI(fetchChart);          // timeframe buttons + ⚙ indicator panel (chart.js)
 poll(); setInterval(poll, POLL_MS);
 refreshTokenStatus(); setInterval(refreshTokenStatus, 60000);   // token prefill + connection state

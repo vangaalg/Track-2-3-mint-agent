@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from analysis.proposal import TradeProposal, Recommendation
@@ -131,3 +133,46 @@ def test_breeze_broker_parses_rejection():
                                  max_amount=10_000, share_price=2500.0)
     res = broker.place_exit(o)
     assert res.status == "rejected" and "insufficient" in res.message
+
+
+def test_breeze_broker_rebuilds_client_on_token_rotation(monkeypatch):
+    """The daily 🔑 token refresh rotates the env token — the broker must REBUILD its
+    session client, not keep serving the dead one (every order after rotation errored)."""
+    built = []
+    def factory():
+        built.append(os.environ.get("BREEZE_SESSION_TOKEN"))
+        return _FakeBreeze()
+    monkeypatch.setenv("BREEZE_SESSION_TOKEN", "tok1")
+    broker = breeze_exec.BreezeBroker(client_factory=factory)
+    o = breeze_exec.build_orders(_enter_proposal(), segment="option", lot_size=65)
+    broker.place_entry(o)
+    assert built == ["tok1"]
+    broker.place_entry(o)                     # same token → same client, no rebuild
+    assert built == ["tok1"]
+    monkeypatch.setenv("BREEZE_SESSION_TOKEN", "tok2")   # daily refresh
+    broker.place_entry(o)
+    assert built == ["tok1", "tok2"]          # rebuilt with the fresh session
+
+
+def test_breeze_broker_probe(monkeypatch):
+    class _Funds(_FakeBreeze):
+        def get_funds(self):
+            return {"Success": {"cash": 1}}
+    broker = breeze_exec.BreezeBroker(client=_Funds())
+    assert broker.probe().status == "placed"
+    class _Dead(_FakeBreeze):
+        def get_funds(self):
+            raise RuntimeError("session expired")
+    broker2 = breeze_exec.BreezeBroker(client=_Dead())
+    p = broker2.probe()
+    assert p.status == "error" and "expired" in p.message
+
+
+def test_build_orders_symbol_override_uses_breeze_code():
+    """Bank Nifty trades on Breeze as CNXBAN, not the cockpit's BANKNIFTY."""
+    o = breeze_exec.build_orders(_enter_proposal(), segment="option", lot_size=30,
+                                 symbol="CNXBAN")
+    assert o.symbol == "CNXBAN" and o.strike_price is not None
+    oe = breeze_exec.build_orders(_enter_proposal(), segment="equity",
+                                  max_amount=10_000, share_price=2500.0, symbol="M&M")
+    assert oe.symbol == "M&M"

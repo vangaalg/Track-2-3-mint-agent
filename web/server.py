@@ -90,7 +90,45 @@ _STRAT = {s["id"]: s for s in STRATEGIES}
 # Live placement needs ALL of: per-trade `live` toggle, EXECUTION_LIVE==1 env, BROKER set,
 # and (this phase) strategy=="trade1". Stocks buy equity (CNC) capped at STOCK_MAX_AMOUNT.
 BROKER = None
+# Factory used by _ensure_broker to lazily build the real broker once EXECUTION_LIVE=1.
+# Injectable in tests; None → the real BreezeBroker. Kept separate from BROKER so a fake
+# broker injected directly still wins.
+BROKER_FACTORY = None
 LIVE_STRATEGIES = {"trade1"}                                # which strategies may go live
+
+
+def _ensure_broker():
+    """Lazily arm the broker when EXECUTION_LIVE=1 and none is injected yet.
+
+    Fixes the boot-order trap: broker injection used to happen ONLY at service boot, so
+    setting EXECUTION_LIVE later (or via the kill-switch) could never arm. The env var
+    stays the master gate — this never arms while it's off."""
+    global BROKER
+    if BROKER is None and os.environ.get("EXECUTION_LIVE") == "1":
+        try:
+            if BROKER_FACTORY is not None:
+                BROKER = BROKER_FACTORY()
+            else:
+                from execution.breeze_exec import BreezeBroker
+                BROKER = BreezeBroker()
+        except Exception:
+            BROKER = None
+    return BROKER
+
+
+def execution_status() -> dict:
+    """The cockpit's execution armed/disarmed truth, with the reason when off."""
+    live_env = os.environ.get("EXECUTION_LIVE") == "1"
+    armed = bool(live_env and BROKER is not None)
+    if armed:
+        reason = None
+    elif not live_env:
+        reason = "EXECUTION_LIVE is not set to 1 on the server"
+    else:
+        reason = "broker not initialised (creds/token missing?)"
+    return {"armed": armed, "live_env": live_env,
+            "broker": (getattr(BROKER, "name", None) if BROKER is not None else None),
+            "live_strategies": sorted(LIVE_STRATEGIES), "reason": reason}
 STOCK_MAX_AMOUNT = float(os.environ.get("STOCK_MAX_AMOUNT", "10000"))
 # "Value-for-money" strike rule: time value <= this fraction of premium (10% default).
 STRIKE_MAX_PCT = float(os.environ.get("STRIKE_MAX_PCT", "0.10"))
@@ -105,6 +143,43 @@ SCAN_PACE_S = float(os.environ.get("SCAN_PACE_S", "0.3"))
 SCAN_SYMBOLS = [s.strip().upper() for s in os.environ.get("SCAN_SYMBOLS", "").split(",") if s.strip()]
 AFTER_WRITE = None   # optional hook: deploy wrapper sets it to push the journal repo
 _STATIC = Path(__file__).parent / "static"
+
+# --- event feed (cross-instrument ring) + phone push ------------------------ #
+# Everything the trader must not miss lands here: fresh HEAD triggers, order fills,
+# SL/target/TSL exits, broker rejections, auto-flattens, token problems. The frontend
+# polls /api/events to beep + browser-notify; Telegram (feeds.notify) pushes the same
+# events to the phone when TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID are set (else no-op).
+from collections import deque as _deque
+from feeds import notify as _notify
+
+_EVENTS: _deque = _deque(maxlen=80)
+_EVENT_SEQ = {"n": 0}
+_TELEGRAM_FN = None            # cached telegram sender (rebuilt when env changes is not needed)
+_PUSHED_TRIGGERS: set = set()  # (symbol, strategy, ts) already pushed — no repeat pings
+
+
+def _telegram():
+    global _TELEGRAM_FN
+    if _TELEGRAM_FN is None:
+        _TELEGRAM_FN = _notify.telegram_from_env() or False   # False = checked, disabled
+    return _TELEGRAM_FN or None
+
+
+def _push_event(kind: str, symbol: str, text: str, *, push: bool = True) -> dict:
+    """Append one event to the ring (frontend notification feed) and best-effort push it
+    to Telegram. Never raises."""
+    _EVENT_SEQ["n"] += 1
+    ev = {"id": _EVENT_SEQ["n"], "ts": datetime.now().isoformat(timespec="seconds"),
+          "kind": kind, "symbol": (symbol or "").upper(), "text": text}
+    _EVENTS.append(ev)
+    if push:
+        try:
+            fn = _telegram()
+            if fn:
+                fn(f"[{ev['symbol']}] {text}")
+        except Exception:
+            pass
+    return ev
 
 # --- injectable seams (overridden in tests) -------------------------------- #
 def _default_pull(symbol: str):
@@ -190,6 +265,17 @@ def _st(symbol: str | None = None) -> dict:
     if s is None:
         s = _states[sym] = _new_state()
     return s
+
+
+def _mark_actioned(strategy: str, ts: str, action: str) -> None:
+    """Record a decided trigger in memory AND the journal store, so a restart doesn't
+    resurrect it (phantom inbox refill / re-beeps / Claude re-reads)."""
+    sym = _active.get().upper()
+    _st()["actioned"][(strategy, ts)] = action
+    try:
+        store.save_actioned(sym, strategy, ts, action, path=JOURNAL_DB)
+    except Exception:
+        pass
 
 
 # back-compat: the default NIFTY state object (tests mutate it in place via .update)
@@ -286,9 +372,10 @@ def _refresh(symbol: str, size: int) -> None:
                                                 buildup=_st().get("buildup"),
                                                 root=OI_SUMMARY_ROOT)
                 _st()["oi_logged_at"] = _st()["oi_at"]
-            except Exception:
-                pass
+            except Exception as exc:
+                snap.notes.append(f"oi log failed: {exc}")   # surfaced in diagnostics, not silent
         _load_persisted_exits(symbol)   # restore manual exits from the durable store (survive restart)
+        _load_actioned(symbol)          # restore decided triggers (no phantom inbox after restart)
         for s in STRATEGIES:        # cache today's triggers per strategy (throttled)
             _st()["queues"][s["id"]] = _apply_exits(
                 s["id"], _strategy_queue(s["id"], snap, size, lot_size=inst["lot_size"]))
@@ -311,8 +398,12 @@ def _oi_buildup(symbol: str, chain, spot, ts):
         summary = summarise_chain(chain, spot)
         rev = reversal_levels(summary, offsets_for(get_instrument(symbol), spot), sig)
         return sig, tbl, rev
-    except Exception:
-        return oi_buildup.buildup_signal(None, spot or 0.0), None, None
+    except Exception as exc:
+        # A COMPUTATION failure must not masquerade as "not enough history yet" — flag it
+        # so the panel can say "buildup error", distinct from the honest empty state.
+        sig = oi_buildup.buildup_signal(None, spot or 0.0)
+        sig["error"] = str(exc)
+        return sig, None, None
 
 
 def _scale_rupee(prop, lot_size: int) -> None:
@@ -399,6 +490,22 @@ def _apply_exits(sid: str, queue: dict) -> dict:
     return queue
 
 
+def _load_actioned(symbol: str) -> None:
+    """Seed the in-memory actioned set from the durable store (once per state) so decided
+    triggers stay decided across a Railway restart — no phantom pending inbox, no re-beeps,
+    no Claude re-reads. In-session decisions (already in memory) are never clobbered."""
+    st = _st()
+    if st.get("actioned_loaded"):
+        return
+    st["actioned_loaded"] = True
+    try:
+        persisted = store.load_actioned(symbol.upper(), path=JOURNAL_DB)
+    except Exception:
+        return
+    for key, action in persisted.items():
+        st["actioned"].setdefault(key, action)
+
+
 def _load_persisted_exits(symbol: str) -> None:
     """Rebuild the manual-exit overlay from the DURABLE store so exits survive a restart.
 
@@ -461,11 +568,21 @@ def _recompute_heads() -> None:
         _st()["heads"][sid] = head
         if head is not None and (old or {}).get("ts") != head["ts"]:
             key = (sid, head["ts"])
+            sym = _active.get()
+            # fresh actionable trigger → event feed + phone push, once per (symbol,strategy,ts)
+            pkey = (sym, sid, head["ts"])
+            if pkey not in _PUSHED_TRIGGERS and head.get("direction") in ("long", "short"):
+                _PUSHED_TRIGGERS.add(pkey)
+                _push_event("trigger", sym,
+                            f"TRIGGER {sid} {head['direction'].upper()} @ {head.get('entry')} "
+                            f"({(head.get('ts') or '')[11:16]}) — review in the cockpit")
             if key not in _st()["reads"]:
                 try:
                     _run_head_read(sid, head)
-                except Exception:
-                    pass                          # never let a Claude error break the poll
+                except Exception as exc:          # surface instead of vanishing (was: pass)
+                    snap = _st().get("snap")
+                    if snap is not None:
+                        snap.notes.append(f"claude read failed ({sid}): {exc}")
 
 
 def _head_out(sid: str, h: dict | None) -> dict | None:
@@ -517,6 +634,10 @@ def _payload(symbol: str) -> dict:
         "instruments": instrument_list(), "symbol": symbol.upper(),
         # equity (NSE-50 stock, ₹-capped cash buy) vs option vehicle (index) — drives the ticket
         "is_stock": not get_instrument(symbol).get("primary"),
+        # LIVE-execution armed state + why it's off — drives the header EXEC chip. Cheap.
+        "execution": execution_status(),
+        # data ages so a stale chain can't masquerade as live (chain re-pulls every OI_TTL)
+        "oi_age_s": (round(time.time() - _st()["oi_at"]) if _st().get("oi_at") else None),
     }
 
 
@@ -1261,8 +1382,15 @@ def pending(size: int = DEFAULT_SIZE, symbol: str = "NIFTY"):
     occasional pull, never tokens."""
     prev = _active.get()
     index_rows: list[dict] = []
+    # primary indices ALWAYS + any focused (already-loaded) non-primary instruments — so a
+    # stock you pulled into the cockpit is watched too, not only scanner highlights.
+    watch = [{"id": i["id"], "label": i["label"], "kind": "index"} for i in instrument_list()]
+    primary_ids = {w["id"] for w in watch}
+    watch += [{"id": sym, "label": get_instrument(sym).get("label", sym), "kind": "stock"}
+              for sym, st_ in _states.items()
+              if sym not in primary_ids and st_.get("snap") is not None]
     try:
-        for inst in instrument_list():                 # primary indices only (NIFTY, BANKNIFTY)
+        for inst in watch:
             sym = inst["id"]
             try:
                 _refresh(sym, size)                    # TTL-cached; active = cache-hit; no Claude
@@ -1272,6 +1400,10 @@ def pending(size: int = DEFAULT_SIZE, symbol: str = "NIFTY"):
             snap = _st()["snap"]
             if snap is None:
                 continue
+            try:                                        # heads recompute → Claude read fills in
+                _recompute_heads()                      # (read-cached; once per new head)
+            except Exception:
+                pass
             sd = _session_dates(snap)
             sd = sd[0] if sd else None
             rows: list[dict] = []
@@ -1281,7 +1413,7 @@ def pending(size: int = DEFAULT_SIZE, symbol: str = "NIFTY"):
                 q = _apply_exits(s["id"], _strategy_queue(s["id"], snap, size, session_date=sd))
                 for r in q.get("triggers", []):
                     rows.append({**r, "strategy": s["id"], "strategy_label": s["label"],
-                                 "symbol": sym, "symbol_label": inst["label"], "kind": "index"})
+                                 "symbol": sym, "symbol_label": inst["label"], "kind": inst["kind"]})
             _enrich_trigger_rows(rows)                  # uses this instrument's cached reads/actioned
             index_rows += [r for r in rows if not r.get("actioned")]
     finally:
@@ -1307,8 +1439,9 @@ def pending(size: int = DEFAULT_SIZE, symbol: str = "NIFTY"):
 
     rows = index_rows + stock_rows
     rows.sort(key=lambda r: (not r.get("highlight"), r.get("ts") or ""))   # highlights first, then by ts
-    return {"rows": rows, "count": len(rows), "index_count": len(index_rows),
-            "stock_count": len(stock_rows), "scan_at": _SCAN.get("at")}
+    n_index = sum(1 for r in rows if r.get("kind") == "index")
+    return {"rows": rows, "count": len(rows), "index_count": n_index,
+            "stock_count": len(rows) - n_index, "scan_at": _SCAN.get("at")}
 
 
 @app.post("/api/reask")
@@ -1378,7 +1511,7 @@ def _record_exit(strategy: str, trig: dict, px: float, symbol: str, lot: int,
         log_decision(prop, "approved", execution={"status": status})
         rid = _save_context_for(prop, "approved", symbol, {"status": status})
         _st()["records"][key] = rid
-        _st()["actioned"][key] = "approved"
+        _mark_actioned(strategy, key[1], "approved")
     if rid is not None:
         store.update_outcome(rid, outcome, "good", _matrix("good", outcome["status"]),
                              path=JOURNAL_DB)
@@ -1405,6 +1538,9 @@ def _auto_flatten(strategy: str, symbol: str) -> dict | None:
         return None
     lot = get_instrument(symbol)["lot_size"]
     out = _record_exit(strategy, pos, snap.spot, symbol, lot, auto=True)
+    _push_event("auto_flatten", symbol,
+                f"AUTO-FLATTEN {strategy} {pos.get('direction')} @ {snap.spot} "
+                f"({out['points']:+.1f} pts) — new trigger replaces it", push=False)
     return {"ts": pos["ts"], "direction": pos.get("direction"),
             "points": out["points"], "exit": out["exit"]}
 
@@ -1426,7 +1562,8 @@ def _build_live_order(strategy: str, symbol: str, target: dict, prop, params: di
             prop, segment="equity", order_type=params.get("order_type", "market"),
             limit_price=params.get("limit_price"), quantity=None,
             max_amount=params.get("max_amount") or STOCK_MAX_AMOUNT,
-            share_price=(snap.spot if snap else None), client_tag=tag)
+            share_price=(snap.spot if snap else None), client_tag=tag,
+            symbol=inst["loader_symbol"])          # the BREEZE stock_code, not the UI symbol
     # Index option: the ticket's qty field is LOTS (default = conviction size_lots); convert to
     # contracts via lot_size. A trader-edited lot count overrides the proposal's sizing.
     lots = params.get("qty")
@@ -1437,7 +1574,8 @@ def _build_live_order(strategy: str, symbol: str, target: dict, prop, params: di
         prop, segment="option", order_type=params.get("order_type", "market"),
         limit_price=params.get("limit_price"), quantity=None,
         lot_size=inst["lot_size"], exchange=inst.get("exchange", "NFO"),
-        expiry_date=expiry, client_tag=tag)
+        expiry_date=expiry, client_tag=tag,
+        symbol=inst["loader_symbol"])              # BANKNIFTY orders as CNXBAN etc.
 
 
 def _execute_entry(strategy: str, symbol: str, target: dict, prop, live: bool,
@@ -1446,30 +1584,44 @@ def _execute_entry(strategy: str, symbol: str, target: dict, prop, live: bool,
     non-live strategies / stand-downs; idempotent per (strategy, ts)."""
     direction = target.get("direction")
     if not prop.is_enter or direction not in ("long", "short"):
-        return {"status": "logged (propose-only)"}
+        return {"status": "logged (propose-only)", "reason": "proposal is not a directional ENTER"}
     if strategy not in LIVE_STRATEGIES:          # this phase: trade1 only
-        return {"status": "logged (propose-only)"}
+        return {"status": "logged (propose-only)",
+                "reason": f"{strategy} is propose-only (live: {', '.join(sorted(LIVE_STRATEGIES))})"}
     is_stock = not get_instrument(symbol).get("primary")
     if is_stock and direction != "long":
-        return {"status": "rejected", "reason": "stocks are long-only"}
+        return {"status": "rejected", "reason": "stocks are long-only (equity cash buy)"}
     key = (strategy, target["ts"])
     prior = _st()["live_orders"].get(key)        # idempotency: never double-send a trigger
-    if prior:
-        return {"status": "placed", "broker_order_id": prior, "idempotent": True}
+    if prior:                                     # honest: no broker call happened NOW
+        return {"status": "duplicate", "broker_order_id": prior, "idempotent": True,
+                "reason": "this trigger was already sent to the broker"}
     try:
         order = _build_live_order(strategy, symbol, target, prop, params)
     except Exception as exc:
         return {"status": "error", "message": f"order build failed: {exc}"}
     order_d = asdict(order)
-    gated = (live and os.environ.get("EXECUTION_LIVE") == "1" and BROKER is not None)
-    if not gated:
-        return {"status": "dry_run", "order": order_d}
+    _ensure_broker()                              # lazily arm if EXECUTION_LIVE=1 (post-boot safe)
+    if not live:
+        return {"status": "dry_run", "reason": "LIVE was not ticked on the ticket", "order": order_d}
+    if os.environ.get("EXECUTION_LIVE") != "1":
+        return {"status": "dry_run", "reason": "EXECUTION_LIVE is not set to 1 on the server "
+                                               "(add it on Railway and redeploy)", "order": order_d}
+    if BROKER is None:
+        return {"status": "dry_run", "reason": "broker not initialised — check Breeze creds/token",
+                "order": order_d}
     res = BROKER.place_entry(order)
     out = {"status": res.status, "broker_order_id": res.broker_order_id,
            "order": order_d, "message": res.message, "broker": dict(res.raw or {})}
     if res.status == "placed":
         _st()["live_orders"][key] = res.broker_order_id or f"{strategy}:{target['ts']}"
         _open_live_position(strategy, symbol, target, prop, order, res, params)
+        _push_event("order_placed", symbol,
+                    f"ORDER PLACED {strategy} {direction} {order.quantity} @ market "
+                    f"({prop.vehicle or symbol}) id {res.broker_order_id or '—'}")
+    else:
+        _push_event("order_failed", symbol,
+                    f"ORDER {res.status.upper()} {strategy} {direction}: {res.message or 'no detail'}")
     return out
 
 
@@ -1521,6 +1673,9 @@ def _fire_live_exit(symbol: str, strategy: str, pos: dict, price: float, reason:
         res = BROKER.place_exit(Order(**eo))
         broker_state = res.status
         if res.status not in ("placed",):
+            _push_event("exit_failed", symbol,
+                        f"EXIT FAILED ({reason}) {strategy}: {res.message or res.status} — "
+                        "position still OPEN, manage manually")
             return {"status": res.status, "message": res.message}   # leave the position open
         if res.avg_price:
             price = res.avg_price
@@ -1535,6 +1690,10 @@ def _fire_live_exit(symbol: str, strategy: str, pos: dict, price: float, reason:
         store.close_live_position(symbol.upper(), strategy, pos["ts"], path=JOURNAL_DB)
     except Exception:
         pass
+    pts = (outcome or {}).get("points")
+    _push_event("position_exit", symbol,
+                f"EXIT {reason.upper()} {strategy} @ {round(price, 2)}"
+                + (f" · {pts:+.1f} pts" if isinstance(pts, (int, float)) else ""))
     return {"status": "placed" if broker_state == "placed" else "exited",
             "reason": reason, "outcome": outcome}
 
@@ -1566,6 +1725,9 @@ def _exit_monitor_tick(states: dict, broker, price_fn) -> list[dict]:
                         pos["entry_filled"] = True
                         if res.avg_price:
                             pos["entry"] = res.avg_price
+                        _push_event("order_filled", symbol,
+                                    f"FILLED {strategy} {pos.get('direction')} "
+                                    f"{res.filled_qty} @ {res.avg_price or pos.get('entry')}")
                 continue
             price = price_fn(symbol)
             if price is None:
@@ -1648,10 +1810,23 @@ def order_status(symbol: str = "NIFTY", strategy: str = "trade1"):
 def kill_switch(on: bool = Form(...)):
     """Master execution switch. ``on=false`` → every new order is dry-run (the monitor still
     MANAGES/closes open positions — never strands one). ``on=true`` re-arms live placement
-    (still subject to the per-trade live toggle + an injected BROKER)."""
+    AND (fix) lazily initialises the broker if it wasn't injected at boot — previously a
+    service booted without EXECUTION_LIVE could never be armed without a redeploy."""
     os.environ["EXECUTION_LIVE"] = "1" if on else "0"
-    return {"execution_live": os.environ.get("EXECUTION_LIVE"),
-            "broker": (BROKER.name if BROKER is not None else None)}
+    if on:
+        _ensure_broker()
+    _push_event("kill_switch", "", f"execution {'ARMED' if on else 'DISARMED'} via kill-switch",
+                push=False)
+    return {"execution_live": os.environ.get("EXECUTION_LIVE"), **execution_status()}
+
+
+@app.get("/api/events")
+def events_get(since: int = 0):
+    """The cross-instrument event feed (fresh triggers, fills, SL/target exits, broker
+    errors, token problems). ``since`` = last seen event id; returns only newer ones so the
+    frontend can beep/notify exactly once per event."""
+    rows = [e for e in _EVENTS if e["id"] > since]
+    return {"events": rows, "last_id": (_EVENT_SEQ["n"])}
 
 
 @app.post("/api/analyse")
@@ -1775,7 +1950,7 @@ def decision(action: str = Form(...), live: bool = Form(False), symbol: str = Fo
     if key in _st()["actioned"]:
         raise HTTPException(status_code=409, detail="trigger already actioned")
     if action == "skip":                              # silent — no journal, no execution
-        _st()["actioned"][key] = "skipped"
+        _mark_actioned(strategy, key[1], "skipped")
         return {"status": "skipped", "next_head": _advance_head(strategy)}
     params = _order_params(order_type, limit_price, qty, sl, target_px, tsl, max_amount, strike)
     return _record_decision(strategy, target, action, symbol=symbol, label=label,
@@ -1858,15 +2033,17 @@ def _record_decision(strategy: str, target: dict, action: str, *, symbol: str,
         result = _execute_entry(strategy, symbol, target, prop, live, params or {})
         rec = log_decision(prop, "approved", execution=result)
         _st()["records"][key] = _save_context_for(prop, "approved", symbol, result, label=label)
-        _st()["actioned"][key] = "approved"
+        _mark_actioned(strategy, key[1], "approved")
         if is_head:
             _st()["position"][strategy] = dict(target)   # the new open position for this strategy
         return {"status": result.get("status"), "logged": rec["decision"],
                 "broker_order_id": result.get("broker_order_id"),
+                # WHY it didn't place (gate reason / build+broker message) — the trader must see this
+                "reason": result.get("reason"), "message": result.get("message"),
                 "auto_exit": flat, "next_head": _advance_head(strategy)}
     rec = log_decision(prop, "rejected")
     _save_context_for(prop, "rejected", symbol, None, label=label)
-    _st()["actioned"][key] = "rejected"
+    _mark_actioned(strategy, key[1], "rejected")
     return {"status": "rejected", "logged": rec["decision"],
             "next_head": _advance_head(strategy)}
 

@@ -16,6 +16,10 @@
       <a class="navlink" href="/train">🎮 Training</a>
       <button id="mktBtn" class="btn primary" type="button"
               title="Ask Claude for the current market view (chart + OI + macro) — no trigger needed">🔍 Market view</button>
+      <button id="notifyBtn" type="button"
+              title="Enable sound + browser notifications for fresh triggers and live-order events">🔕</button>
+      <button id="execChip" type="button" class="execchip off"
+              title="LIVE execution state — click to arm/disarm (kill switch)">⚪ EXEC OFF</button>
       <button id="tokenBtn" type="button" title="Set today's Breeze session token">🔑 Token</button>
       <span id="dot" class="dot"></span>
       <span id="meta" class="muted">connecting…</span>
@@ -29,6 +33,12 @@
     <button id="tokenSave" type="button">Save</button>
     <span id="tokenMsg" class="muted"></span>
   </div>
+
+  <!-- Live pending-trigger inbox: FIRST — the most time-critical panel on the page -->
+  <section class="card" id="pendingCard" hidden>
+    <h2 id="pendingHdr">🔔 Pending triggers — decide each</h2>
+    <div class="tablewrap"><table id="pendingTbl"></table></div>
+  </section>
 
   <!-- NSE-50 scanner: highlight a stock when 3-min trigger + OI + Claude all agree -->
   <section class="card" id="scanCard">
@@ -59,12 +69,6 @@
       <span id="breadthTally" class="muted small">—</span>
     </div>
     <div class="tablewrap"><table id="breadthTbl"></table></div>
-  </section>
-
-  <!-- Live pending-trigger inbox: each fresh trigger is HELD here until you decide it -->
-  <section class="card" id="pendingCard" hidden>
-    <h2 id="pendingHdr">🔔 Pending triggers — decide each</h2>
-    <div class="tablewrap"><table id="pendingTbl"></table></div>
   </section>
 
   <!-- Price candlestick + indicators (TradingView Lightweight Charts) -->
@@ -197,6 +201,8 @@
       </div>
       <!-- Open LIVE position: fill state + live trailing stop + manual square-off -->
       <div id="livePos" class="livepos" hidden></div>
+      <!-- Cross-instrument event feed: fills, SL/target exits, broker errors, fresh triggers -->
+      <div id="eventFeed" class="eventfeed" hidden></div>
       <div id="decisionMsg" class="muted small"></div>
       <div id="claudeBlock">
         <button id="analyseBtn" class="btn primary">🤖 Analyse with Claude</button>
@@ -220,6 +226,7 @@
     <h2 id="trigTitle">📛 Triggers — if you'd traded each</h2>
     <div class="row trigctrls">
       <label class="small muted">Day <select id="trigDate"></select></label>
+      <button id="trigToday" class="btn csv" type="button" title="Jump to today's session">Today</button>
       <label class="small muted">Strategy <select id="trigStrat"></select></label>
     </div>
     <div id="trigLast" class="trig-last">—</div>
@@ -247,8 +254,7 @@
     <div class="row trigctrls">
       <label class="small muted">Day <select id="logDay"><option value="all">All days</option></select></label>
       <label class="small muted">Strategy <select id="logStrat">
-        <option value="all">All</option><option value="trade1">3-min</option>
-        <option value="cpr_st">CPR-ST</option><option value="orb">ORB</option></select></label>
+        <option value="all">All</option></select></label>
       <span id="logCount" class="small muted">—</span>
       <a id="logCsv" class="btn csv" title="Download every trigger + Claude rationale as CSV (Excel)">⬇ CSV</a>
     </div>

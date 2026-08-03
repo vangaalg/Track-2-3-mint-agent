@@ -275,3 +275,36 @@ td.conf { font-weight:600; white-space:nowrap; }
 #buScanTbl tr.nodata td { color:var(--muted); }
 #buScanTbl .ext { color:var(--muted); font-size:11px; }
 .btn.mini { padding:1px 8px; font-size:11px; }
+
+/* --- dashboard overhaul: exec chip, notifications, event feed, error lines, mobile --- */
+.execchip { font-size:11px; font-weight:700; padding:3px 8px; border-radius:6px;
+  border:1px solid var(--line); background:var(--tile); color:var(--muted); cursor:pointer; }
+.execchip.armed { background:var(--red); border-color:var(--red); color:#fff; }
+#notifyBtn { font-size:13px; }
+.fetch-err { color:var(--red); font-size:11px; font-weight:600; }
+.decmsg.ok { color:var(--green); font-weight:600; }
+.decmsg.err { color:var(--red); font-weight:600; }
+.decmsg.warn2 { color:var(--amber); font-weight:600; }
+.eventfeed { margin:8px 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+  background:var(--tile); font-size:12px; max-height:150px; overflow:auto; }
+.eventfeed .evrow { padding:2px 0; border-top:1px dashed var(--line); }
+.eventfeed .evrow:first-of-type { border-top:none; }
+.eventfeed .evrow.order_failed, .eventfeed .evrow.exit_failed { color:var(--red); font-weight:600; }
+.eventfeed .evrow.position_exit { color:var(--amber); }
+
+/* header wraps instead of crushing everything onto one phone-width line */
+header { flex-wrap:wrap; gap:6px; }
+.status { flex-wrap:wrap; }
+
+/* tables scroll sideways on narrow screens instead of clipping */
+.tablewrap { overflow-x:auto; }
+.orderticket input[type=number] { max-width:96px; width:auto; }
+
+/* phone breakpoint: stack, larger tap targets, visible glyph-button padding */
+@media (max-width:700px) {
+  .grid { grid-template-columns:1fr; }
+  .btn { padding:6px 10px; }
+  .trigact .btn { padding:6px 9px; font-size:13px; }
+  .orderticket .otrow { flex-wrap:wrap; }
+  .modal-card { width:96vw; }
+}

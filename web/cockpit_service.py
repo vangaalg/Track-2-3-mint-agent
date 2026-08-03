@@ -306,23 +306,25 @@ def _start_background() -> None:
     if os.environ.get("SCAN_STOCKS", "1") != "0":
         threading.Thread(target=_scanner_thread, daemon=True).start()
         STATUS["scanner"] = "running"
-    # LIVE execution: when armed, inject the Breeze broker into the seam, reconcile persisted
-    # open positions vs the broker, then run the exit monitor. Only when EXECUTION_LIVE=1 so
-    # dry-run deploys never place anything.
-    if os.environ.get("EXECUTION_LIVE") == "1" and server.BROKER is None:
-        try:
-            from execution.breeze_exec import BreezeBroker
-            server.BROKER = BreezeBroker()
-            STATUS["broker"] = "breeze"
-        except Exception as exc:
-            STATUS["broker"] = f"error: {exc}"
+    # LIVE execution: when armed, inject the Breeze broker into the seam (shared lazy path —
+    # the kill-switch / a later env change can also arm via server._ensure_broker), reconcile
+    # persisted open positions vs the broker, then run the exit monitor. Only when
+    # EXECUTION_LIVE=1 so dry-run deploys never place anything. STATUS always carries the
+    # armed/disarmed truth (never an absent key that reads as nothing).
+    server._ensure_broker()
     if os.environ.get("EXECUTION_LIVE") == "1" and server.BROKER is not None:
+        STATUS["broker"] = getattr(server.BROKER, "name", "broker")
         try:
             STATUS["reconcile"] = server._reconcile_live_positions()
         except Exception as exc:
             STATUS["reconcile"] = f"error: {exc}"
         threading.Thread(target=_exit_monitor_thread, daemon=True).start()
         STATUS["exit_monitor"] = "running"
+    else:
+        STATUS["broker"] = ("error: broker init failed"
+                            if os.environ.get("EXECUTION_LIVE") == "1" else "off")
+        STATUS["exit_monitor"] = "off"
+    STATUS["execution"] = "armed" if server.execution_status()["armed"] else "off"
 
 
 server.AFTER_WRITE = _push_journal               # push the journal on each decision

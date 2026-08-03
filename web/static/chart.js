@@ -228,13 +228,20 @@ function renderLW(d) {
     up(LW.macdL, "macd"); up(LW.sigL, "signal"); up(LW.rsi, "rsi");
     redrawCpr();           // keep CPR price-lines current on same-TF polls (not just full redraws)
   }
-  // triggers are 3-min signals — only mark them on the 3m chart
-  LW.candle.setMarkers(chartTF === "3min" ? _triggers.map((tg) => ({
-    time: _lwTime(tg.ts), position: tg.direction === "long" ? "belowBar" : "aboveBar",
-    color: ({ win: "#26a69a", loss: "#ef5350", open: "#2962ff" }[tg.outcome] || "#2962ff"),
-    shape: tg.direction === "long" ? "arrowUp" : "arrowDown",
-    text: `${tg.direction[0].toUpperCase()} ${tg.outcome}`,
-  })) : []);
+  // Triggers are 3-min signals; mark them on the 3m chart exactly, and on 1m/15m by
+  // snapping each ts to the bar that CONTAINS it (floor to the TF bucket). Higher TFs
+  // (1h/1d/1w) stay unmarked — a 3-min arrow on a daily candle is noise.
+  const bucketS = { "1min": 60, "3min": 180, "15min": 900 }[chartTF];
+  LW.candle.setMarkers(bucketS ? _triggers.map((tg) => {
+    const t = _lwTime(tg.ts);
+    return {
+      time: (typeof t === "number") ? Math.floor(t / bucketS) * bucketS : t,
+      position: tg.direction === "long" ? "belowBar" : "aboveBar",
+      color: ({ win: "#26a69a", loss: "#ef5350", open: "#2962ff" }[tg.outcome] || "#2962ff"),
+      shape: tg.direction === "long" ? "arrowUp" : "arrowDown",
+      text: `${tg.direction[0].toUpperCase()} ${tg.outcome}`,
+    };
+  }) : []);
 }
 
 // Wipe the chart (used when switching instruments) so stale data never lingers and the next

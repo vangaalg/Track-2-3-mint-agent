@@ -1257,6 +1257,128 @@ def test_kill_switch_forces_dry_run(client, monkeypatch):
     assert r.json()["status"] == "dry_run" and fb.entries == []
 
 
+def test_dry_run_reasons_explain_each_gate(client, monkeypatch):
+    """Every non-placed outcome carries WHY — the old collapsed gate returned an
+    unexplained dry_run for three different causes (the trader's exact complaint)."""
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    # 1) armed but LIVE unticked
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1", "ts": _ETS})
+    j = r.json()
+    assert j["status"] == "dry_run" and "LIVE" in j["reason"]
+
+    # 2) LIVE ticked but EXECUTION_LIVE unset
+    monkeypatch.delenv("EXECUTION_LIVE", raising=False)
+    monkeypatch.setattr(srv, "BROKER", None)
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts="2024-01-01T09:21:00+05:30")])
+    srv._st("NIFTY")["snap_at"] = 0.0                      # force the queue cache to rebuild
+    client.get("/api/snapshot")
+    r2 = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                            "ts": "2024-01-01T09:21:00+05:30", "live": "true"})
+    j2 = r2.json()
+    assert j2["status"] == "dry_run" and "EXECUTION_LIVE" in j2["reason"]
+
+    # 3) env armed but the broker can't initialise (bad creds) → no_broker reason
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    monkeypatch.setattr(srv, "BROKER", None)
+    monkeypatch.setattr(srv, "BROKER_FACTORY",
+                        lambda: (_ for _ in ()).throw(RuntimeError("no creds")))
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts="2024-01-01T09:24:00+05:30")])
+    srv._st("NIFTY")["snap_at"] = 0.0
+    client.get("/api/snapshot")
+    r3 = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                            "ts": "2024-01-01T09:24:00+05:30", "live": "true"})
+    j3 = r3.json()
+    assert j3["status"] == "dry_run" and "broker" in j3["reason"].lower()
+
+    # 4) a non-live strategy says WHICH strategies can go live
+    _seed_heads(monkeypatch, sid="cpr_st", trigs=[_open_trig(ts="2024-01-01T09:27:00+05:30")])
+    srv._st("NIFTY")["snap_at"] = 0.0
+    client.get("/api/snapshot")
+    r4 = client.post("/api/decision", data={"action": "approve", "strategy": "cpr_st",
+                                            "ts": "2024-01-01T09:27:00+05:30", "live": "true"})
+    assert "propose-only" in r4.json()["status"] and "trade1" in (r4.json()["reason"] or "")
+
+
+def test_snapshot_carries_execution_status(client, monkeypatch):
+    monkeypatch.delenv("EXECUTION_LIVE", raising=False)
+    monkeypatch.setattr(srv, "BROKER", None)
+    d = client.get("/api/snapshot").json()
+    ex = d["execution"]
+    assert ex["armed"] is False and "EXECUTION_LIVE" in ex["reason"]
+    # armed: env + broker present
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    monkeypatch.setattr(srv, "BROKER", FakeBroker())
+    srv._st("NIFTY")["snap_at"] = 0                       # force payload rebuild
+    d2 = client.get("/api/snapshot").json()
+    assert d2["execution"]["armed"] is True and d2["execution"]["broker"] == "fake"
+
+
+def test_kill_switch_arms_lazily_via_factory(client, monkeypatch):
+    """The old kill-switch set the env var but never injected a broker — a service booted
+    without EXECUTION_LIVE could never be armed without a redeploy."""
+    monkeypatch.delenv("EXECUTION_LIVE", raising=False)
+    monkeypatch.setattr(srv, "BROKER", None)
+    monkeypatch.setattr(srv, "BROKER_FACTORY", lambda: FakeBroker())
+    r = client.post("/api/kill-switch", data={"on": "true"})
+    j = r.json()
+    assert j["armed"] is True and j["broker"] == "fake"
+    r2 = client.post("/api/kill-switch", data={"on": "false"})
+    assert r2.json()["armed"] is False
+
+
+def test_events_feed_pushes_fresh_trigger(client, monkeypatch):
+    """A fresh HEAD trigger lands in /api/events (frontend beep/notify) AND goes to
+    Telegram (injected sender) exactly once; `since` filters already-seen events."""
+    srv._EVENTS.clear(); srv._PUSHED_TRIGGERS.clear()
+    sent = []
+    monkeypatch.setattr(srv, "_TELEGRAM_FN", lambda text: sent.append(text) or True)
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")                            # freezes the head → event + push
+    d = client.get("/api/events?since=0").json()
+    trig = [e for e in d["events"] if e["kind"] == "trigger"]
+    assert trig and trig[0]["symbol"] == "NIFTY" and "TRIGGER" in trig[0]["text"]
+    assert len(sent) == 1 and "TRIGGER" in sent[0]
+    client.get("/api/snapshot")                            # same head → no second push
+    assert len(sent) == 1
+    d2 = client.get(f"/api/events?since={d['last_id']}").json()
+    assert [e for e in d2["events"] if e["kind"] == "trigger"] == []
+
+
+def test_actioned_survives_restart(client, monkeypatch):
+    """A decided trigger stays decided after a simulated redeploy — no phantom inbox
+    refill, no re-frozen head (was in-memory only; CLAUDE.md open item)."""
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    r = client.post("/api/decision", data={"action": "reject", "strategy": "trade1", "ts": _ETS})
+    assert r.status_code == 200
+    # simulate restart: wipe the in-memory state for NIFTY (fresh process)
+    st = srv._st("NIFTY")
+    st.update(actioned={}, actioned_loaded=False, snap=None, snap_at=0.0, heads={}, queues={},
+              reads={}, records={})
+    client.get("/api/snapshot")                            # refresh reloads from the store
+    assert srv._st("NIFTY")["actioned"].get(("trade1", _ETS)) == "rejected"
+    # and a re-decision is still blocked
+    r2 = client.post("/api/decision", data={"action": "approve", "strategy": "trade1", "ts": _ETS})
+    assert r2.status_code == 409
+
+
+def test_duplicate_send_reports_duplicate_not_placed(client, monkeypatch):
+    """The idempotency hit used to answer 'placed' with NO broker call — a false positive."""
+    fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
+    monkeypatch.setenv("EXECUTION_LIVE", "1")
+    _enter_prop(monkeypatch); _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    srv._st("NIFTY")["live_orders"][("trade1", _ETS)] = "OID-PRIOR"   # already sent
+    r = client.post("/api/decision", data={"action": "approve", "strategy": "trade1",
+                                           "ts": _ETS, "live": "true"})
+    j = r.json()
+    assert j["status"] == "duplicate" and fb.entries == []
+    assert j["broker_order_id"] == "OID-PRIOR"
+
+
 def test_exit_monitor_tick_fires_on_stop(client, monkeypatch):
     fb = FakeBroker(); monkeypatch.setattr(srv, "BROKER", fb)
     monkeypatch.setenv("EXECUTION_LIVE", "1")
