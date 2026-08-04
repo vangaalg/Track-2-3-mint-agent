@@ -27,6 +27,7 @@ and runs the recorder + a git-sync loop in background threads. Data persists by 
 | `TWELVEDATA_API_KEY` | your Twelve Data key (macro; optional) |
 | `RECORDER_TOKEN_SECRET` | a password you choose — guards `POST /token` |
 | `DATA_REPO_URL` | `https://<PAT>@github.com/vangaalg/mint-data.git` |
+| `CLAUDE_AUTO_READ` | optional Claude SPEND control: `all` (default — auto-read every new trigger on every tab/instrument), `trade1` (auto-read only the live 3-min strategy), `off` (no auto-reads; 💬/Analyse on demand only). Triggers, notifications and execution are FREE and unaffected. |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |
 | `RECORDER_INSTRUMENTS` | optional, e.g. `NIFTY,BANKNIFTY` (default = enabled defaults) |
 | `RECORDER_STOCKS` | optional, `1` to also record the Nifty-50 stocks (hourly) |
@@ -118,6 +119,7 @@ intraday OI (which can't be backfilled). The journal still uses SQLite in the jo
 | `INDEX_EVERY_MIN` / `STOCK_EVERY_MIN` | optional recorder cadence knobs (default `15` / `60` min) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | optional — **FREE** phone push: fresh TRIGGERS, order fills/rejections, SL/target/TSL exits, and CLEAR OI-buildup leans. Unset = off. Get them in ~2 min: message **@BotFather** `/newbot` → the token; message **@userinfobot** → your numeric chat id; then DM your new bot once. |
 | `EXECUTION_LIVE` | **`1` (the literal string) to ARM live order placement.** Without it every approve is a dry-run — the header **EXEC chip** shows ⚪ OFF with the reason. Also needs the Breeze creds + today's token; each real order still needs the per-trade 🔴 LIVE tick + a confirm. The in-app kill-switch (click the EXEC chip) can arm/disarm at runtime. |
+| `CLAUDE_AUTO_READ` | optional Claude SPEND control: `all` (default — auto-read every new trigger on every tab/instrument), `trade1` (auto-read only the live 3-min strategy), `off` (no auto-reads; 💬/Analyse on demand only). Triggers, notifications and execution are FREE and unaffected. |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |
 | `SYNC_EVERY_MIN` | optional, data + journal push cadence, default `30` |
 

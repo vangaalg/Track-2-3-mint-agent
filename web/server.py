@@ -586,7 +586,21 @@ def _recompute_heads() -> None:
                 _push_event("trigger", sym,
                             f"TRIGGER {sid} {head['direction'].upper()} @ {head.get('entry')} "
                             f"({(head.get('ts') or '')[11:16]}) — review in the cockpit")
+            # Claude auto-read spend controls:
+            #   CLAUDE_AUTO_READ=all (default) — read every new head on every tab/instrument
+            #   CLAUDE_AUTO_READ=trade1        — only the live-executable strategy
+            #   CLAUDE_AUTO_READ=off           — never auto-read (💬/Analyse on demand only)
+            # Triggers + notifications are FREE and fire regardless of this knob.
+            mode = os.environ.get("CLAUDE_AUTO_READ", "all")
+            if mode == "off" or (mode == "trade1" and sid != "trade1"):
+                continue
             if key not in _st()["reads"]:
+                # restart guard: a PERSISTED read for this exact trigger means Claude already
+                # analysed it — reuse it instead of re-spending tokens after a redeploy
+                stored = _stored_reads().get(key)
+                if stored is not None:
+                    _st()["reads"][key] = stored
+                    continue
                 try:
                     _run_head_read(sid, head)
                 except Exception as exc:          # surface instead of vanishing (was: pass)

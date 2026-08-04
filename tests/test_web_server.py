@@ -1310,6 +1310,58 @@ def test_kill_switch_forces_dry_run(client, monkeypatch):
     assert r.json()["status"] == "dry_run" and fb.entries == []
 
 
+def _counting_completer(counter):
+    def fn(system, user):
+        counter.append(1)
+        return ClaudeRead(agrees_with_engine=True, chart_analysis="x", oi_analysis="x",
+                          where_moving="x", right_trade="x", challenge="x",
+                          recommendation="stand_down", confidence=3, key_risk="x")
+    return fn
+
+
+def test_claude_auto_read_off_saves_tokens_but_triggers_still_fire(client, monkeypatch):
+    """CLAUDE_AUTO_READ=off: no auto Claude call — but the trigger still freezes, notifies
+    and is decidable (spend control never silences the trigger flow)."""
+    calls = []
+    monkeypatch.setattr(srv, "READ_COMPLETER", _counting_completer(calls))
+    monkeypatch.setenv("CLAUDE_AUTO_READ", "off")
+    srv._EVENTS.clear(); srv._PUSHED_TRIGGERS.clear()
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    d = client.get("/api/snapshot").json()
+    assert calls == []                                        # zero Claude spend
+    assert d["heads"]["trade1"]["ts"] == _ETS                 # head still frozen
+    ev = client.get("/api/events?since=0").json()["events"]
+    assert any(e["kind"] == "trigger" for e in ev)            # notification still fired
+
+
+def test_claude_auto_read_trade1_only(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(srv, "READ_COMPLETER", _counting_completer(calls))
+    monkeypatch.setenv("CLAUDE_AUTO_READ", "trade1")
+    _seed_heads(monkeypatch, sid="cpr_st", trigs=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    assert calls == []                                        # cpr_st head NOT auto-read
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts="2024-01-01T09:30:00+05:30")])
+    srv._st("NIFTY")["snap_at"] = 0.0
+    client.get("/api/snapshot")
+    assert len(calls) == 1                                    # trade1 head IS read
+
+
+def test_restart_reuses_persisted_read_no_respend(client, monkeypatch):
+    """After a redeploy the current head's read is reloaded from the store, not re-bought."""
+    calls = []
+    monkeypatch.setattr(srv, "READ_COMPLETER", _counting_completer(calls))
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS)])
+    client.get("/api/snapshot")
+    assert len(calls) == 1                                    # first sight → one read, persisted
+    st = srv._st("NIFTY")                                     # simulate restart: wipe in-memory
+    st.update(reads={}, heads={}, snap=None, snap_at=0.0, stored_reads={}, stored_reads_at=0.0,
+              read_saved=set())
+    client.get("/api/snapshot")
+    assert len(calls) == 1                                    # reused from the store — no re-spend
+    assert srv._st("NIFTY")["reads"].get(("trade1", _ETS)) is not None
+
+
 def test_dry_run_reasons_explain_each_gate(client, monkeypatch):
     """Every non-placed outcome carries WHY — the old collapsed gate returned an
     unexplained dry_run for three different causes (the trader's exact complaint)."""
