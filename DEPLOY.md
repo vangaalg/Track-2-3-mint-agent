@@ -114,7 +114,8 @@ intraday OI (which can't be backfilled). The journal still uses SQLite in the jo
 | `DATA_REPO_URL` | the private data repo (OI store + token) — this service READS and WRITES it |
 | `JOURNAL_REPO_URL` | a **separate** private repo for the journal, `https://<PAT>@github.com/vangaalg/mint-journal.git` (must DIFFER from `DATA_REPO_URL`) |
 | `RECORDER_INSTRUMENTS` | optional, e.g. `NIFTY,BANKNIFTY` (default = enabled defaults) |
-| `RECORDER_STOCKS` / `INDEX_EVERY_MIN` / `STOCK_EVERY_MIN` | optional recorder knobs (default `15` / `60` min) |
+| `RECORDER_STOCKS` | **`1` to record the NSE-50 stocks' option chains** (hourly) — REQUIRED for the OI-buildup watchlist's stock rows and stock CLEAR-lean alerts; unset = indices only (stocks show "OI pending"). Distinct from `SCAN_STOCKS` (the price scanner, also feeds the day's-most-liquid ranking). |
+| `INDEX_EVERY_MIN` / `STOCK_EVERY_MIN` | optional recorder cadence knobs (default `15` / `60` min) |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | optional — **FREE** phone push: fresh TRIGGERS, order fills/rejections, SL/target/TSL exits, and CLEAR OI-buildup leans. Unset = off. Get them in ~2 min: message **@BotFather** `/newbot` → the token; message **@userinfobot** → your numeric chat id; then DM your new bot once. |
 | `EXECUTION_LIVE` | **`1` (the literal string) to ARM live order placement.** Without it every approve is a dry-run — the header **EXEC chip** shows ⚪ OFF with the reason. Also needs the Breeze creds + today's token; each real order still needs the per-trade 🔴 LIVE tick + a confirm. The in-app kill-switch (click the EXEC chip) can arm/disarm at runtime. |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | any name/email for commits |

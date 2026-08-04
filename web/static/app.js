@@ -363,6 +363,7 @@ function renderBuildupScan(d) {
   $("buScanStatus").innerHTML = d.error ? `<span class="loss-txt">error</span>`
     : `${d.clear || 0} CLEAR · ${d.with_data || 0}/${d.count || 0} with OI`
       + (d.generated ? ` · ${String(d.generated).slice(11, 16)}` : "");
+  renderBuScanHints(d.hints || []);
   // alert when ANY watchlist script crosses into a CLEAR lean (not just the active one) —
   // per-symbol dedup shared with the active-instrument panel, so no double beeps
   for (const r of rows) {
@@ -1481,6 +1482,27 @@ function discussStock(key) {
   openAnalysisModal({ symbol: (r && r.symbol) || key.split("|")[0], ts: r && r.ts,
     strat: (r && r.strategy) || "trade1", read: (r && r.claude_full) || null });
 }
+// WHY watchlist rows are "OI pending" (env off / scanner idle / failing chain call) — plus
+// the recorder's actual last-cycle errors from /healthz so a broken symbol is visible.
+let _buHintsErrShown = false;
+async function renderBuScanHints(hints) {
+  const el = $("buScanHints");
+  if (!el) return;
+  if (!hints.length) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  el.innerHTML = hints.map((h) => `<div class="warn">⚠ ${h}</div>`).join("");
+  if (!_buHintsErrShown) {                    // best-effort once: append real recorder errors
+    _buHintsErrShown = true;
+    try {
+      const s = await (await fetch("/healthz")).json();
+      const errs = (s.errors || []).slice(0, 4);
+      if (errs.length) el.innerHTML += `<div class="muted">recorder errors: ${errs.join(" · ")}</div>`;
+      if (s.recorder && s.recorder !== "running")
+        el.innerHTML += `<div class="warn">⚠ recorder is "${s.recorder}" — no OI accrues until it runs.</div>`;
+    } catch (e) { /* healthz may be absent locally */ }
+  }
+}
+
 // Month-wise cumulative "if ALL triggers taken" P&L — the persisted daily replay ledger
 // rolled up by month with a running cumulative ₹ + a daily equity curve.
 let _pnlStrat = "all";

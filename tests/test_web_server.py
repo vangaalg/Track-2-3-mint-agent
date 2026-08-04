@@ -589,9 +589,17 @@ def test_buildup_scan_highlights_clear_lean(client, tmp_path, monkeypatch):
 
 def test_buildup_scan_empty_when_unrecorded(client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
+    monkeypatch.delenv("RECORDER_STOCKS", raising=False)
     d = client.get("/api/buildup-scan?refresh=true").json()
     # indices still listed, just with no OI data yet
     assert d["clear"] == 0 and all(not r["has_data"] for r in d["rows"])
+    # and the card SAYS WHY instead of a bare "OI pending"
+    hints = " ".join(d["hints"])
+    assert "RECORDER_STOCKS=1" in hints            # stock OI recording is off
+    assert "scanner" in hints                      # liquidity ranking idle → alphabetical list
+    monkeypatch.setenv("RECORDER_STOCKS", "1")     # env on but nothing stored yet → different hint
+    d2 = client.get("/api/buildup-scan?refresh=true").json()
+    assert any("nothing stored yet" in h for h in d2["hints"])
 
 
 def test_refresh_writes_pnl_ledger_and_monthly_rolls_up(client, monkeypatch, tmp_path):

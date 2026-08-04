@@ -1186,9 +1186,28 @@ def _run_buildup_scan() -> dict:
     for c in cards:
         c["kind"] = "index" if c["symbol"] in idx else "stock"
         c["label"] = get_instrument(c["symbol"]).get("label", c["symbol"])
+    # WHY rows are pending — a bare "OI pending" hid two different config causes.
+    hints = []
+    stocks = [c for c in cards if c["kind"] == "stock"]
+    if stocks and not any(c["has_data"] for c in stocks):
+        if os.environ.get("RECORDER_STOCKS") != "1":
+            hints.append("Stock OI recording is OFF — set RECORDER_STOCKS=1 on Railway "
+                         "(the recorder then pulls each stock's option chain hourly).")
+        else:
+            hints.append("Stock OI recording is on but nothing stored yet — first rows land "
+                         "within ~60 min of the recorder running in-session; check /healthz errors.")
+    if stocks and not (_SCAN.get("rows") or []):
+        hints.append("Liquidity ranking needs the scanner: list is alphabetical until the "
+                     "NSE-50 scanner runs (SCAN_STOCKS=1 + market hours, or tick 'auto'/Rescan).")
+    idx_pending = [c["symbol"] for c in cards if c["kind"] == "index" and not c["has_data"]]
+    if idx_pending:
+        hints.append(f"{'/'.join(idx_pending)} has no OI yet — if it persists in-session, its "
+                     "Breeze chain call is failing (see /healthz errors; FINNIFTY's symbol is "
+                     "provisional and may need the real Breeze code).")
     data = {"rows": cards, "clear": sum(1 for c in cards if c["clear"]),
             "with_data": sum(1 for c in cards if c["has_data"]),
-            "count": len(cards), "generated": datetime.now().isoformat(timespec="seconds")}
+            "count": len(cards), "hints": hints,
+            "generated": datetime.now().isoformat(timespec="seconds")}
     _BUILDUP_SCAN.update(at=time.time(), data=data)
     return data
 
