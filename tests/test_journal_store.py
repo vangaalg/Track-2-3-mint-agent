@@ -135,3 +135,26 @@ def test_actioned_round_trip_and_upsert(tmp_path):
     store.save_actioned("NIFTY", "trade1", "2026-08-03T09:18:00+05:30", "approved", path=db)
     assert store.load_actioned("NIFTY", path=db)[("trade1", "2026-08-03T09:18:00+05:30")] == "approved"
     assert store.load_actioned("NIFTY", path=tmp_path / "missing.db") == {}
+
+
+def test_replay_daily_round_trip_upsert_and_scope(tmp_path):
+    db = tmp_path / "journal.db"
+    s1 = {"n": 4, "wins": 2, "losses": 1, "open": 1, "net_points": 35.5,
+          "net_rupees": 4615.0, "hit_rate": 0.67}
+    store.save_replay_daily("NIFTY", "trade1", "2026-08-01", s1, path=db)
+    store.save_replay_daily("NIFTY", "orb", "2026-08-01", {"n": 1, "wins": 0, "losses": 1,
+                            "net_points": -12.0, "net_rupees": -780.0}, path=db)
+    store.save_replay_daily("BANKNIFTY", "trade1", "2026-08-01", s1, path=db)
+    rows = store.load_replay_daily("NIFTY", path=db)
+    assert len(rows) == 2 and {r["strategy"] for r in rows} == {"trade1", "orb"}
+    t1 = next(r for r in rows if r["strategy"] == "trade1")
+    assert t1["net_rupees"] == 4615.0 and t1["n"] == 4
+    # intraday upsert: latest wins (the session-close number sticks)
+    store.save_replay_daily("NIFTY", "trade1", "2026-08-01",
+                            {**s1, "n": 6, "net_rupees": 7100.0}, path=db)
+    rows2 = store.load_replay_daily("NIFTY", path=db)
+    t1b = next(r for r in rows2 if r["strategy"] == "trade1")
+    assert t1b["n"] == 6 and t1b["net_rupees"] == 7100.0 and len(rows2) == 2
+    # scoped per symbol; missing db -> []
+    assert len(store.load_replay_daily("BANKNIFTY", path=db)) == 1
+    assert store.load_replay_daily("NIFTY", path=tmp_path / "none.db") == []

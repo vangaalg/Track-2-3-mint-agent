@@ -38,6 +38,28 @@ def test_aggregate_empty_is_safe():
     rep = aggregate([], lot_size=75, lots=1)
     assert rep["overall"]["n"] == 0 and rep["overall"]["hit_rate"] is None
     assert rep["overall"]["net_points"] == 0 and rep["by_day"] == []
+    assert rep["by_month"] == []
+
+
+def test_aggregate_monthly_buckets_and_cumulative():
+    """Month-wise 'if all triggers taken' with a running cumulative — the trader's ask."""
+    rows = [
+        {"direction": "long", "date": "2024-01-05", "outcome": "win", "points": 30.0},
+        {"direction": "long", "date": "2024-01-20", "outcome": "loss", "points": -10.0},
+        {"direction": "short", "date": "2024-02-03", "outcome": "loss", "points": -25.0},
+        {"direction": "short", "date": "2024-03-11", "outcome": "win", "points": 40.0},
+    ]
+    rep = aggregate(rows, lot_size=65, lots=1)
+    months = {m["month"]: m for m in rep["by_month"]}
+    assert list(months) == ["2024-01", "2024-02", "2024-03"]          # chronological
+    assert months["2024-01"]["net_points"] == 20.0
+    assert months["2024-01"]["cum_points"] == 20.0
+    assert months["2024-02"]["cum_points"] == -5.0                     # 20 − 25
+    assert months["2024-03"]["cum_points"] == 35.0                     # −5 + 40
+    assert months["2024-03"]["cum_rupees"] == 35.0 * 65
+    # and the report renders the section with the cumulative line
+    txt = report_text("NIFTY", rep)
+    assert "Per month" in txt and "cum +35.0 pts" in txt
 
 
 def _synth_1m(days=3):

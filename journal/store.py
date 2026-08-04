@@ -270,6 +270,56 @@ def load_actioned(symbol: str, path: str | Path = DB_PATH) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Daily replay ledger — each session's "if ALL triggers were taken" summary per
+# (symbol, strategy, date), exactly the triggers-table footer (post manual-exit
+# overrides, conviction-sized ₹). Upsert-latest-wins, so intraday writes converge
+# to the final number at session close. This is what the month-wise cumulative
+# P&L view rolls up; it accumulates FORWARD from deploy day (older months come
+# from an offline backtest run, which now prints a per-month section).
+# --------------------------------------------------------------------------- #
+_REPLAY_COLS = ("n", "wins", "losses", "open", "exited", "net_points", "net_rupees", "hit_rate")
+
+
+def init_replay_daily(path: str | Path = DB_PATH) -> None:
+    with _connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS replay_daily ("
+            "symbol TEXT, strategy TEXT, date TEXT, "
+            "n INTEGER, wins INTEGER, losses INTEGER, open INTEGER, exited INTEGER, "
+            "net_points REAL, net_rupees REAL, hit_rate REAL, updated_at TEXT, "
+            "PRIMARY KEY (symbol, strategy, date))")
+
+
+def save_replay_daily(symbol: str, strategy: str, date: str, summary: dict,
+                      path: str | Path = DB_PATH) -> None:
+    """Upsert one session's replay summary (the queue footer dict). Latest wins."""
+    if not date or not summary:
+        return
+    init_replay_daily(path)
+    vals = [summary.get(c) for c in _REPLAY_COLS]
+    with _connect(path) as conn:
+        conn.execute(
+            "INSERT INTO replay_daily (symbol, strategy, date, "
+            + ", ".join(_REPLAY_COLS) + ", updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(symbol, strategy, date) DO UPDATE SET "
+            + ", ".join(f"{c}=excluded.{c}" for c in _REPLAY_COLS)
+            + ", updated_at=excluded.updated_at",
+            [symbol, strategy, date] + vals + [datetime.now(timezone.utc).isoformat()])
+
+
+def load_replay_daily(symbol: str, path: str | Path = DB_PATH) -> list[dict]:
+    """All ledger rows for one symbol, chronological. ``[]`` when nothing recorded."""
+    if not Path(path).exists():
+        return []
+    init_replay_daily(path)
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT strategy, date, " + ", ".join(_REPLAY_COLS)
+            + " FROM replay_daily WHERE symbol=? ORDER BY date, strategy", (symbol,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
 # Market reads — Claude's on-demand "Market view" reads (no trigger). Own table
 # so the day's reads can be browsed/re-opened. ``ts`` is the IST moment the read
 # was generated (used for the day picker + display).

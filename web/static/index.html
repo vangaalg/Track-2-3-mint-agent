@@ -274,6 +274,18 @@
     <div id="recPosts" class="postmortems"></div>
   </section>
 
+  <!-- Month-wise cumulative "if ALL triggers taken" P&L (hypothetical ledger) -->
+  <section class="card triggers" id="pnlCard">
+    <div class="scanhdr">
+      <h2>📆 If-all-taken P&L — month-wise cumulative</h2>
+      <label class="small muted">Strategy <select id="pnlStrat"><option value="all">All</option></select></label>
+      <span id="pnlStatus" class="muted small"></span>
+    </div>
+    <div id="pnlNote" class="small muted"></div>
+    <div id="pnlChart" class="chart" style="display:none"></div>
+    <div class="tablewrap"><table id="pnlTbl"></table></div>
+  </section>
+
   <!-- Persistent analysis + chat popup (opened by any 💬; survives polling until ✕) -->
   <div id="analysisModal" class="modal" hidden>
     <div class="modal-backdrop" data-close="1"></div>

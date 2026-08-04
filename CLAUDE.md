@@ -966,6 +966,26 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       (now in the env table) — the EXEC chip confirms ARMED; Telegram still needs the two env vars
       (deferred earlier, unchanged).
 
+- [x] **Month-wise cumulative "if ALL triggers taken" P&L ledger (trader asked "are we maintaining
+      it?" — we weren't).** The "if all taken" number existed only per-session in memory (the triggers
+      footer), the cockpit pull covers ~3 days, and no monthly bucket/cumsum existed anywhere. Built both
+      halves. (1) FORWARD LEDGER: new journal table `replay_daily` (symbol·strategy·date + the footer
+      summary, upsert-latest-wins so intraday writes converge at close; `journal/store.py`
+      init/save/load_replay_daily); `web/server._refresh` persists each refreshed instrument's
+      per-strategy post-`_apply_exits` queue summary (failures → snap.notes). `GET /api/pnl-monthly?symbol=
+      &strategy=all` + pure `_monthly_rollup`: per-month {sessions,n,W/L,net pts,net ₹} + running
+      `cum_rupees`/`cum_points` + daily rows with cumulative for the equity curve; strategy=all sums
+      per day. Cockpit: 📆 "If-all-taken P&L — month-wise cumulative" card (strategy picker server-driven,
+      newest-first month table with sign-coloured cumulative ₹, Plotly daily cumulative equity curve,
+      honest note: hypothetical/engine levels/conviction-sized/manual exits included/accumulates forward
+      from deploy day) on the throttled poll slot. (2) HISTORY: `scoring/backtest.aggregate` gains
+      `by_month` (same `_stats` kernel on `date[:7]`, chronological cumsum) + `report_text` "Per month"
+      section noting flat-lot sizing differs from the cockpit's conviction sizing — so past months come
+      from `python -m scoring.backtest --days 365` locally. Tested: store round-trip/upsert/scope
+      (test_journal_store), refresh-writes + rollup + strategy=all + empty state (test_web_server),
+      by_month buckets + cumulative + report render (test_backtest). node --check clean; suite green
+      (410; 1 pre-existing unrelated oi_store fail).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

@@ -594,6 +594,51 @@ def test_buildup_scan_empty_when_unrecorded(client, tmp_path, monkeypatch):
     assert d["clear"] == 0 and all(not r["has_data"] for r in d["rows"])
 
 
+def test_refresh_writes_pnl_ledger_and_monthly_rolls_up(client, monkeypatch, tmp_path):
+    """Each refresh persists the per-strategy 'if all taken' footer; /api/pnl-monthly rolls
+    the ledger up month-wise with a running cumulative (the trader's cumulative-₹ ask)."""
+    from journal import store
+    client.get("/api/snapshot")                      # refresh → ledger write for today's session
+    rows = store.load_replay_daily("NIFTY", path=srv.JOURNAL_DB)
+    assert rows and {r["strategy"] for r in rows} >= {"trade1"}
+    # rollup math on a CLEAN ledger (the refresh above wrote the synthetic session too)
+    monkeypatch.setattr(srv, "JOURNAL_DB", str(tmp_path / "ledger.db"))
+    # seed two months of history directly (deploy-forward accumulation simulated)
+    store.save_replay_daily("NIFTY", "trade1", "2026-06-10",
+                            {"n": 3, "wins": 2, "losses": 1, "net_points": 40.0,
+                             "net_rupees": 2600.0, "hit_rate": 0.67}, path=srv.JOURNAL_DB)
+    store.save_replay_daily("NIFTY", "trade1", "2026-06-20",
+                            {"n": 2, "wins": 0, "losses": 2, "net_points": -25.0,
+                             "net_rupees": -1625.0, "hit_rate": 0.0}, path=srv.JOURNAL_DB)
+    store.save_replay_daily("NIFTY", "trade1", "2026-07-05",
+                            {"n": 4, "wins": 3, "losses": 1, "net_points": 60.0,
+                             "net_rupees": 3900.0, "hit_rate": 0.75}, path=srv.JOURNAL_DB)
+    store.save_replay_daily("NIFTY", "orb", "2026-07-05",
+                            {"n": 1, "wins": 1, "losses": 0, "net_points": 10.0,
+                             "net_rupees": 650.0, "hit_rate": 1.0}, path=srv.JOURNAL_DB)
+    d = client.get("/api/pnl-monthly?symbol=NIFTY&strategy=trade1").json()
+    months = {m["month"]: m for m in d["months"]}
+    assert months["2026-06"]["net_rupees"] == 975.0            # 2600 − 1625
+    assert months["2026-06"]["sessions"] == 2 and months["2026-06"]["n"] == 5
+    assert months["2026-07"]["net_rupees"] == 3900.0
+    assert months["2026-07"]["cum_rupees"] == 4875.0           # running cumulative
+    assert d["first_date"] == "2026-06-10"
+    # strategy=all sums trade1 + orb on the shared day
+    d2 = client.get("/api/pnl-monthly?symbol=NIFTY&strategy=all").json()
+    m7 = next(m for m in d2["months"] if m["month"] == "2026-07")
+    assert m7["net_rupees"] == 4550.0                          # 3900 + 650
+    assert "trade1" in d2["strategies"] and "orb" in d2["strategies"]
+    # daily equity curve rows carry the running cumulative too
+    days = {r["date"]: r for r in d["days"]}
+    assert days["2026-06-20"]["cum_rupees"] == 975.0
+
+
+def test_pnl_monthly_empty_state(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(srv, "JOURNAL_DB", str(tmp_path / "fresh.db"))
+    d = client.get("/api/pnl-monthly?symbol=BANKNIFTY").json()
+    assert d["months"] == [] and d["first_date"] is None
+
+
 def test_oi_history_empty_when_unrecorded(client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
     d = client.get("/api/oi-history?symbol=BANKNIFTY").json()

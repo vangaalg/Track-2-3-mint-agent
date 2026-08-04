@@ -71,8 +71,19 @@ def aggregate(triggers: list[dict], lot_size: int = LOT_SIZE, lots: int = 1) -> 
     for r in triggers:
         days[r["date"]].append(r)
     by_day = [{"date": d, **_stats(rows, lot_size, lots)} for d, rows in sorted(days.items())]
+    # month-wise buckets + cumulative running total ("what would ALL triggers have earned,
+    # month by month") — the trader's cumulative-₹ view over a long window.
+    months = defaultdict(list)
+    for r in triggers:
+        months[str(r["date"])[:7]].append(r)
+    by_month, cum_p, cum_r = [], 0.0, 0.0
+    for m, rows in sorted(months.items()):
+        st = _stats(rows, lot_size, lots)
+        cum_p = round(cum_p + (st["net_points"] or 0.0), 2)
+        cum_r = round(cum_r + (st["net_rupees"] or 0.0), 2)
+        by_month.append({"month": m, **st, "cum_points": cum_p, "cum_rupees": cum_r})
     return {"overall": overall, "by_direction": by_dir, "by_day": by_day,
-            "lot_size": lot_size, "lots": lots}
+            "by_month": by_month, "lot_size": lot_size, "lots": lots}
 
 
 def make_claude_filter(symbol: str, base_1m, daily, memory: str = "",
@@ -625,6 +636,14 @@ def report_text(symbol: str, report: dict, levels: str = "target",
     lines.append("Per day:")
     for d in report["by_day"]:
         lines.append(f"  {d['date']}  {_fmt(d)}")
+    if report.get("by_month"):
+        lines.append("")
+        lines.append("Per month (cumulative ₹ = what ALL triggers would have earned so far; "
+                     f"flat {report.get('lots', 1)}-lot sizing — the live cockpit ledger sizes "
+                     "by conviction, so numbers can differ):")
+        for m in report["by_month"]:
+            lines.append(f"  {m['month']}  {_fmt(m)}  → cum {m['cum_points']:+.1f} pts "
+                         f"/ ₹{m['cum_rupees']:+,.0f}")
     return "\n".join(lines)
 
 

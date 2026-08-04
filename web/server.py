@@ -379,6 +379,16 @@ def _refresh(symbol: str, size: int) -> None:
         for s in STRATEGIES:        # cache today's triggers per strategy (throttled)
             _st()["queues"][s["id"]] = _apply_exits(
                 s["id"], _strategy_queue(s["id"], snap, size, lot_size=inst["lot_size"]))
+        # persist today's "if ALL taken" footer per strategy → the month-wise P&L ledger
+        # (upsert-latest-wins: intraday values converge to the session-close number)
+        try:
+            for s in STRATEGIES:
+                q = _st()["queues"].get(s["id"]) or {}
+                if q.get("session") and q.get("summary"):
+                    store.save_replay_daily(symbol.upper(), s["id"], str(q["session"]),
+                                            q["summary"], path=JOURNAL_DB)
+        except Exception as exc:
+            snap.notes.append(f"pnl ledger write failed: {exc}")
 
 
 def _oi_buildup(symbol: str, chain, spot, ts):
@@ -1195,6 +1205,57 @@ def buildup_scan_get(refresh: bool = False):
         except Exception as exc:
             return {"rows": [], "clear": 0, "with_data": 0, "count": 0, "error": str(exc)}
     return _BUILDUP_SCAN["data"]
+
+
+def _monthly_rollup(rows: list[dict]) -> dict:
+    """Month-wise rollup of the replay ledger (PURE): per-day rows (already summed across
+    the caller's strategy selection) → per-month {sessions, n, wins, losses, net_points,
+    net_rupees} + a chronological cumulative ₹/pts running total."""
+    by_day: dict[str, dict] = {}
+    for r in rows:
+        d = by_day.setdefault(r["date"], {"date": r["date"], "n": 0, "wins": 0, "losses": 0,
+                                          "net_points": 0.0, "net_rupees": 0.0})
+        for k in ("n", "wins", "losses"):
+            d[k] += int(r.get(k) or 0)
+        for k in ("net_points", "net_rupees"):
+            d[k] = round(d[k] + float(r.get(k) or 0.0), 2)
+    days = sorted(by_day.values(), key=lambda x: x["date"])
+    months: dict[str, dict] = {}
+    for d in days:
+        m = months.setdefault(d["date"][:7], {"month": d["date"][:7], "sessions": 0, "n": 0,
+                                              "wins": 0, "losses": 0,
+                                              "net_points": 0.0, "net_rupees": 0.0})
+        m["sessions"] += 1
+        for k in ("n", "wins", "losses"):
+            m[k] += d[k]
+        for k in ("net_points", "net_rupees"):
+            m[k] = round(m[k] + d[k], 2)
+    out, cum_r, cum_p = [], 0.0, 0.0
+    for m in sorted(months.values(), key=lambda x: x["month"]):
+        cum_r = round(cum_r + m["net_rupees"], 2)
+        cum_p = round(cum_p + m["net_points"], 2)
+        out.append({**m, "cum_rupees": cum_r, "cum_points": cum_p})
+    # daily cumulative for the equity curve
+    cum = 0.0
+    for d in days:
+        cum = round(cum + d["net_rupees"], 2)
+        d["cum_rupees"] = cum
+    return {"months": out, "days": days}
+
+
+@app.get("/api/pnl-monthly")
+def pnl_monthly(symbol: str = "NIFTY", strategy: str = "all"):
+    """Month-wise CUMULATIVE "if every trigger were taken" P&L for one instrument, rolled up
+    from the persisted daily replay ledger (`replay_daily`). Hypothetical — engine levels,
+    conviction-sized ₹, manual exits included. Accumulates FORWARD from deploy day; older
+    months come from an offline `python -m scoring.backtest` run (now prints per-month)."""
+    rows = store.load_replay_daily(symbol.upper(), path=JOURNAL_DB)
+    strategies = sorted({r["strategy"] for r in rows})
+    if strategy and strategy != "all":
+        rows = [r for r in rows if r["strategy"] == strategy]
+    roll = _monthly_rollup(rows)
+    return {"symbol": symbol.upper(), "strategy": strategy, "strategies": strategies,
+            "first_date": (rows[0]["date"] if rows else None), **roll}
 
 
 @app.get("/api/breadth")

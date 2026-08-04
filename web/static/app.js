@@ -68,7 +68,7 @@ async function poll() {
     fetchMarketReads();                               // saved Market-view reads (browse all day)
     // Heavier calls are throttled: /api/record runs settlement (+ possible Claude
     // post-mortems) server-side, and the triggers-log refetches every instrument+day.
-    if (_pollN % 5 === 1) fetchRecord();
+    if (_pollN % 5 === 1) { fetchRecord(); fetchPnl(); }   // ledger view rides the slow slot
     if (_pollN % 4 === 1) fetchTriggersLog();
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
   } catch (e) {
@@ -1481,6 +1481,59 @@ function discussStock(key) {
   openAnalysisModal({ symbol: (r && r.symbol) || key.split("|")[0], ts: r && r.ts,
     strat: (r && r.strategy) || "trade1", read: (r && r.claude_full) || null });
 }
+// Month-wise cumulative "if ALL triggers taken" P&L — the persisted daily replay ledger
+// rolled up by month with a running cumulative ₹ + a daily equity curve.
+let _pnlStrat = "all";
+
+async function fetchPnl() {
+  try { renderPnl(await getJson(`/api/pnl-monthly?symbol=${sym()}&strategy=${_pnlStrat}`)); }
+  catch (e) { panelErr("pnlStatus", "pnl: " + e.message); }
+}
+
+function renderPnl(d) {
+  const months = d.months || [], days = d.days || [];
+  // strategy picker (server-driven from what the ledger has actually recorded)
+  const ss = $("pnlStrat");
+  const want = `<option value="all">All</option>`
+    + (d.strategies || []).map((s) => `<option value="${s}">${STRAT_LABEL[s] || s}</option>`).join("");
+  if (ss.dataset.opts !== want) { ss.innerHTML = want; ss.dataset.opts = want; }
+  ss.value = _pnlStrat;
+  if (!months.length) {
+    $("pnlStatus").textContent = "";
+    $("pnlNote").textContent = "No ledger yet — it records each session's \"if all taken\" result "
+      + "from today forward. For past months run: python -m scoring.backtest --days 365 (per-month section).";
+    $("pnlTbl").innerHTML = ""; $("pnlChart").style.display = "none";
+    return;
+  }
+  const last = months[months.length - 1];
+  $("pnlStatus").innerHTML = `since ${d.first_date} · cumulative `
+    + `<b class="${last.cum_rupees >= 0 ? "win-txt" : "loss-txt"}">₹${last.cum_rupees.toLocaleString("en-IN")}</b>`;
+  $("pnlNote").textContent = "Hypothetical: every trigger taken at engine levels, conviction-sized; "
+    + "manual exits included. Accumulates forward — older months via the offline backtest.";
+  let h = "<thead><tr><th>Month</th><th>Days</th><th>Trades</th><th>W/L</th>"
+    + "<th>Net pts</th><th>Net ₹</th><th>Cumulative ₹</th></tr></thead><tbody>";
+  for (const m of months.slice().reverse()) {                 // newest first
+    const c = (x) => `<span class="${x >= 0 ? "win-txt" : "loss-txt"}">${x >= 0 ? "+" : ""}${x.toLocaleString("en-IN")}</span>`;
+    h += `<tr><td><b>${m.month}</b></td><td>${m.sessions}</td><td>${m.n}</td>`
+      + `<td>${m.wins}W/${m.losses}L</td><td>${c(m.net_points)}</td>`
+      + `<td>${c(m.net_rupees)}</td><td><b>${c(m.cum_rupees)}</b></td></tr>`;
+  }
+  $("pnlTbl").innerHTML = h + "</tbody>";
+  if (days.length > 1) {                                       // daily cumulative equity curve
+    $("pnlChart").style.display = "";
+    Plotly.react("pnlChart", [{
+      type: "scatter", mode: "lines", name: "cum ₹",
+      x: days.map((r) => r.date), y: days.map((r) => r.cum_rupees),
+      line: { color: days[days.length - 1].cum_rupees >= 0 ? "#2e9e4b" : "#e23b3b", width: 2 },
+      fill: "tozeroy", hovertemplate: "%{x} · ₹%{y:,.0f}<extra></extra>",
+    }], {
+      height: 150, showlegend: false, margin: { l: 56, r: 10, t: 6, b: 30 },
+      paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#555", size: 10 }, yaxis: { zeroline: true, zerolinecolor: "#c9ccd6" },
+    }, { displayModeBar: false, responsive: true });
+  } else { $("pnlChart").style.display = "none"; }
+}
+
 // NIFTY-50 breadth: advance/decline tally + top-20 heavyweights' contribution to the index.
 async function fetchBreadth() {
   try { renderBreadth(await getJson("/api/breadth")); }
@@ -1523,7 +1576,7 @@ function focusInstrument(symbolName) {
   resetChart();                                    // wipe the prior instrument's candles (no overlap)
   $("chatLog").innerHTML = "";
   $("dot").className = "dot"; $("meta").textContent = `loading ${currentSymbol}…`;
-  poll();
+  poll(); fetchPnl();                              // ledger follows the instrument immediately
 }
 $("instrSel").addEventListener("change", (e) => focusInstrument(e.target.value));
 $("trigDate").addEventListener("change", (e) => { _trigDate = e.target.value; _trigPage = 0; fetchTable(); });
@@ -1602,6 +1655,7 @@ document.querySelectorAll("#stratTabs button").forEach((b) =>
 $("notifyBtn").onclick = toggleNotify;
 $("execChip").onclick = toggleKillSwitch;
 $("trigToday").onclick = () => { _trigDate = null; _trigPage = 0; fetchTable(); };
+$("pnlStrat").addEventListener("change", (e) => { _pnlStrat = e.target.value; fetchPnl(); });
 refreshNotifyBtn();
 wireChartUI(fetchChart);          // timeframe buttons + ⚙ indicator panel (chart.js)
 poll(); setInterval(poll, POLL_MS);
