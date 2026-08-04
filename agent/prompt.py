@@ -78,8 +78,10 @@ def build_user(snapshot, proposal) -> str:
         rev = oi.get("reversal") or {}
         if rev.get("bull_reversal") is not None or rev.get("bear_reversal") is not None:
             parts.append(
-                f"  OI reversal levels (approx) — bull {_fmt(rev.get('bull_reversal'))}, "
-                f"bear {_fmt(rev.get('bear_reversal'))}"
+                f"  OI reversal levels (approx) — EOS≈{_fmt(rev.get('bull_reversal'))} "
+                f"(↓{_fmt(rev.get('bull_reversal_ext'))}) support · "
+                f"EOR≈{_fmt(rev.get('bear_reversal'))} "
+                f"(↑{_fmt(rev.get('bear_reversal_ext'))}) resistance"
             )
     else:
         parts.append("  OI — unavailable")
@@ -105,6 +107,10 @@ def build_user(snapshot, proposal) -> str:
         "Set oi_bias to the chain's directional lean (bullish/bearish/neutral) — weigh the "
         "deterministic OI buildup above (writing = fresh supply defending a level) and say if "
         "you disagree with it. OI confluence adds conviction/size when it agrees with the trigger. "
+        "Judge WHERE this trigger sits relative to support/resistance, EOS/EOR and PCR: a long "
+        "triggered INTO the call wall/EOR is a weaker take than one bouncing off EOS/the put "
+        "shelf with put-writing behind it (mirror for shorts) — state this in oi_analysis and "
+        "let it move your ENTER/STAND_DOWN. "
         "If you recommend ENTER, set proposed_target and proposed_stop to YOUR own "
         "levels for this trade — read the target off chart structure (CPR/walls/swing) "
         "and place the stop where the idea is wrong, keeping reward:risk at least 1.5. "

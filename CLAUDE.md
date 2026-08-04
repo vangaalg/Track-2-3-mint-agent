@@ -986,6 +986,28 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       by_month buckets + cumulative + report render (test_backtest). node --check clean; suite green
       (410; 1 pre-existing unrelated oi_store fail).
 
+- [x] **⭐ "Perfect trade" triple-confluence — flag, alert, MEASURE (trader's thesis, assessed +
+      operationalized).** Thesis: 3-min trigger + CLEAR OI buildup + Claude ENTER = the trade; whichever
+      instrument has all 3 = the right instrument. Assessment given: right SHAPE (selection is the only
+      proven lever) but (a) all three must AGREE in direction (clear-bear + long = conflict), (b) Claude
+      already sees the buildup → ~2.5 independent signals, (c) it's a HYPOTHESIS — buildup is live-only/
+      unbacktestable, so it must be measured forward before sizing up (HTF-confidence-trap lesson). Built:
+      pure `analysis/trade1.perfect_setup(direction, buildup, read)` (CLEAR ≥0.4 + agrees + ENTER → {perfect,
+      why}; honest None otherwise); `web/server`: `_head_out.perfect` + per-row in `_enrich_trigger_rows` +
+      journaled via `prop.context.perfect`; becoming-perfect check EVERY `_recompute_heads` pass (read lands
+      OR lean turns clear later) → one deduped `trigger_perfect` event (⭐ beep/browser/Telegram); pending
+      sorts perfect→highlight→ts; scanner stock rows upgraded to the DETERMINISTIC recorded buildup (was
+      Claude-bias-only). MEASURE: `journal/outcomes.perfect_breakdown` (settled W/L/hit/net of perfect vs
+      others) → `/api/record.perfect_split` → track-record card line ("needs n before trusting"). Prompt
+      strengthened (`agent/prompt.py`): reversal line now speaks the trader's vocabulary (EOS≈/EOR≈ + ↓/↑
+      ext bands) + an explicit instruction to judge WHERE the trigger sits vs S/R-EOS/EOR/PCR (long INTO the
+      call wall = weaker than a bounce off EOS with put-writing behind) and let it move ENTER/STAND_DOWN —
+      confirmed the prompt already carried PCR/walls/max-pain/buildup/reversals (trader asked). Gold banner
+      on the decision card; ⭐ in inbox/watchlist. Tested: truth table (test_analysis_trade1), head flag +
+      one-event dedup + conflict-never-flags + perfect_split (test_web_server). Suite green (416; 1
+      pre-existing oi_store fail). VALIDATION GATE: do NOT auto-gate/size-up on ⭐ until perfect_split
+      proves it forward.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

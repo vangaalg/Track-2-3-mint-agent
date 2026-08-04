@@ -312,3 +312,9 @@ header { flex-wrap:wrap; gap:6px; }
   .orderticket .otrow { flex-wrap:wrap; }
   .modal-card { width:96vw; }
 }
+
+/* ⭐ triple-confluence (perfect trade) — gold accent */
+.propbox.perfect { border:2px solid #d6a02b; box-shadow:0 0 8px rgba(214,160,43,.35); }
+.perfectbanner { font-weight:700; color:#a97b12; background:rgba(214,160,43,.14);
+  border-radius:6px; padding:3px 8px; margin-bottom:6px; }
+#recPerfect { font-weight:600; }

@@ -122,3 +122,28 @@ def test_oi_wall_used_as_target():
           "put_shelf": {"strike": 23700.0, "oi": 99}, "pcr": 1.1}
     prop = propose_trade1(_snapshot("long", oi=oi), size_lots=75)
     assert prop.target == 23930.0
+
+
+def test_perfect_setup_truth_table():
+    from analysis.trade1 import perfect_setup
+    clear_bull = {"bias": "bullish", "score": 0.6, "strength": 0.6, "insufficient": False}
+    clear_bear = {"bias": "bearish", "score": -0.55, "strength": 0.55, "insufficient": False}
+    enter = {"recommendation": "enter", "confidence": 4}
+    stand = {"recommendation": "stand_down", "confidence": 2}
+    # all three aligned -> perfect (both directions)
+    pf = perfect_setup("long", clear_bull, enter)
+    assert pf and pf["perfect"] and "LONG" in pf["why"] and "C4" in pf["why"]
+    assert perfect_setup("short", clear_bear, enter)["perfect"]
+    # CONFLICT is not confluence: clear-bear + long trigger
+    assert perfect_setup("long", clear_bear, enter) is None
+    # weak lean (below the 0.4 strong bar) -> not perfect
+    assert perfect_setup("long", {"bias": "bullish", "score": 0.2, "strength": 0.2,
+                                  "insufficient": False}, enter) is None
+    # insufficient OI history / missing buildup -> honest None
+    assert perfect_setup("long", {"insufficient": True}, enter) is None
+    assert perfect_setup("long", None, enter) is None
+    # Claude leg missing or standing down -> None
+    assert perfect_setup("long", clear_bull, None) is None
+    assert perfect_setup("long", clear_bull, stand) is None
+    # non-directional -> None
+    assert perfect_setup("flat", clear_bull, enter) is None

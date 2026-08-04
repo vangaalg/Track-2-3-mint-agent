@@ -380,9 +380,11 @@ function renderBuildupScan(d) {
       + "accumulates it live (indices ~15m, stocks ~60m).</td></tr></tbody>";
     return;
   }
-  const lean = (r) => r.bias === "bullish" ? `<span class="bup">🟢 ${r.clear ? "CLEAR " : ""}BULL</span>`
+  const perfectSyms = new Set((_pendingRows || []).filter((p) => p.perfect).map((p) => p.symbol));
+  const lean = (r) => (perfectSyms.has(r.symbol) ? "⭐ " : "")
+    + (r.bias === "bullish" ? `<span class="bup">🟢 ${r.clear ? "CLEAR " : ""}BULL</span>`
     : r.bias === "bearish" ? `<span class="bdn">🔴 ${r.clear ? "CLEAR " : ""}BEAR</span>`
-    : `<span class="muted">neutral</span>`;
+    : `<span class="muted">neutral</span>`);
   let h = "<thead><tr><th>Script</th><th>Lean</th><th>Score</th><th>Support/EOS</th>"
     + "<th>Resist/EOR</th><th>OI shift</th><th>Spot</th><th></th></tr></thead><tbody>";
   for (const r of rows) {
@@ -653,10 +655,13 @@ function renderWatching() {
 
 // A PINNED, frozen trigger awaiting the trader's approve/reject (stable across polls).
 function renderHead(head) {
-  $("propBox").className = "propbox enter";
+  const pf = head.perfect;
+  $("propBox").className = "propbox enter" + (pf ? " perfect" : "");
   const bySrc = head.levels_source === "claude"
     ? `🎯 levels by Claude` : `levels by engine`;
-  $("propBox").innerHTML = `🔔 TRIGGER · ${head.direction.toUpperCase()} `
+  const star = pf ? `<div class="perfectbanner">⭐ TRIPLE CONFLUENCE — chart + OI + Claude aligned`
+    + `<span class="small muted"> · ${pf.why}</span></div>` : "";
+  $("propBox").innerHTML = star + `🔔 TRIGGER · ${head.direction.toUpperCase()} `
     + `<span class="muted">${(head.ts || "").slice(11, 16)}</span>`
     + `<br>Entry ${n(head.entry)} · Stop ${n(head.stop)} · Target ${n(head.target)}`
     + `<br>R:R ${head.rr} · ${head.size_lots} lots <span class="muted">(conviction ${head.mtf_confidence}/5)</span>`
@@ -970,7 +975,21 @@ const CELL = {
   deserved: ["✅ Deserved", "good process · won"], accept: ["😐 Accept", "good process · lost (variance)"],
   dangerous: ["⚠️ Dangerous", "BAD process · won (luck — don't repeat)"], correct: ["🔴 Correct", "bad process · lost"],
 };
+function renderPerfectSplit(ps) {
+  const el = $("recPerfect");
+  if (!el || !ps) return;
+  const p = ps.perfect || {}, o = ps.others || {};
+  if (!p.n && !o.n) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  const f = (b, name) => `${name}: ${b.n || 0} · ${b.wins || 0}W/${b.losses || 0}L`
+    + (b.hit_rate != null ? ` · hit ${(b.hit_rate * 100).toFixed(0)}%` : "")
+    + (b.net_points != null ? ` · <span class="${b.net_points >= 0 ? "win-txt" : "loss-txt"}">${b.net_points >= 0 ? "+" : ""}${b.net_points} pts</span>` : "");
+  el.innerHTML = `⭐ ${f(p, "Perfect setups")} &nbsp;|&nbsp; ${f(o, "Others")}`
+    + ` <span class="muted">(forward test of the triple-confluence — needs n before trusting)</span>`;
+}
+
 function renderRecord(d) {
+  renderPerfectSplit(d.perfect_split);
   const c = (d.summary && d.summary.cells) || {};
   $("recMatrix").innerHTML = Object.entries(CELL).map(([k, [lbl, sub]]) =>
     `<div class="cell ${k}"><span class="cn">${c[k] || 0}</span><span class="cl">${lbl}</span>`
@@ -1401,7 +1420,7 @@ async function toggleNotify() {
 // --- cross-instrument event feed (/api/events): fills, SL/target exits, broker errors,
 // fresh triggers on ANY watched instrument. Notifies once per event id.
 let _lastEventId = Number(localStorage.getItem("lastEventId") || 0);
-const _EVENT_ICON = { trigger: "🔔", order_placed: "🟢", order_filled: "✅", order_failed: "🛑",
+const _EVENT_ICON = { trigger: "🔔", trigger_perfect: "⭐", order_placed: "🟢", order_filled: "✅", order_failed: "🛑",
                       position_exit: "🏁", exit_failed: "🛑", auto_flatten: "🔁", kill_switch: "⚡" };
 
 async function fetchEvents() {
@@ -1459,7 +1478,7 @@ function renderPending(rows, count) {
       ? `<span class="${rd.recommendation === "enter" ? "win-txt" : "loss-txt"}">${rd.recommendation === "enter" ? "ENTER" : "stand"}${rd.confidence != null ? " C" + rd.confidence : ""}</span>`
       : "<span class='muted'>…</span>";
     const sy = r.symbol || "", st = r.strategy || "";
-    const sym = `${r.highlight ? "🟢 " : ""}<b>${r.symbol_label || sy}</b>`;
+    const sym = `${r.perfect ? "⭐ " : r.highlight ? "🟢 " : ""}<b>${r.symbol_label || sy}</b>`;
     let act;
     if (r.kind === "stock") {                          // screener candidate — focus the stock to act
       act = (r.highlight ? `<button class="btn ok" title="Take this trade (record + track + focus)" data-senter="${sy}|${r.ts}">Enter</button> ` : "")

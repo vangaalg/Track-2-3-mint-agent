@@ -1310,6 +1310,53 @@ def test_kill_switch_forces_dry_run(client, monkeypatch):
     assert r.json()["status"] == "dry_run" and fb.entries == []
 
 
+def test_perfect_setup_flags_head_and_fires_event_once(client, monkeypatch):
+    """Trigger + CLEAR agreeing buildup + Claude ENTER → head.perfect + ONE ⭐ event;
+    a conflicting lean is never flagged (confluence must AGREE in direction)."""
+    srv._EVENTS.clear(); srv._PUSHED_TRIGGERS.clear()
+    monkeypatch.setattr(srv, "READ_COMPLETER", lambda system, user: ClaudeRead(
+        agrees_with_engine=True, chart_analysis="ca", oi_analysis="oa", where_moving="wm",
+        right_trade="rt", challenge="ch", recommendation="enter", confidence=4, key_risk="kr"))
+    _seed_heads(monkeypatch, trade1=[_open_trig(ts=_ETS, direction="long")])
+    client.get("/api/snapshot")
+    # inject a CLEAR bullish lean agreeing with the long trigger
+    srv._st("NIFTY")["buildup"] = {"bias": "bullish", "score": 0.6, "strength": 0.6,
+                                   "insufficient": False}
+    d = client.get("/api/snapshot").json()
+    pf = d["heads"]["trade1"]["perfect"]
+    assert pf and pf["perfect"] and "CLEAR BULLISH" in pf["why"]
+    evs = client.get("/api/events?since=0").json()["events"]
+    stars = [e for e in evs if e["kind"] == "trigger_perfect"]
+    assert len(stars) == 1 and "PERFECT SETUP" in stars[0]["text"]
+    client.get("/api/snapshot")                            # re-poll → no duplicate ⭐ event
+    evs2 = client.get("/api/events?since=0").json()["events"]
+    assert len([e for e in evs2 if e["kind"] == "trigger_perfect"]) == 1
+    # conflicting lean → not perfect
+    srv._st("NIFTY")["buildup"] = {"bias": "bearish", "score": -0.6, "strength": 0.6,
+                                   "insufficient": False}
+    d2 = client.get("/api/snapshot").json()
+    assert d2["heads"]["trade1"]["perfect"] is None
+
+
+def test_record_reports_perfect_split(client, monkeypatch):
+    from journal.outcomes import perfect_breakdown
+    recs = [
+        {"outcome": {"status": "win", "points": 30.0},
+         "proposal": {"context": {"perfect": {"perfect": True}}}},
+        {"outcome": {"status": "loss", "points": -10.0},
+         "proposal": {"context": {"perfect": {"perfect": True}}}},
+        {"outcome": {"status": "loss", "points": -15.0}, "proposal": {"context": {}}},
+        {"outcome": {"status": "open"}, "proposal": {"context": {}}},   # unsettled ignored
+    ]
+    ps = perfect_breakdown(recs)
+    assert ps["perfect"]["n"] == 2 and ps["perfect"]["wins"] == 1
+    assert ps["perfect"]["net_points"] == 20.0 and ps["perfect"]["hit_rate"] == 0.5
+    assert ps["others"]["n"] == 1 and ps["others"]["net_points"] == -15.0
+    # the endpoint carries it
+    d = client.get("/api/record").json()
+    assert "perfect_split" in d and set(d["perfect_split"]) == {"perfect", "others"}
+
+
 def _counting_completer(counter):
     def fn(system, user):
         counter.append(1)

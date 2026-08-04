@@ -40,7 +40,7 @@ from feeds.instruments import (
 from feeds import buildup_scan, liquidity
 from analysis.trade1 import (
     propose_trade1, apply_strike, apply_oi_boost, apply_oi_confidence,
-    size_for_confidence, LOT_SIZE)
+    size_for_confidence, perfect_setup, LOT_SIZE)
 from analysis.cpr_st import propose_cpr_st
 from analysis.orb import propose_orb
 from analysis.condor import propose_condor, list_condor_triggers
@@ -57,8 +57,8 @@ from execution.exit_manager import evaluate_exit
 from feeds.breeze_oi import _expiry_iso
 from journal.log import log_decision, DEFAULT_LOG
 from journal.outcomes import (
-    settle_log, settle_store, matrix_summary, conviction_breakdown, grade_training,
-    manual_exit_outcome, _matrix)
+    settle_log, settle_store, matrix_summary, conviction_breakdown, perfect_breakdown,
+    grade_training, manual_exit_outcome, _matrix)
 from journal import store
 
 ANCHOR = "9h15min"
@@ -600,13 +600,24 @@ def _recompute_heads() -> None:
                 stored = _stored_reads().get(key)
                 if stored is not None:
                     _st()["reads"][key] = stored
-                    continue
-                try:
-                    _run_head_read(sid, head)
-                except Exception as exc:          # surface instead of vanishing (was: pass)
-                    snap = _st().get("snap")
-                    if snap is not None:
-                        snap.notes.append(f"claude read failed ({sid}): {exc}")
+                else:
+                    try:
+                        _run_head_read(sid, head)
+                    except Exception as exc:      # surface instead of vanishing (was: pass)
+                        snap = _st().get("snap")
+                        if snap is not None:
+                            snap.notes.append(f"claude read failed ({sid}): {exc}")
+        # ⭐ becoming-perfect check EVERY recompute (not only on a new head): a setup turns
+        # perfect when the Claude read lands OR when the OI lean crosses into CLEAR later.
+        cur = _st()["heads"].get(sid)
+        if cur is not None:
+            pf = perfect_setup(cur.get("direction"), _st().get("buildup"),
+                               _st()["reads"].get((sid, cur["ts"])))
+            pkey = (_active.get(), sid, cur["ts"], "perfect")
+            if pf and pkey not in _PUSHED_TRIGGERS:
+                _PUSHED_TRIGGERS.add(pkey)
+                _push_event("trigger_perfect", _active.get(),
+                            f"⭐ PERFECT SETUP {sid}: {pf['why']} — all three aligned")
 
 
 def _head_out(sid: str, h: dict | None) -> dict | None:
@@ -620,6 +631,8 @@ def _head_out(sid: str, h: dict | None) -> dict | None:
     if cached.get("claude_target") is not None:
         out.update(target=cached["claude_target"], stop=cached["claude_stop"],
                    rr=cached["claude_rr"], levels_source="claude")
+    # the trader's "perfect trade" triple-confluence: trigger + CLEAR agreeing OI + Claude ENTER
+    out["perfect"] = perfect_setup(h.get("direction"), _st().get("buildup"), cached or None)
     return out
 
 
@@ -751,6 +764,9 @@ def _proposal_from_head(sid: str, head: dict, snap, table) -> TradeProposal:
         apply_strike(prop, picks[0] if picks else None)
     if direction in ("long", "short"):   # auto OI-confluence nudge (buildup + Claude lean)
         apply_oi_confidence(prop, bu, cached.get("oi_bias"))
+        # journal the ⭐ triple-confluence state with the decision (drives perfect-vs-rest W/L)
+        pf = perfect_setup(direction, bu, cached or None)
+        prop.context = {**(prop.context or {}), "perfect": pf}
     return prop
 
 
@@ -1145,6 +1161,25 @@ def _run_scan() -> dict:
         cache = _SCAN.setdefault("read_cache", {})
         rows = scanner.scan_universe(syms, PULL_FN, CHAIN_FN, _scan_read_fn,
                                      cfg=RESOLVER_CFG, pace_s=SCAN_PACE_S, cache=cache)
+        # ⭐ upgrade: when a triggered stock's RECORDED OI buildup is CLEAR + agreeing (the
+        # deterministic read, stronger than Claude's subjective oi_bias), flag it perfect.
+        try:
+            for r in rows:
+                t, cl = r.get("trigger"), r.get("claude") or {}
+                if not t or str(cl.get("recommendation", "")).lower() != "enter":
+                    continue
+                card = buildup_scan.build_card(
+                    r["symbol"], buildup_scan._last_row(
+                        oi_summary_store.load_summary(r["symbol"], root=OI_SUMMARY_ROOT)))
+                if card.get("clear") and (
+                        (card["bias"] == "bullish" and t.get("direction") == "long")
+                        or (card["bias"] == "bearish" and t.get("direction") == "short")):
+                    r["perfect"] = {"perfect": True,
+                                    "why": f"trigger {t.get('direction', '').upper()} + OI CLEAR "
+                                           f"{card['bias'].upper()} (score {card.get('score')}) "
+                                           f"+ Claude ENTER"}
+        except Exception:
+            pass                                    # scan rows stand without the flag
         _SCAN.update(rows=rows, at=time.time(), error=None)
     except Exception as exc:
         _SCAN["error"] = str(exc)
@@ -1335,6 +1370,7 @@ def record(symbol: str = "NIFTY"):
         pass
     return {"summary": matrix_summary(settled),
             "by_conviction": conviction_breakdown(settled),   # win-rate by conviction bucket
+            "perfect_split": perfect_breakdown(settled),      # ⭐ triple-confluence vs the rest
             "posts": posts[-8:],
             "recent": [{"decision": r.get("decision"), "process": r.get("process_grade"),
                         "matrix": r.get("matrix"), "ts": r.get("ts"),
@@ -1401,6 +1437,8 @@ def _enrich_trigger_rows(rows: list[dict]) -> None:
             "rr": cached.get("claude_rr"), "verdict": cached.get("verdict_text"),
         } if cached else None
         r["actioned"] = actioned.get(key)
+        # ⭐ triple-confluence per row (this instrument's buildup is in context here)
+        r["perfect"] = perfect_setup(r.get("direction"), _st().get("buildup"), cached)
 
 
 def _pending_count(rows: list[dict]) -> int:
@@ -1532,7 +1570,8 @@ def pending(size: int = DEFAULT_SIZE, symbol: str = "NIFTY"):
         })
 
     rows = index_rows + stock_rows
-    rows.sort(key=lambda r: (not r.get("highlight"), r.get("ts") or ""))   # highlights first, then by ts
+    # ⭐ perfect setups first, then scanner highlights, then by time
+    rows.sort(key=lambda r: (not r.get("perfect"), not r.get("highlight"), r.get("ts") or ""))
     n_index = sum(1 for r in rows if r.get("kind") == "index")
     return {"rows": rows, "count": len(rows), "index_count": n_index,
             "stock_count": len(rows) - n_index, "scan_at": _SCAN.get("at")}

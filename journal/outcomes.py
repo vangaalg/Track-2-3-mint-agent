@@ -236,3 +236,34 @@ def conviction_breakdown(decisions: list[dict]) -> list[dict]:
             "expectancy": round(b["net_points"] / b["n"], 2) if b["n"] else None,
         })
     return out
+
+
+def perfect_breakdown(decisions: list[dict]) -> dict:
+    """Settled W/L of ⭐ triple-confluence trades (trigger + CLEAR agreeing OI + Claude
+    ENTER, journaled as ``proposal.context.perfect``) vs the rest — the forward record that
+    PROVES or KILLS the "perfect trade" hypothesis (buildup has no history → unbacktestable;
+    never size up on the flag until this split earns it). Same stat shape per side."""
+    sides = {"perfect": {"n": 0, "wins": 0, "losses": 0, "net_points": 0.0},
+             "others": {"n": 0, "wins": 0, "losses": 0, "net_points": 0.0}}
+    for d in decisions:
+        o = d.get("outcome") or {}
+        status = o.get("status")
+        if status not in ("win", "loss"):
+            continue
+        ctx = ((d.get("proposal") or {}).get("context") or {})
+        side = "perfect" if (ctx.get("perfect") or {}).get("perfect") else "others"
+        b = sides[side]
+        b["n"] += 1
+        b["wins"] += status == "win"
+        b["losses"] += status == "loss"
+        b["net_points"] += o.get("points", 0) or 0
+    out = {}
+    for side, b in sides.items():
+        decided = b["wins"] + b["losses"]
+        out[side] = {
+            "n": b["n"], "wins": b["wins"], "losses": b["losses"],
+            "hit_rate": round(b["wins"] / decided, 2) if decided else None,
+            "net_points": round(b["net_points"], 2),
+            "expectancy": round(b["net_points"] / b["n"], 2) if b["n"] else None,
+        }
+    return out

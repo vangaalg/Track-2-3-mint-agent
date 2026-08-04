@@ -72,6 +72,39 @@ BUILDUP_MILD = 0.15        # |score| >= this + agrees -> +1 (below = neutral)
 OI_BOOST_CAP = 2           # max positive OI boost (buildup + Claude combined)
 
 
+def perfect_setup(direction: str, buildup: dict | None, read: dict | None) -> dict | None:
+    """The trader's "perfect trade" triple-confluence: a directional 3-min trigger + a CLEAR
+    OI-buildup lean AGREEING with it + Claude recommending ENTER.
+
+    All three must point the SAME way — a long trigger under a CLEAR-bearish chain is a
+    conflict, not confluence. Returns ``{"perfect": True, "why": ...}`` or None (a missing
+    piece — no read yet / insufficient OI history / weak lean — is an honest None, never a
+    guess). This FLAGS the subset; whether it actually wins more is measured forward on the
+    track record (buildup has no history, so it cannot be backtested — never size up on this
+    signal until the forward record proves it).
+    """
+    if direction not in ("long", "short"):
+        return None
+    bu = buildup or {}
+    if bu.get("insufficient", True):
+        return None
+    if float(bu.get("strength") or 0.0) < BUILDUP_STRONG or not _oi_agrees(bu.get("bias"), direction):
+        return None
+    rd = read or {}
+    rec = rd.get("recommendation") if isinstance(rd, dict) else getattr(rd, "recommendation", None)
+    if str(rec or "").lower() != "enter":
+        return None
+    conf = rd.get("confidence") if isinstance(rd, dict) else getattr(rd, "confidence", None)
+    return {
+        "perfect": True,
+        "why": (f"trigger {direction.upper()} + OI CLEAR {str(bu.get('bias')).upper()} "
+                f"(score {bu.get('score')}) + Claude ENTER"
+                + (f" C{conf}" if conf is not None else "")),
+        "buildup_bias": bu.get("bias"), "buildup_score": bu.get("score"),
+        "claude_confidence": conf,
+    }
+
+
 def oi_confidence_boost(direction: str, buildup: dict | None,
                         oi_bias: str | None) -> int:
     """Weighted OI conviction boost from the deterministic buildup + Claude's lean.
