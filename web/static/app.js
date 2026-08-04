@@ -645,7 +645,9 @@ function renderTriggersLog() {
 function renderWatching() {
   $("propBox").className = "propbox watching";
   $("propBox").innerHTML = "👁 Watching — no active trigger. "
-    + "<span class='muted'>(approve/reject appears the moment one fires)</span>";
+    + "<span class='muted'>When one fires, the order ticket appears PREFILLED — best "
+    + "value-for-money strike ★, conviction lots, SL/target (Claude's when it read the "
+    + "trigger) — you only approve, reject, or edit.</span>";
   $("decision").hidden = true;
 }
 
@@ -1465,7 +1467,8 @@ function renderPending(rows, count) {
         + `<button class="btn" title="Claude's read" data-sdiscuss="${sy}|${r.ts}">💬</button>`;
     } else {                                           // index trigger — decide inline on its instrument
       const a = (lbl, t, act2) => `<button class="btn ${act2 === "approve" ? "ok" : act2 === "reject" ? "no" : ""}" title="${t}" data-pdecide="${act2}" data-ts="${r.ts}" data-strat="${st}" data-sym="${sy}">${lbl}</button>`;
-      act = a("✓", "Approve / take", "approve") + a("✗", "Reject / stand down", "reject")
+      act = `<button class="btn csv" title="Open this trigger's PREFILLED order ticket (strike/lots/SL/target) on its instrument" data-popen="${sy}|${st}">📋 Open</button>`
+        + a("✓", "Approve / take", "approve") + a("✗", "Reject / stand down", "reject")
         + a("⤼", "Skip (not recorded)", "skip")
         + `<button class="btn" title="Discuss with Claude" data-pdiscuss="${r.ts}" data-strat="${st}" data-sym="${sy}">💬</button>`;
     }
@@ -1637,6 +1640,17 @@ $("scanAuto").addEventListener("change", (e) => {
   if (e.target.checked) fetchScanner();              // refresh immediately when re-enabled
 });
 $("pendingTbl").addEventListener("click", (e) => {  // inbox row actions (cross-instrument)
+  const op = e.target.closest("button[data-popen]");
+  if (op) {                                          // jump to the PREFILLED ticket for this trigger
+    const [sy, st] = op.dataset.popen.split("|");
+    currentStrat = st || "trade1";
+    document.querySelectorAll("#stratTabs button").forEach((b) =>
+      b.classList.toggle("on", b.dataset.strat === currentStrat));
+    if (sy && sy !== currentSymbol) focusInstrument(sy); else renderStrategy();
+    const tabs = $("stratTabs");
+    if (tabs) tabs.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
   const d = e.target.closest("button[data-pdecide]");
   if (d) { decideTrigger(d.dataset.ts, d.dataset.strat, d.dataset.pdecide, d.dataset.sym); return; }
   const en = e.target.closest("button[data-senter]");

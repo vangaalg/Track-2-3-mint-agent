@@ -7,6 +7,10 @@ header { display:flex; justify-content:space-between; align-items:center;
   padding:10px 16px; border-bottom:1px solid var(--line); }
 h1 { font-size:18px; margin:0; } h2 { font-size:13px; margin:0 0 8px; color:var(--muted);
   text-transform:uppercase; letter-spacing:.04em; }
+/* The hidden ATTRIBUTE must always win: author display:flex rules (e.g. .decision,
+   .orderticket label) were overriding the UA's [hidden]{display:none}, leaving the
+   order ticket visible-but-EMPTY while "watching" — it looked like prefill was broken. */
+[hidden] { display: none !important; }
 .muted { color:var(--muted); } .small { font-size:12px; }
 .status { display:flex; align-items:center; gap:8px; }
 .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
