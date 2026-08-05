@@ -209,3 +209,53 @@ def test_apply_oi_boost_back_compat_unchanged():
                          recommendation=Recommendation.ENTER)
     apply_oi_boost(prop, "bullish")
     assert prop.oi_confidence_boost == 1 and prop.final_confidence == 4
+
+
+# ---- moneyness-aware classification (the Sensibull-comparison fix) ---------- #
+def test_otm_additions_are_writing_regardless_of_price():
+    """The live miscall: on a rising morning OTM call additions (premiums UP) were scored
+    'long buildup' (bullish) — they are WRITER-driven resistance and must read bearish."""
+    strikes = [24500, 24650]                       # spot 24600: 24650 = OTM call, 24500 = OTM put
+    prev = _chain(strikes, [10, 10], [10, 10], [150, 40], [40, 90])
+    # up-move: call OI +41L at 24650 with call price UP; put OI +20L at 24500 with put price DOWN
+    cur = _chain(strikes, [10, 51], [30, 10], [160, 55], [30, 80])
+    t = buildup_table(prev, cur, 24600.0, window=1000)
+    r650 = t[t["strike"] == 24650].iloc[0]
+    assert r650["call_state"] == SHORT_BUILDUP and r650["call_bias"] == -1   # writing, bearish
+    r500 = t[t["strike"] == 24500].iloc[0]
+    assert r500["put_state"] == SHORT_BUILDUP and r500["put_bias"] == 1      # writing, bullish
+    # and the direct-change path applies the same rule
+    from feeds.oi_buildup import buildup_table_from_change
+    chain = prev.copy()
+    chain["call_oi_chg"] = [0, 41e5]; chain["call_ltp_chg"] = [0, 15]        # price UP
+    chain["put_oi_chg"] = [20e5, 0]; chain["put_ltp_chg"] = [-10, 0]
+    td = buildup_table_from_change(chain, 24600.0)
+    assert td[td["strike"] == 24650].iloc[0]["call_state"] == SHORT_BUILDUP
+    assert td[td["strike"] == 24500].iloc[0]["put_state"] == SHORT_BUILDUP
+
+
+def test_trending_morning_is_lean_not_clear():
+    """Put writing below + a call wall being built above (the 5-Aug shape, ~2:1) must read
+    as a LEAN, not a pegged CLEAR 1.00 that hides the resistance."""
+    strikes = [24400, 24500, 24650, 24700]         # spot 24600
+    prev = _chain(strikes, [10, 10, 10, 10], [10, 10, 10, 10],
+                  [210, 120, 40, 25], [15, 30, 80, 120])
+    cur = _chain(strikes, [10, 10, 51, 56], [110, 172, 10, 10],   # puts +262L below, calls +134L above (10:1... adjust)
+                 [220, 130, 55, 35], [10, 22, 70, 110])
+    t = buildup_table(prev, cur, 24600.0, window=1000)
+    sig = buildup_signal(t, 24600.0, window=1000)
+    # put writing 262L bullish vs call writing 87L bearish → positive but NOT clear-strong 1.0
+    assert sig["bias"] == "bullish" and 0 < sig["score"] < 1.0
+    assert sig["call_writing"] > 0                  # the resistance wall is VISIBLE now
+    assert sig["put_writing"] > 0
+
+
+def test_otm_reductions_are_writers_leaving():
+    strikes = [24500, 24700]                        # spot 24600
+    prev = _chain(strikes, [10, 50], [40, 10], [150, 30], [30, 120])
+    cur = _chain(strikes, [10, 30], [25, 10], [155, 45], [25, 110])   # call wall -20L, put shelf -15L
+    t = buildup_table(prev, cur, 24600.0, window=1000)
+    r700 = t[t["strike"] == 24700].iloc[0]
+    assert r700["call_state"] == SHORT_COVERING and r700["call_bias"] == 1    # resistance lifting
+    r500 = t[t["strike"] == 24500].iloc[0]
+    assert r500["put_state"] == LONG_UNWINDING and r500["put_bias"] == -1     # support weakening

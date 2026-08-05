@@ -1029,6 +1029,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       + PG fake; RECORDER_STOCKS=true counts as on (cockpit); insufficient-test mocks the new fallback.
       Suite green (425; 1 pre-existing oi_store fail). DEPLOY.md: burst knobs + truthy flags documented.
 
+- [x] **Moneyness-aware OI-buildup classification (live Sensibull comparison caught a MISCALL).**
+      On the 5-Aug rising morning our panel showed "⚠ CLEAR BULLISH score 1.00 · call writing 0.00L"
+      while Sensibull showed put writing ≤24600 AND ~134L of call ADDITIONS at 24650–25000 (a resistance
+      wall). Raw data matched (absolute OI + put ΔOI ≈ Sensibull, same 11-Aug weekly) — the divergence was
+      classification: the textbook ΔOI×Δoption-price matrix saw call-OI-up + call-price-up (premiums rise
+      with the up-move) as bullish "long buildup", so NOTHING scored bearish and the lean pegged at a false
+      CLEAR 1.00 (⭐'s OI leg would have wrongly cleared). Fix in `feeds/oi_buildup._state(..., otm=)`
+      applied in BOTH `buildup_table` + `buildup_table_from_change`: **OTM additions = writing (writer-
+      driven) regardless of Δprice** (call>spot ΔOI+ → bearish resistance; put<spot ΔOI+ → bullish
+      support); **OTM reductions = writers leaving** (call → short_covering/bullish; put →
+      long_unwinding/bearish); **ITM keeps the price matrix** (buyer-driven flows plausible). Bonus: OTM
+      classification no longer needs LTPs. Same aggregation → the 5-Aug shape now reads ≈ +0.3 lean-bullish
+      with call_writing ~134L visible (no false CLEAR; CLEAR bar 0.4 unchanged). Tested: OTM-additions-
+      with-price-UP → writing (both paths), trending-morning lean-not-1.0, OTM reductions; original 8-cell
+      matrix tests still pass (strike==spot → ITM path). Suite green (428; 1 pre-existing oi_store fail).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

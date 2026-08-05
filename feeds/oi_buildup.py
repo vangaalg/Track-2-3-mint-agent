@@ -17,6 +17,15 @@ LTPCalculator basis) and classifies each strike with the standard buildup matrix
     Put    −     +     short covering           bearish
     Put    −     −     long unwinding           bullish
 
+HYBRID moneyness rule (added after a live Sensibull comparison caught a miscall): the
+price-based matrix above applies to **ITM** strikes only. At **OTM** strikes — where
+index-option OI is overwhelmingly WRITER-driven — additions are classified ``writing``
+regardless of the option's own price direction, and reductions as writers leaving
+(call side → ``short_covering``/bullish, put side → ``long_unwinding``/bearish). The
+pure price matrix misfired on trending mornings: an up-move lifts call premiums, so a
+resistance wall of OTM call additions scored as bullish "long buildup" and pegged the
+lean at a false CLEAR +1.00.
+
 The per-strike states aggregate (ΔOI-weighted, ATM-windowed) into a single
 buyer-vs-seller lean — ``bias`` (bullish/bearish/neutral) + a signed ``score`` and a
 ``strength``. That is the deterministic OI direction the agent lacked (today OI
@@ -57,13 +66,30 @@ def _num(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.Series([np.nan] * len(df), index=df.index)
 
 
-def _state(d_oi: float, d_px: float, is_call: bool) -> tuple[str, int]:
-    """Return ``(state, bias)`` for one side of one strike. bias +1 bullish / -1 bearish."""
-    if not np.isfinite(d_oi) or not np.isfinite(d_px):
+def _state(d_oi: float, d_px: float, is_call: bool, otm: bool = False) -> tuple[str, int]:
+    """Return ``(state, bias)`` for one side of one strike. bias +1 bullish / -1 bearish.
+
+    HYBRID rule (the Sensibull-comparison fix): for INDEX options, large OI changes at
+    **OTM** strikes are overwhelmingly WRITER-driven — sellers building/lifting walls —
+    so OTM additions are classified as ``writing`` REGARDLESS of the option's own price
+    direction, and OTM reductions as writers leaving. The pure ΔOI×Δprice textbook matrix
+    misfired on trending mornings: an up-move lifts call premiums, so heavy OTM call
+    additions (a resistance wall) scored as bullish "long buildup" and pegged the lean at
+    a false CLEAR 1.00. The price-based matrix still applies to ITM strikes (where
+    buyer-driven flows are plausible)."""
+    if not np.isfinite(d_oi):
         return UNKNOWN, 0
     if abs(d_oi) <= _EPS:
         return FLAT, 0
     oi_up = d_oi > 0
+    if otm:                                        # writer-driven side of the book
+        if oi_up:                                  # fresh OTM supply = a wall being built
+            return SHORT_BUILDUP, (-1 if is_call else +1)
+        if is_call:                                # call wall lifting = resistance easing
+            return SHORT_COVERING, +1
+        return LONG_UNWINDING, -1                  # put shelf thinning = support weakening
+    if not np.isfinite(d_px):
+        return UNKNOWN, 0
     px_up = d_px > _EPS
     px_dn = d_px < -_EPS
     if not (px_up or px_dn):                       # OI moved but price flat → ambiguous
@@ -116,8 +142,11 @@ def buildup_table(prev_chain: pd.DataFrame | None, cur_chain: pd.DataFrame | Non
     d_call_ltp = _num(m, "call_ltp") - _num(m, "call_ltp_prev")
     d_put_ltp = _num(m, "put_ltp") - _num(m, "put_ltp_prev")
 
-    call = [_state(o, p, True) for o, p in zip(d_call_oi, d_call_ltp)]
-    put = [_state(o, p, False) for o, p in zip(d_put_oi, d_put_ltp)]
+    strikes = m["strike"]
+    call = [_state(o, p, True, otm=(k > spot))
+            for o, p, k in zip(d_call_oi, d_call_ltp, strikes)]
+    put = [_state(o, p, False, otm=(k < spot))
+           for o, p, k in zip(d_put_oi, d_put_ltp, strikes)]
     return pd.DataFrame({
         "strike": m["strike"].astype("int64"),
         "d_call_oi": d_call_oi.to_numpy(),
@@ -163,8 +192,11 @@ def buildup_table_from_change(chain: pd.DataFrame | None, spot: float,
         return empty
     d_call_oi, d_put_oi = _num(c, "call_oi_chg"), _num(c, "put_oi_chg")
     d_call_ltp, d_put_ltp = _num(c, "call_ltp_chg"), _num(c, "put_ltp_chg")
-    call = [_state(o, p, True) for o, p in zip(d_call_oi, d_call_ltp)]
-    put = [_state(o, p, False) for o, p in zip(d_put_oi, d_put_ltp)]
+    strikes = c["strike"]
+    call = [_state(o, p, True, otm=(k > spot))
+            for o, p, k in zip(d_call_oi, d_call_ltp, strikes)]
+    put = [_state(o, p, False, otm=(k < spot))
+           for o, p, k in zip(d_put_oi, d_put_ltp, strikes)]
     return pd.DataFrame({
         "strike": c["strike"].astype("int64"),
         "d_call_oi": d_call_oi.to_numpy(), "d_put_oi": d_put_oi.to_numpy(),
