@@ -1045,6 +1045,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       with-price-UP → writing (both paths), trending-morning lean-not-1.0, OTM reductions; original 8-cell
       matrix tests still pass (strike==spot → ITM path). Suite green (428; 1 pre-existing oi_store fail).
 
+- [x] **Stock/FINNIFTY option chains fixed: self-healing ISEC code resolution + Tuesday expiry (live
+      /healthz diagnosis).** After the deploy unblock (broken RECORDER_STOCKS reference variable had
+      failed EVERY build; custom start command verified = cockpit_service), /healthz finally answered and
+      showed all 50 stock chains + FINNIFTY failing in two groups: (1) "Error while calling service" =
+      Breeze rejects NSE symbols — it wants ICICI/ISEC codes (RELIANCE→RELIND, like BANKNIFTY→CNXBAN);
+      (2) "No Data Found" = valid code but the STOCK expiry was requested as last-THURSDAY — NSE moved all
+      F&O expiries to TUESDAY. Fixes: `feeds/breeze_oi` gains `resolve_stock_code` (Breeze's own
+      `get_names` NSE→ISEC mapping, defensive across SDK response shapes) and `make_chain_fetcher` is
+      SELF-HEALING — try the given/cached code, on a Breeze error retry the resolved code (stocks) or the
+      `_INDEX_CANDIDATES` list (FINNIFTY → NIFFIN/CNXFIN), cache whatever returns data (`_CODE_CACHE`);
+      stocks' registry weekday 3→1 in `feeds/instruments` + `recorder.select_instruments`. Tested:
+      resolver+cache (fails NSE symbol → get_names → RELIND works → cached, second fetch direct),
+      FINNIFTY candidate fallback, original-error propagation when nothing resolves, Tuesday expiry in
+      both registries. Suite green (432; 1 pre-existing oi_store fail). NOTE: NIFFIN/CNXFIN are best-guess
+      candidates (self-healing tries both); the live /healthz errors after next session confirm.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

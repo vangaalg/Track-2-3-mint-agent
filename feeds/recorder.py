@@ -195,7 +195,7 @@ def select_instruments(names=None, with_stocks=False) -> list[dict]:
     insts = [i for i in DEFAULT_INSTRUMENTS if i.get("enabled", True)]
     if with_stocks:
         insts += [{"name": s, "symbol": s, "exchange": "NFO", "klass": "stock",
-                   "weekday": 3, "band": "scale", "monthly": True} for s in NIFTY50_STOCKS]
+                   "weekday": 1, "band": "scale", "monthly": True} for s in NIFTY50_STOCKS]
     if names:
         want = {n.strip().upper() for n in names}
         insts = [i for i in insts if i["name"].upper() in want]

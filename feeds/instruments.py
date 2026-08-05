@@ -61,7 +61,9 @@ NSE50_STOCKS = [
 for _s in NSE50_STOCKS:
     INSTRUMENTS.setdefault(_s, {
         "label": _s.title(), "loader_symbol": _s, "exchange": "NFO",
-        "lot_size": 1, "weekday": 3, "monthly": True, "band": "scale", "primary": False,
+        # NSE moved ALL F&O expiries to TUESDAY — a Thursday date returns "No Data Found"
+        # (confirmed live via /healthz). Chain codes self-resolve via breeze_oi.get_names.
+        "lot_size": 1, "weekday": 1, "monthly": True, "band": "scale", "primary": False,
     })
 
 DEFAULT_INSTRUMENT = "NIFTY"

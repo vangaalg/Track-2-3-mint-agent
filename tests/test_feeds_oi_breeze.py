@@ -175,3 +175,68 @@ def test_fetch_oi_captures_error_for_diagnostics():
     errors = []
     assert fetch_oi("NIFTY", 24000.0, fetch_fn=boom, errors=errors) is None
     assert errors == ["oi: Invalid expiry date"]
+
+
+# ---- ISEC stock-code resolution (live /healthz showed NSE symbols failing) --- #
+class _CodeClient:
+    """Accepts only ISEC codes (RELIND), rejects NSE symbols (RELIANCE) — like live Breeze."""
+
+    def __init__(self, good=("RELIND", "NIFFIN")):
+        self.good = set(good)
+        self.calls = []
+
+    def get_option_chain_quotes(self, right, stock_code, **kw):
+        self.calls.append(stock_code)
+        if stock_code not in self.good:
+            return {"Success": None, "Error": "Error while calling service, Please contact admin"}
+        return {"Success": [{"strike_price": "24000", "open_interest": "50", "ltp": "10"}],
+                "Error": None}
+
+    def get_names(self, exchange_code, stock_code):
+        return {"isec_stock_code": "RELIND"} if stock_code == "RELIANCE" else {}
+
+
+def _clear_code_cache():
+    from feeds import breeze_oi
+    breeze_oi._CODE_CACHE.clear()
+
+
+def test_fetcher_resolves_isec_code_and_caches():
+    _clear_code_cache()
+    cl = _CodeClient()
+    fetch = make_chain_fetcher(weekday=1, monthly=True, client_factory=lambda: cl)
+    df = fetch("RELIANCE")                       # NSE symbol fails → get_names → RELIND works
+    assert not df.empty and "RELIND" in cl.calls
+    from feeds.breeze_oi import _CODE_CACHE
+    assert _CODE_CACHE["RELIANCE"] == "RELIND"   # self-healed for every later cycle
+    n = len(cl.calls)
+    fetch("RELIANCE")                            # second fetch goes straight to the cached code
+    assert cl.calls[n] == "RELIND"
+
+
+def test_fetcher_tries_finnifty_candidates():
+    _clear_code_cache()
+    cl = _CodeClient(good=("NIFFIN",))
+    fetch = make_chain_fetcher(weekday=1, monthly=True, client_factory=lambda: cl)
+    df = fetch("FINNIFTY")                       # provisional code fails → NIFFIN candidate wins
+    assert not df.empty
+    from feeds.breeze_oi import _CODE_CACHE
+    assert _CODE_CACHE["FINNIFTY"] == "NIFFIN"
+
+
+def test_fetcher_raises_original_error_when_nothing_resolves():
+    _clear_code_cache()
+    cl = _CodeClient(good=())                    # nothing works
+    fetch = make_chain_fetcher(weekday=1, monthly=True, client_factory=lambda: cl)
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="Error while calling service"):
+        fetch("BOOMSTOCK")
+
+
+def test_stock_registry_uses_tuesday_expiry():
+    """NSE moved all F&O expiries to Tuesday — Thursday dates returned 'No Data Found'."""
+    from feeds.instruments import get_instrument
+    assert get_instrument("TCS")["weekday"] == 1 and get_instrument("TCS")["monthly"] is True
+    from feeds.recorder import select_instruments
+    stocks = [i for i in select_instruments(with_stocks=True) if i["klass"] == "stock"]
+    assert stocks and all(i["weekday"] == 1 for i in stocks)

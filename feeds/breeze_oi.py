@@ -132,6 +132,46 @@ def _rows(resp: dict) -> list[dict]:
     return resp.get("Success") or []
 
 
+# --- Breeze (ISEC) stock-code resolution ----------------------------------- #
+# Breeze does NOT accept NSE symbols for most underlyings: Reliance trades as
+# RELIND, HDFC Bank as HDFBAN, Bank Nifty as CNXBAN, etc. Live /healthz showed
+# every mis-coded stock failing with "Error while calling service". Breeze's own
+# ``get_names`` API maps an NSE symbol to the ISEC code at runtime, so we resolve
+# lazily on first failure and CACHE the working code — no 50-symbol hardcoding.
+# Index underlyings can't be resolved via get_names, so they carry a candidates
+# list (FINNIFTY's provisional code failed live; NIFFIN/CNXFIN are the usual ICICI
+# spellings — first one that returns data wins and is cached).
+_CODE_CACHE: dict[str, str] = {}
+_INDEX_CANDIDATES = {"FINNIFTY": ["NIFFIN", "CNXFIN"]}
+
+
+def resolve_stock_code(client, nse_symbol: str) -> str | None:
+    """The ISEC stock code for an NSE symbol via Breeze's ``get_names`` (None on any
+    failure — callers fall back to the input symbol)."""
+    try:
+        resp = client.get_names(exchange_code="NSE", stock_code=nse_symbol)
+        if isinstance(resp, dict):
+            for k in ("isec_stock_code", "isec_code", "stock_code"):
+                v = resp.get(k)
+                if v and str(v).strip() and str(v).strip().upper() != nse_symbol.upper():
+                    return str(v).strip()
+            # some SDK versions nest under Success
+            inner = resp.get("Success") or {}
+            if isinstance(inner, dict):
+                for k in ("isec_stock_code", "isec_code", "stock_code"):
+                    v = inner.get(k)
+                    if v and str(v).strip():
+                        return str(v).strip()
+        else:                                   # object-style response
+            for k in ("isec_stock_code", "isec_code", "stock_code"):
+                v = getattr(resp, k, None)
+                if v and str(v).strip():
+                    return str(v).strip()
+    except Exception:
+        return None
+    return None
+
+
 def make_chain_fetcher(
     expiry=None, weekday: int = 3, exchange: str = "NFO", client_factory=None,
     monthly: bool = False,
@@ -141,16 +181,41 @@ def make_chain_fetcher(
     Pulls calls and puts for the (config-driven) expiry and merges them. Set
     ``monthly=True`` for underlyings with NO weekly options (Bank Nifty, Sensex,
     single stocks) so the expiry resolves to the month's last expiry-weekday instead
-    of the next weekly one (a weekly date returns "No Data Found"). Any failure
-    propagates to ``fetch_oi``, which degrades the OI panel to None.
+    of the next weekly one (a weekly date returns "No Data Found").
+
+    SELF-HEALING symbol resolution: the pull is tried with the given (or cached)
+    code first; on a Breeze error it retries with the ``get_names``-resolved ISEC
+    code (stocks) or the known index candidates (FINNIFTY), caching whichever code
+    returns data. Any final failure propagates to ``fetch_oi`` → panel degrades.
     """
-    def fetch(instrument: str) -> pd.DataFrame:
-        client = (client_factory or get_breeze_client)()
-        exp = _expiry_iso(expiry, weekday, monthly)
-        kw = dict(stock_code=instrument, exchange_code=exchange,
+    def _pull(client, code: str, exp: str) -> pd.DataFrame:
+        kw = dict(stock_code=code, exchange_code=exchange,
                   product_type="options", expiry_date=exp)
         calls = client.get_option_chain_quotes(right="call", **kw)
         puts = client.get_option_chain_quotes(right="put", **kw)
         return merge_chain(_rows(calls), _rows(puts))
+
+    def fetch(instrument: str) -> pd.DataFrame:
+        client = (client_factory or get_breeze_client)()
+        exp = _expiry_iso(expiry, weekday, monthly)
+        code = _CODE_CACHE.get(instrument, instrument)
+        try:
+            return _pull(client, code, exp)
+        except RuntimeError as first_err:
+            alts: list[str] = []
+            if instrument in _INDEX_CANDIDATES:
+                alts = [c for c in _INDEX_CANDIDATES[instrument] if c != code]
+            else:
+                rc = resolve_stock_code(client, instrument)
+                if rc and rc != code:
+                    alts = [rc]
+            for alt in alts:
+                try:
+                    df = _pull(client, alt, exp)
+                    _CODE_CACHE[instrument] = alt      # self-heal: remember what works
+                    return df
+                except RuntimeError:
+                    continue
+            raise first_err
 
     return fetch
