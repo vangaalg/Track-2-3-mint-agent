@@ -241,6 +241,20 @@ def oi_chain_nearest(symbol: str, ts, max_age_min: float | None = None) -> pd.Da
         "WHERE symbol=%s AND ts=%s ORDER BY strike", (symbol, snap_ts), fetch=True))
 
 
+def oi_chain_prev_close(symbol: str, day: str) -> pd.DataFrame | None:
+    """The last stored snapshot strictly before ``day`` (the previous session's close) —
+    the overnight-buildup baseline."""
+    _ensure_schema()
+    got = _run("SELECT max(ts) FROM oi_chain WHERE symbol=%s AND ts < %s",
+               (symbol, str(day)), fetch=True)
+    if not got or got[0][0] is None:
+        return None
+    snap_ts = got[0][0]
+    return _chain_df(_run(
+        "SELECT ts, spot, strike, call_oi, put_oi, call_ltp, put_ltp FROM oi_chain "
+        "WHERE symbol=%s AND ts=%s ORDER BY strike", (symbol, snap_ts), fetch=True))
+
+
 # --------------------------------------------------------------------------- #
 # Macro scorecard series
 # --------------------------------------------------------------------------- #

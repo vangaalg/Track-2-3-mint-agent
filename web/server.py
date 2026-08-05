@@ -38,6 +38,7 @@ from feeds.instruments import (
     INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT,
     scanner_symbols, buildup_indices)
 from feeds import buildup_scan, liquidity
+from feeds.envutil import flag as env_flag, raw as env_raw
 from analysis.trade1 import (
     propose_trade1, apply_strike, apply_oi_boost, apply_oi_confidence,
     size_for_confidence, perfect_setup, LOT_SIZE)
@@ -104,7 +105,7 @@ def _ensure_broker():
     setting EXECUTION_LIVE later (or via the kill-switch) could never arm. The env var
     stays the master gate — this never arms while it's off."""
     global BROKER
-    if BROKER is None and os.environ.get("EXECUTION_LIVE") == "1":
+    if BROKER is None and env_flag("EXECUTION_LIVE"):
         try:
             if BROKER_FACTORY is not None:
                 BROKER = BROKER_FACTORY()
@@ -118,7 +119,7 @@ def _ensure_broker():
 
 def execution_status() -> dict:
     """The cockpit's execution armed/disarmed truth, with the reason when off."""
-    live_env = os.environ.get("EXECUTION_LIVE") == "1"
+    live_env = env_flag("EXECUTION_LIVE")
     armed = bool(live_env and BROKER is not None)
     if armed:
         reason = None
@@ -398,13 +399,19 @@ def _oi_buildup(symbol: str, chain, spot, ts):
     if chain is None or getattr(chain, "empty", True) or spot is None:
         return oi_buildup.buildup_signal(None, spot or 0.0), None, None
     try:
+        baseline = "direct"
         if oi_buildup.has_direct_change(chain):     # Breeze gave per-strike ΔOI/Δprice — 1 snapshot
             tbl = oi_buildup.buildup_table_from_change(chain, spot)
-        else:                                        # else diff vs the day-open baseline
+        else:                                        # diff vs day-open, else OVERNIGHT (prev close)
             day = str(pd.Timestamp(ts).date())
             prev = oi_buildup.earliest_snapshot(oi_store.load_history(symbol, day=day))
+            baseline = "day_open"
+            if prev is None:                         # first pull of the day → prev session's close,
+                prev = oi_store.load_prev_close(symbol, day)   # the opening-window read at 09:15
+                baseline = "prev_close"
             tbl = oi_buildup.buildup_table(prev, chain, spot)
         sig = oi_buildup.buildup_signal(tbl, spot)
+        sig["baseline"] = baseline
         summary = summarise_chain(chain, spot)
         rev = reversal_levels(summary, offsets_for(get_instrument(symbol), spot), sig)
         return sig, tbl, rev
@@ -1239,9 +1246,11 @@ def _run_buildup_scan() -> dict:
     hints = []
     stocks = [c for c in cards if c["kind"] == "stock"]
     if stocks and not any(c["has_data"] for c in stocks):
-        if os.environ.get("RECORDER_STOCKS") != "1":
-            hints.append("Stock OI recording is OFF — set RECORDER_STOCKS=1 on Railway "
-                         "(the recorder then pulls each stock's option chain hourly).")
+        if not env_flag("RECORDER_STOCKS"):
+            rv = env_raw("RECORDER_STOCKS")
+            hints.append("Stock OI recording is OFF — set RECORDER_STOCKS=1 on Railway"
+                         + (f" (currently set to unrecognised value '{rv}')" if rv else "")
+                         + " — the recorder then pulls each stock's option chain hourly.")
         else:
             hints.append("Stock OI recording is on but nothing stored yet — first rows land "
                          "within ~60 min of the recorder running in-session; check /healthz errors.")
@@ -1261,17 +1270,44 @@ def _run_buildup_scan() -> dict:
     return data
 
 
+def _buildup_scan_refresh_bg() -> None:
+    """Refresh the watchlist cache in a daemon thread (guarded — one at a time)."""
+    if _BUILDUP_SCAN.get("scanning"):
+        return
+    _BUILDUP_SCAN["scanning"] = True
+
+    def work():
+        try:
+            _run_buildup_scan()
+        except Exception as exc:
+            _BUILDUP_SCAN["data"] = {**(_BUILDUP_SCAN.get("data") or
+                                        {"rows": [], "clear": 0, "with_data": 0, "count": 0}),
+                                     "error": str(exc)}
+        finally:
+            _BUILDUP_SCAN["scanning"] = False
+
+    import threading
+    threading.Thread(target=work, daemon=True).start()
+
+
 @app.get("/api/buildup-scan")
 def buildup_scan_get(refresh: bool = False):
     """OI-buildup watchlist across NIFTY / Bank Nifty / Fin Nifty + the day's most-liquid
     F&O stocks. Each row: the net lean (CLEAR bull/bear highlighted + sorted first), the
     Support/Resistance + EOS/EOR levels, and the strike where OI is SHIFTING most — read
-    from the recorder's stored OI (no Breeze pulls). Honest empty state until OI accrues."""
-    if refresh or _BUILDUP_SCAN["data"] is None or time.time() - _BUILDUP_SCAN["at"] > BUILDUP_SCAN_TTL:
+    from the recorder's stored OI (no Breeze pulls).
+
+    The poll path NEVER computes inline (23 store reads used to stall the busiest requests
+    at the open → browser "Failed to fetch"): serve the cache instantly and refresh it in a
+    background thread when stale. Explicit ``?refresh=true`` (the ⟳ button) and the very
+    first hit (no cache yet) stay synchronous."""
+    if refresh or _BUILDUP_SCAN["data"] is None:
         try:
             return _run_buildup_scan()
         except Exception as exc:
             return {"rows": [], "clear": 0, "with_data": 0, "count": 0, "error": str(exc)}
+    if time.time() - _BUILDUP_SCAN["at"] > BUILDUP_SCAN_TTL:
+        _buildup_scan_refresh_bg()                 # kick a refresh; serve the cache meanwhile
     return _BUILDUP_SCAN["data"]
 
 
@@ -1737,9 +1773,9 @@ def _execute_entry(strategy: str, symbol: str, target: dict, prop, live: bool,
     _ensure_broker()                              # lazily arm if EXECUTION_LIVE=1 (post-boot safe)
     if not live:
         return {"status": "dry_run", "reason": "LIVE was not ticked on the ticket", "order": order_d}
-    if os.environ.get("EXECUTION_LIVE") != "1":
-        return {"status": "dry_run", "reason": "EXECUTION_LIVE is not set to 1 on the server "
-                                               "(add it on Railway and redeploy)", "order": order_d}
+    if not env_flag("EXECUTION_LIVE"):
+        return {"status": "dry_run", "reason": "EXECUTION_LIVE is not enabled on the server "
+                                               "(set it to 1 on Railway)", "order": order_d}
     if BROKER is None:
         return {"status": "dry_run", "reason": "broker not initialised — check Breeze creds/token",
                 "order": order_d}

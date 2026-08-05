@@ -153,3 +153,48 @@ def test_build_macro_gift_manual_overrides_auto(tmp_path):
     m2 = recorder.build_macro(qf, gift_fetch=lambda: {"price": 99.0, "change_pct": 1.0},
                               context_root=tmp_path / "auto")
     assert m2["gift_nifty"]["price"] == 99.0
+
+
+def test_opening_burst_cadence():
+    """First 45 min of the session: indices every 5 min, stocks every 15; then 15/60."""
+    at = lambda hhmm: pd.Timestamp(f"2026-08-05T{hhmm}:00+05:30")
+    assert recorder.cadence_min(at("09:20"), "index") == 5
+    assert recorder.cadence_min(at("09:20"), "stock") == 15
+    assert recorder.cadence_min(at("09:59"), "stock") == 15
+    assert recorder.cadence_min(at("10:00"), "index") == 15   # burst over
+    assert recorder.cadence_min(at("10:00"), "stock") == 60
+    assert recorder.cadence_min(at("09:20"), "stock", open_burst_min=0) == 60   # burst disabled
+
+
+def test_due_instruments_uses_burst_window():
+    insts = [{"name": "NIFTY", "klass": "index"}, {"name": "RELIANCE", "klass": "stock"}]
+    t0 = pd.Timestamp("2026-08-05T09:16:00+05:30")
+    last = {"NIFTY": t0, "RELIANCE": t0}
+    # 6 minutes later, inside the burst: BOTH... index due (5m passed), stock not yet (15m)
+    due1 = recorder.due_instruments(insts, last, t0 + pd.Timedelta(minutes=6))
+    assert [i["name"] for i in due1] == ["NIFTY"]
+    due2 = recorder.due_instruments(insts, last, t0 + pd.Timedelta(minutes=16))
+    assert {i["name"] for i in due2} == {"NIFTY", "RELIANCE"}
+    # post-burst, 20 min after a 10:30 pass: index due (15m), stock not (60m)
+    t1 = pd.Timestamp("2026-08-05T10:30:00+05:30")
+    last2 = {"NIFTY": t1, "RELIANCE": t1}
+    due3 = recorder.due_instruments(insts, last2, t1 + pd.Timedelta(minutes=20))
+    assert [i["name"] for i in due3] == ["NIFTY"]
+
+
+def test_record_once_first_pull_uses_prev_close_baseline(tmp_path):
+    """The first snapshot of a NEW day diffs against the PREVIOUS session's close —
+    the overnight positioning read, available at 09:15 instead of an hour later."""
+    inst = [{"name": "NIFTY", "symbol": "NIFTY", "klass": "index", "band": [37.0, 72.0]}]
+    spot_fns = {"NIFTY": lambda s: 24010.0}
+    prev = _chain(24000)                                   # yesterday's close chain
+    recorder.record_once(inst, {"NIFTY": lambda s: prev}, spot_fns,
+                         now="2026-08-04T15:25:00+05:30", root=tmp_path)
+    cur = _chain(24000)
+    cur["call_oi"] = cur["call_oi"] + 5e5                  # overnight call writing...
+    cur["call_ltp"] = cur["call_ltp"] - 5                  # ...price down = bearish supply
+    recorder.record_once(inst, {"NIFTY": lambda s: cur}, spot_fns,
+                         now="2026-08-05T09:16:00+05:30", root=tmp_path)
+    summ = oi_summary_store.load_summary("NIFTY", root=tmp_path / "oi_summary")
+    row = summ.iloc[-1]                                    # today's 09:16 row HAS a buildup
+    assert row["buildup_bias"] == "bearish" and row["buildup_score"] < 0

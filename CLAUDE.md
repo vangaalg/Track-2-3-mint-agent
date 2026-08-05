@@ -1008,6 +1008,27 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       pre-existing oi_store fail). VALIDATION GATE: do NOT auto-gate/size-up on ⭐ until perfect_split
       proves it forward.
 
+- [x] **Opening-window readiness — first-15-min OI/liquidity (trader: "the first 15 minutes matter
+      most") + env-flag robustness + watchlist hardening.** At 09:26 the trader saw: watchlist "Failed
+      to fetch", every stock "OI pending", the RECORDER_STOCKS-off hint DESPITE having set the variable.
+      Three root causes fixed. (1) **Exact-string env matches**: `== "1"` meant RECORDER_STOCKS=true
+      silently counted as OFF — new `feeds/envutil.flag()` accepts 1/true/yes/on (case-insensitive),
+      swapped in at every gate (RECORDER_STOCKS ×2, SCAN_STOCKS, EXECUTION_LIVE ×5, COCKPIT_NO_BG,
+      RECORDER_NO_BG); the watchlist hint now names an unrecognised raw value. (2) **Opening burst
+      cadence**: pure `recorder.cadence_min`/`due_instruments` — first `OPEN_BURST_MIN` (45) minutes
+      record indices every `BURST_INDEX_EVERY_MIN` (5) and stocks every `BURST_STOCK_EVERY_MIN` (15),
+      then the normal 15/60; env knobs threaded through both services. (3) **Overnight baseline**: new
+      `oi_store.load_prev_close` (+`db.oi_chain_prev_close`) — when today has NO prior snapshot, the
+      buildup diffs the first morning chain against the PREVIOUS session's close → the OVERNIGHT
+      positioning read at 09:15 sharp (was: blind until the 2nd same-day snapshot ~10:15+). Signal
+      carries `baseline: direct|day_open|prev_close`; the panel tag shows "overnight (vs prev close)".
+      (4) **Watchlist "Failed to fetch"**: /api/buildup-scan no longer computes 23 store reads inline on
+      the poll path — serves the cache instantly + refreshes in a guarded daemon thread; ?refresh=true
+      and the cold first hit stay synchronous. Tested: envutil truth table; burst cadence + due-selection;
+      record_once first-pull-of-day uses prev-close (overnight bearish detected); load_prev_close parquet
+      + PG fake; RECORDER_STOCKS=true counts as on (cockpit); insufficient-test mocks the new fallback.
+      Suite green (425; 1 pre-existing oi_store fail). DEPLOY.md: burst knobs + truthy flags documented.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

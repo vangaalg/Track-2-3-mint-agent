@@ -18,6 +18,8 @@ Lightweight imports only (no agent/analysis) so the container is cheap to boot.
 from __future__ import annotations
 
 import os
+
+from feeds.envutil import flag as env_flag
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -46,7 +48,7 @@ def _restore_token() -> bool:
 
 @asynccontextmanager
 async def lifespan(app):
-    if os.environ.get("RECORDER_NO_BG") != "1":       # tests skip the live threads
+    if not env_flag("RECORDER_NO_BG"):                # tests skip the live threads
         _start_background()
     yield
 
@@ -63,11 +65,14 @@ def _recorder_thread() -> None:
     names = os.environ.get("RECORDER_INSTRUMENTS")
     insts = recorder.select_instruments(
         names.split(",") if names else None,
-        with_stocks=os.environ.get("RECORDER_STOCKS") == "1")
+        with_stocks=env_flag("RECORDER_STOCKS"))
     recorder.run(insts or None,
                  index_every=int(os.environ.get("INDEX_EVERY_MIN", "15")),
                  stock_every=int(os.environ.get("STOCK_EVERY_MIN", "60")),
-                 on_cycle=_on_cycle)
+                 on_cycle=_on_cycle,
+                 open_burst_min=int(os.environ.get("OPEN_BURST_MIN", "45")),
+                 burst_index_every=int(os.environ.get("BURST_INDEX_EVERY_MIN", "5")),
+                 burst_stock_every=int(os.environ.get("BURST_STOCK_EVERY_MIN", "15")))
 
 
 def _sync_thread() -> None:

@@ -208,3 +208,17 @@ def test_journal_env_redirected_to_store(monkeypatch):
     assert os.environ["DECISIONS_LOG"].endswith("decisions.jsonl")
     assert "journal_store" in os.environ["JOURNAL_DB"]
     assert server.AFTER_WRITE is not None                # decision push hook wired
+
+
+def test_recorder_stocks_accepts_truthy_spellings(monkeypatch):
+    """RECORDER_STOCKS='true' must count as ON — the trader set exactly that and stock OI
+    silently stayed off under the old exact-'1' match."""
+    monkeypatch.setenv("RECORDER_STOCKS", "true")
+    import web.cockpit_service as cs
+    from feeds import recorder as rec
+    captured = {}
+    monkeypatch.setattr(rec, "select_instruments",
+                        lambda names=None, with_stocks=False: captured.update(ws=with_stocks) or [])
+    monkeypatch.setattr(rec, "run", lambda *a, **k: None)
+    cs._recorder_thread()
+    assert captured["ws"] is True

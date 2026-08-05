@@ -166,3 +166,14 @@ def test_macro_payload_is_valid_json(pg):
                              "2026-06-23T15:27:00+05:30")
     raw = pg["macro"]["2026-06-23T15:27:00+05:30"]
     assert isinstance(json.loads(raw), dict)                 # stored as a jsonb-castable string
+
+
+def test_oi_chain_prev_close_pg(pg):
+    mk = lambda oi: pd.DataFrame({"strike": [100.0], "call_oi": [oi], "put_oi": [1.0],
+                                  "call_ltp": [5.0], "put_ltp": [5.0]})
+    oi_store.save_chain("NIFTY", "2026-08-04T10:00:00+05:30", 100.0, mk(10))
+    oi_store.save_chain("NIFTY", "2026-08-04T15:25:00+05:30", 100.0, mk(20))
+    oi_store.save_chain("NIFTY", "2026-08-05T09:16:00+05:30", 100.0, mk(30))
+    prev = oi_store.load_prev_close("NIFTY", "2026-08-05")
+    assert prev is not None and prev["call_oi"].iloc[0] == 20.0
+    assert oi_store.load_prev_close("NIFTY", "2026-08-04") is None

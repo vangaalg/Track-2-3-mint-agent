@@ -70,3 +70,16 @@ def test_backfill_writes_snapshots_with_mocked_breeze(tmp_path):
                      base=tmp_path)
     assert saved >= 2
     assert oi_store.list_snapshots("NIFTY", base=tmp_path)
+
+
+def test_load_prev_close_parquet(tmp_path):
+    import pandas as pd
+    from feeds import oi_store
+    mk = lambda oi: pd.DataFrame({"strike": [100.0], "call_oi": [oi], "put_oi": [1.0],
+                                  "call_ltp": [5.0], "put_ltp": [5.0]})
+    oi_store.save_chain("NIFTY", "2026-08-04T10:00:00+05:30", 100.0, mk(10), base=tmp_path)
+    oi_store.save_chain("NIFTY", "2026-08-04T15:25:00+05:30", 100.0, mk(20), base=tmp_path)
+    oi_store.save_chain("NIFTY", "2026-08-05T09:16:00+05:30", 100.0, mk(30), base=tmp_path)
+    prev = oi_store.load_prev_close("NIFTY", "2026-08-05", base=tmp_path)
+    assert prev is not None and prev["call_oi"].iloc[0] == 20     # yesterday's LAST, not first
+    assert oi_store.load_prev_close("NIFTY", "2026-08-04", base=tmp_path) is None

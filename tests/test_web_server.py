@@ -115,8 +115,9 @@ def test_snapshot_returns_chart_oi_chain_proposal(client):
 
 
 def test_snapshot_carries_oi_buildup_insufficient_without_baseline(client, monkeypatch):
-    # no prior snapshot today -> deterministic 'insufficient' buildup regardless of on-disk history
+    # no prior snapshot today AND no previous session stored -> honest 'insufficient'
     monkeypatch.setattr(srv.oi_store, "load_history", lambda *a, **k: None)
+    monkeypatch.setattr(srv.oi_store, "load_prev_close", lambda *a, **k: None)
     d = client.get("/api/snapshot").json()
     assert d["oi_buildup"]["insufficient"] is True and d["oi_buildup_table"] == []
     assert d["oi_reversal"]["source"] == "approx"                  # levels off the walls

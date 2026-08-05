@@ -86,6 +86,23 @@ def load_nearest(symbol: str, ts, base: str | Path = DATA_DIR,
     return pd.read_parquet(best)
 
 
+def load_prev_close(symbol: str, day: str, base: str | Path = DATA_DIR) -> pd.DataFrame | None:
+    """The LAST chain snapshot strictly BEFORE ``day`` (YYYY-MM-DD) — i.e. the previous
+    session's close. The overnight buildup baseline: at 09:15, diffing the first fresh
+    chain against this shows where OI built up or unwound OVERNIGHT, instead of waiting
+    for a second same-day snapshot. None when no earlier session is stored."""
+    if db.enabled():
+        return db.oi_chain_prev_close(symbol, day)
+    target = pd.Timestamp(day)
+    best = None
+    for t, f in list_snapshots(symbol, base):
+        if t.normalize() < target.normalize():
+            best = f
+        else:
+            break
+    return pd.read_parquet(best) if best is not None else None
+
+
 def load_history(symbol: str, day: str | None = None,
                  base: str | Path = DATA_DIR) -> pd.DataFrame | None:
     """All per-strike chain snapshots for ``symbol`` (optionally one ``day`` YYYY-MM-DD)

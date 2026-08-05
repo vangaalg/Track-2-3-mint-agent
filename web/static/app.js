@@ -264,6 +264,10 @@ function renderBuildup(d) {
     return;
   }
   panel.hidden = false;
+  // which baseline produced this lean: overnight (vs prev close) / since day open / direct ΔOI
+  const tag = panel.querySelector(".bhdr .tag");
+  if (tag) tag.textContent = bu.baseline === "prev_close" ? "overnight (vs prev close)"
+    : bu.baseline === "direct" ? "ΔOI (direct)" : "since day open";
   maybeBuildupAlert(sym, bu);
   const score = bu.score || 0, pct = Math.round((score + 1) / 2 * 100);   // -1..+1 → 0..100
   const cls = bu.bias === "bullish" ? "bull" : bu.bias === "bearish" ? "bear" : "neutral";

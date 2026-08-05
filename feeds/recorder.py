@@ -146,12 +146,19 @@ def record_once(instruments, fetchers, spot_fns=None, macro_fn=None,
             if oi_buildup.has_direct_change(chain):       # Breeze gave per-strike ΔOI — 1 snapshot
                 buildup = oi_buildup.buildup_signal(
                     oi_buildup.buildup_table_from_change(chain, spot), spot)
+                buildup["baseline"] = "direct"
             else:
+                day = str(pd.Timestamp(now).date())
                 prev = oi_buildup.earliest_snapshot(
-                    oi_store.load_history(name, day=str(pd.Timestamp(now).date()), base=oi_base))
+                    oi_store.load_history(name, day=day, base=oi_base))
+                baseline = "day_open"
+                if prev is None:                          # first pull of the day → overnight read
+                    prev = oi_store.load_prev_close(name, day, base=oi_base)
+                    baseline = "prev_close"
                 if prev is not None:
                     buildup = oi_buildup.buildup_signal(
                         oi_buildup.buildup_table(prev, chain, spot), spot)
+                    buildup["baseline"] = baseline
             oi_store.save_chain(name, now, spot, chain, base=oi_base)
             oi_summary_store.append_summary(name, now, spot, summary, levels,
                                             buildup=buildup, root=summary_root)
@@ -247,10 +254,43 @@ def build_macro(quote_fn, gift_fetch=None, context_root=None) -> dict:
     return macro
 
 
+def cadence_min(now, klass: str, index_every: int = 15, stock_every: int = 60,
+                open_burst_min: int = 45, burst_index_every: int = 5,
+                burst_stock_every: int = 15) -> int:
+    """The recording cadence (minutes) for an instrument class at ``now`` (PURE).
+
+    The first ``open_burst_min`` minutes of the session are when OI positioning is
+    established (overnight unwinding + opening-range writing) — record FASTER there:
+    indices every ``burst_index_every``, stocks every ``burst_stock_every``; afterwards
+    the normal cadence. ``open_burst_min=0`` disables the burst."""
+    t = pd.Timestamp(now)
+    if open_burst_min > 0:
+        open_ts = t.replace(hour=9, minute=15, second=0, microsecond=0)
+        if open_ts <= t < open_ts + pd.Timedelta(minutes=open_burst_min):
+            return burst_index_every if klass == "index" else burst_stock_every
+    return index_every if klass == "index" else stock_every
+
+
+def due_instruments(instruments, last: dict, now, **cadence_kw) -> list[dict]:
+    """Which instruments are due for a recording pass at ``now`` (PURE — testable)."""
+    out = []
+    for i in instruments:
+        if i["name"] not in last:
+            out.append(i)
+            continue
+        every = cadence_min(now, i["klass"], **cadence_kw)
+        if (pd.Timestamp(now) - last[i["name"]]).total_seconds() >= every * 60 - 1:
+            out.append(i)
+    return out
+
+
 def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3,
-        on_cycle=None) -> None:
+        on_cycle=None, open_burst_min=45, burst_index_every=5, burst_stock_every=15) -> None:
     """Market-hours loop: record each instrument on its cadence, macro each cycle.
 
+    Opening burst: for the first ``open_burst_min`` minutes indices record every
+    ``burst_index_every`` and stocks every ``burst_stock_every`` minutes (the
+    highest-information window of the day), then the normal cadence resumes.
     ``on_cycle(info)`` is called after each recording cycle with
     ``{ts, saved, macro, errors}`` (used by the deployed service to surface live status
     + trigger persistence); default None keeps the plain loop.
@@ -261,16 +301,17 @@ def run(instruments=None, index_every=15, stock_every=60, poll_s=30, pace_s=0.3,
     notify_fn = notify.telegram_from_env()          # None when TELEGRAM_* env unset (disabled)
     alert_state = {}                                # per-symbol CLEAR-lean dedup (persists across cycles)
     print(f"recorder: {[i['name'] for i in instruments]} | indices {index_every}m / "
-          f"stocks {stock_every}m | telegram {'on' if notify_fn else 'off'}", file=sys.stderr)
+          f"stocks {stock_every}m | burst {open_burst_min}m@{burst_index_every}/"
+          f"{burst_stock_every}m | telegram {'on' if notify_fn else 'off'}", file=sys.stderr)
+    cadence_kw = dict(index_every=index_every, stock_every=stock_every,
+                      open_burst_min=open_burst_min, burst_index_every=burst_index_every,
+                      burst_stock_every=burst_stock_every)
     while True:
         now = pd.Timestamp.now(tz=IST)
         if not in_session(now):
             time.sleep(60)
             continue
-        due = [i for i in instruments
-               if (i["name"] not in last)
-               or (now - last[i["name"]]).total_seconds()
-               >= (index_every if i["klass"] == "index" else stock_every) * 60 - 1]
+        due = due_instruments(instruments, last, now, **cadence_kw)
         if due:
             errors = []
             res = record_once(due, fetchers, spot_fns, macro_fn=macro_fn, now=now,

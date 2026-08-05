@@ -53,6 +53,7 @@ import web.server as server
 from web.server import app as cockpit             # the cockpit FastAPI app (routes + static)
 from deploy import control, gitsync
 from feeds import recorder, db
+from feeds.envutil import flag as env_flag
 
 STATUS: dict = {"started": None, "last_push": None, "last_pull": None,
                 "token_restored": False, "errors": [],
@@ -61,7 +62,7 @@ STATUS: dict = {"started": None, "last_push": None, "last_pull": None,
 
 @asynccontextmanager
 async def lifespan(app):
-    if os.environ.get("COCKPIT_NO_BG") != "1":     # tests / local skip the live threads
+    if not env_flag("COCKPIT_NO_BG"):               # tests / local skip the live threads
         _start_background()
     yield
 
@@ -229,11 +230,14 @@ def _recorder_thread() -> None:
     names = os.environ.get("RECORDER_INSTRUMENTS")
     insts = recorder.select_instruments(
         names.split(",") if names else None,
-        with_stocks=os.environ.get("RECORDER_STOCKS") == "1")
+        with_stocks=env_flag("RECORDER_STOCKS"))
     recorder.run(insts or None,
                  index_every=int(os.environ.get("INDEX_EVERY_MIN", "15")),
                  stock_every=int(os.environ.get("STOCK_EVERY_MIN", "60")),
-                 on_cycle=_on_cycle)
+                 on_cycle=_on_cycle,
+                 open_burst_min=int(os.environ.get("OPEN_BURST_MIN", "45")),
+                 burst_index_every=int(os.environ.get("BURST_INDEX_EVERY_MIN", "5")),
+                 burst_stock_every=int(os.environ.get("BURST_STOCK_EVERY_MIN", "15")))
 
 
 def _scanner_thread() -> None:
@@ -303,7 +307,7 @@ def _start_background() -> None:
     threading.Thread(target=_recorder_thread, daemon=True).start()
     STATUS["recorder"] = "running"
     # NSE-50 scanner loop — screen the option stocks for trigger + OI + Claude agreement.
-    if os.environ.get("SCAN_STOCKS", "1") != "0":
+    if env_flag("SCAN_STOCKS", default=True):
         threading.Thread(target=_scanner_thread, daemon=True).start()
         STATUS["scanner"] = "running"
     # LIVE execution: when armed, inject the Breeze broker into the seam (shared lazy path —
@@ -312,7 +316,7 @@ def _start_background() -> None:
     # EXECUTION_LIVE=1 so dry-run deploys never place anything. STATUS always carries the
     # armed/disarmed truth (never an absent key that reads as nothing).
     server._ensure_broker()
-    if os.environ.get("EXECUTION_LIVE") == "1" and server.BROKER is not None:
+    if env_flag("EXECUTION_LIVE") and server.BROKER is not None:
         STATUS["broker"] = getattr(server.BROKER, "name", "broker")
         try:
             STATUS["reconcile"] = server._reconcile_live_positions()
@@ -322,7 +326,7 @@ def _start_background() -> None:
         STATUS["exit_monitor"] = "running"
     else:
         STATUS["broker"] = ("error: broker init failed"
-                            if os.environ.get("EXECUTION_LIVE") == "1" else "off")
+                            if env_flag("EXECUTION_LIVE") else "off")
         STATUS["exit_monitor"] = "off"
     STATUS["execution"] = "armed" if server.execution_status()["armed"] else "off"
 
