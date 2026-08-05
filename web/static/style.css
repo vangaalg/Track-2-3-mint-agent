@@ -318,3 +318,11 @@ header { flex-wrap:wrap; gap:6px; }
 .perfectbanner { font-weight:700; color:#a97b12; background:rgba(214,160,43,.14);
   border-radius:6px; padding:3px 8px; margin-bottom:6px; }
 #recPerfect { font-weight:600; }
+
+/* 3:15 CAS setup card */
+.cassignal { font-size:15px; font-weight:600; margin:6px 0; }
+.castime { font-weight:700; color:var(--blue); }
+#casCard .tag.casliveT { background:var(--amber); color:#fff; border-color:var(--amber); }
+#casTbl { width:100%; border-collapse:collapse; font-size:12px; }
+#casTbl th { color:var(--muted); text-align:left; padding:3px 8px; }
+#casTbl td { padding:3px 8px; border-top:1px solid var(--line); }

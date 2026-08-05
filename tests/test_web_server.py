@@ -648,6 +648,57 @@ def test_pnl_monthly_empty_state(client, tmp_path, monkeypatch):
     assert d["months"] == [] and d["first_date"] is None
 
 
+def test_cas_endpoint_decides_samples_and_finalizes(client, monkeypatch, tmp_path):
+    """The 15:13 EP freeze → burst sampling → finalized paper-log row, on a frozen clock."""
+    from journal import store
+    monkeypatch.setattr(srv, "JOURNAL_DB", str(tmp_path / "journal.db"))
+    monkeypatch.setattr(srv, "FUT_FN", lambda code: fut_now["v"])
+    monkeypatch.setattr(srv, "CAS_FAIR_CARRY", 25.0)
+    srv._CAS.update(day=None, samples=[], logged_ep=None, finalized=False,
+                    fut=None, fut_at=0.0, alerted=None)
+    fut_now = {"v": 24648.0}
+    clock = {"t": pd.Timestamp("2026-08-06T15:13:05+05:30")}
+    monkeypatch.setattr(srv, "_cas_now", lambda: clock["t"])
+    client.get("/api/snapshot")                          # spot available (synthetic ~24000)
+
+    d = client.get("/api/cas").json()
+    assert d["phase"] == "decide" and d["futures"] == 24648.0
+    assert d["ep"] is not None                            # EP computed against the live spot
+    assert srv._CAS["logged_ep"] is not None              # decision frozen + persisted
+    row0 = store.load_cas_log(path=srv.JOURNAL_DB)[0]
+    assert row0["date"] == "2026-08-06" and row0["burst_pts"] is None
+
+    # burst window: futures pop; samples accumulate on each poll (10s cadence live)
+    for hms, f in (("15:14:50", 24650.0), ("15:15:10", 24662.0), ("15:15:40", 24671.0),
+                   ("15:16:20", 24668.0)):
+        clock["t"] = pd.Timestamp(f"2026-08-06T{hms}+05:30")
+        fut_now["v"] = f
+        srv._CAS["fut"] = None                            # bust the quote cache per step
+        client.get("/api/cas")
+    clock["t"] = pd.Timestamp("2026-08-06T15:17:30+05:30")
+    srv._CAS["fut"] = None
+    client.get("/api/cas")                                # finalize: burst = peak − 15:15 base
+    row = store.load_cas_log(path=srv.JOURNAL_DB)[0]
+    assert row["burst_pts"] == round(24671.0 - 24650.0, 2)   # 21 pts off the 14:50 base
+    assert row["k"] is not None and row["k"] > 0
+    # manual patch endpoint (tab-closed fallback)
+    r = client.post("/api/cas-log", data={"date": "2026-08-06", "burst_pts": "30", "notes": "manual"})
+    assert r.json()["row"]["burst_pts"] == 30.0
+    assert store.load_cas_log(path=srv.JOURNAL_DB)[0]["notes"] == "manual"
+
+
+def test_cas_endpoint_no_futures_is_honest(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(srv, "JOURNAL_DB", str(tmp_path / "j2.db"))
+    monkeypatch.setattr(srv, "FUT_FN", lambda code: None)
+    srv._CAS.update(day=None, samples=[], logged_ep=None, finalized=False,
+                    fut=None, fut_at=0.0, alerted=None)
+    monkeypatch.setattr(srv, "_cas_now",
+                        lambda: pd.Timestamp("2026-08-06T15:13:05+05:30"))
+    d = client.get("/api/cas").json()
+    assert d["ep"] is None and d["signal"]["side"] is None
+    assert "missing" in d["signal"]["action"]
+
+
 def test_oi_history_empty_when_unrecorded(client, tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
     d = client.get("/api/oi-history?symbol=BANKNIFTY").json()

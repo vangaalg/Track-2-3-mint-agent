@@ -1061,6 +1061,31 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       both registries. Suite green (432; 1 pre-existing oi_store fail). NOTE: NIFFIN/CNXFIN are best-guess
       candidates (self-healing tries both); the live /healthz errors after next session confirm.
 
+- [x] **3:15 CAS setup — closing-auction Excess-Premium card + 10-session paper log (trader's spec,
+      verbatim).** SEBI CAS live since 3-Aug-2026: F&O cash stops 15:15 → ~20-min auction; spot freezes,
+      F&O trade to 15:40; flow concentrates into derivatives at 15:15 → a 60–120 s futures burst; the
+      auction close ≈ futures − carry (verified 5-Aug: spot froze 24,570, fut ~24,648, carry ~25, CAS
+      printed 24,624.65). Setup: at 15:13 EP = Futures − Spot − FairCarry (≈25–30); EP ≥ +15 → buy ITM CE
+      (Δ≥0.65) ~15:14, exit 15:16:30, HARD FLAT 15:18; mirror PE; |EP|<15 no trade. Built: NEW
+      `feeds/futures.py` (near-month NIFTY futures LTP via Breeze get_quotes, monthly last-Tuesday,
+      injectable + never raises), NEW pure `analysis/cas.py` (excess_premium, cas_signal thresholds,
+      phase timeline pre→decide→enter→burst→flatten→auction, estimate_k least-squares-through-origin,
+      cas_card w/ k×EP expected burst + PAPER-phase note), journal `cas_log` table (date-PK upsert:
+      ep/spot/futures/side/burst_pts/k/notes). `GET /api/cas`: live EP + signal + timeline + log; polling
+      it 15:10–15:20 AUTO-SAMPLES the futures burst (EP frozen at the first ≥15:13 poll → persisted;
+      burst = peak-vs-15:15-base measured to 15:17 → k per session) + one `cas_window` event (beep/
+      browser/Telegram) as the window opens; `POST /api/cas-log` patches burst/notes manually (tab-closed
+      fallback). Frontend 🕒 card: phase chip (amber in decide/enter), BUY ITM CE/PE / NO TRADE signal w/
+      expected k×EP pts, Futures−Spot−carry=EP line, timing checklist, paper-log table; 10 s fast-poll
+      timer inside 15:09–15:20 IST. Env `CAS_FAIR_CARRY` (27) / `CAS_MIN_EP` (15). Status honesty baked
+      in: PAPER-LOG phase (log don't trade), k calibrating (seed ≈0.5 from 5-Aug EP 55→burst 25), one lot
+      when live, edge expected to DECAY as arbs adapt, re-validate after the Sept-7 pre-open restructure.
+      Tested in tests/test_cas.py (EP incl. the 5-Aug numbers, thresholds ±15 inclusive, phase bounds,
+      k through-origin, card assembly, futures parse, store upsert) + test_web_server (frozen-clock
+      decide→sample→finalize flow: EP row persists, burst 21 pts computed, k>0, manual patch; honest
+      no-futures state). Suite green (441; 1 pre-existing oi_store fail). LIVE-VERIFY: Breeze futures
+      get_quotes param shapes (right/strike for futures) on the first real 15:10 window.
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

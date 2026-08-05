@@ -1362,6 +1362,114 @@ def pnl_monthly(symbol: str = "NIFTY", strategy: str = "all"):
             "first_date": (rows[0]["date"] if rows else None), **roll}
 
 
+# --- 3:15 CAS setup (closing-auction Excess Premium) ------------------------ #
+from analysis import cas as cas_mod
+from feeds import futures as futures_mod
+
+FUT_FN = None                    # injectable futures-quote fetch(symbol)->ltp; None = Breeze
+CAS_FAIR_CARRY = float(os.environ.get("CAS_FAIR_CARRY", str(cas_mod.FAIR_CARRY_DEFAULT)))
+CAS_MIN_EP = float(os.environ.get("CAS_MIN_EP", str(cas_mod.MIN_EP_DEFAULT)))
+_CAS: dict = {"fut_at": 0.0, "fut": None, "samples": [], "day": None,
+              "logged_ep": None, "finalized": False, "alerted": None}
+
+
+def _cas_now():
+    """IST clock (seam — tests freeze it)."""
+    return pd.Timestamp.now(tz="Asia/Kolkata")
+
+
+def _cas_futures(symbol: str = "NIFTY"):
+    """Futures LTP, cached ~10s inside the window / ~60s outside (one light quote)."""
+    now = time.time()
+    ph = cas_mod.phase(_cas_now())
+    ttl = 10 if ph in ("warmup", "decide", "enter", "burst", "flatten") else 60
+    if _CAS["fut"] is None or now - _CAS["fut_at"] > ttl:
+        fn = FUT_FN or futures_mod.make_futures_fetcher()
+        try:
+            _CAS["fut"] = fn(get_instrument(symbol)["loader_symbol"])
+        except Exception:
+            _CAS["fut"] = None
+        _CAS["fut_at"] = now
+    return _CAS["fut"]
+
+
+def _cas_track(now, ep, fut, spot) -> None:
+    """Sample the window (called on each /api/cas poll) and finalize the day's row:
+    EP frozen at the 15:13 decision, burst measured off the 15:15 futures print."""
+    day = str(now.date())
+    if _CAS["day"] != day:                              # new session → reset
+        _CAS.update(day=day, samples=[], logged_ep=None, finalized=False, alerted=None)
+    hm = now.strftime("%H:%M:%S")
+    if "15:10:00" <= hm <= "15:20:00" and fut is not None:
+        _CAS["samples"].append({"hm": hm, "fut": fut})
+    # freeze the decision EP at/after 15:13 (first poll past it wins)
+    if _CAS["logged_ep"] is None and hm >= "15:13:00" and ep is not None:
+        _CAS["logged_ep"] = {"ep": ep, "spot": spot, "futures": fut,
+                             "side": cas_mod.cas_signal(ep, CAS_MIN_EP)["side"]}
+        try:
+            store.save_cas_log(day, {**_CAS["logged_ep"], "fair_carry": CAS_FAIR_CARRY},
+                               path=JOURNAL_DB)
+        except Exception:
+            pass
+    # finalize the burst once the flatten window has passed
+    if not _CAS["finalized"] and hm >= "15:17:00" and _CAS["logged_ep"]:
+        base = next((s["fut"] for s in _CAS["samples"] if s["hm"] >= "15:14:45"), None)
+        window = [s["fut"] for s in _CAS["samples"] if "15:15:00" <= s["hm"] <= "15:17:00"]
+        if base is not None and window:
+            ep0 = _CAS["logged_ep"]["ep"]
+            burst = (max(window) - base) if ep0 >= 0 else (base - min(window))
+            row = {**_CAS["logged_ep"], "fair_carry": CAS_FAIR_CARRY,
+                   "burst_pts": round(burst, 2),
+                   "k": round(burst / ep0, 3) if ep0 else None}
+            try:
+                store.save_cas_log(day, row, path=JOURNAL_DB)
+            except Exception:
+                pass
+        _CAS["finalized"] = True
+
+
+@app.get("/api/cas")
+def cas_get(symbol: str = "NIFTY"):
+    """The 3:15 CAS decision card: live EP = Futures − Spot − FairCarry, the CE/PE/no-trade
+    signal, the timing checklist, the calibrated burst coefficient k, and the paper log.
+    Polling this during 15:10–15:20 auto-samples the futures burst and persists the day's
+    row (EP frozen at 15:13, burst measured 15:15→15:17)."""
+    now = _cas_now()
+    spot = (_st(symbol)["snap"].spot if _st(symbol).get("snap") else None)
+    fut = _cas_futures(symbol)
+    ep = cas_mod.excess_premium(fut, spot, CAS_FAIR_CARRY)
+    _cas_track(now, ep, fut, spot)
+    try:
+        log_rows = store.load_cas_log(path=JOURNAL_DB)
+    except Exception:
+        log_rows = []
+    card = cas_mod.cas_card(spot, fut, now, CAS_FAIR_CARRY, CAS_MIN_EP, log_rows)
+    card["log"] = log_rows[:12]
+    # one heads-up alert as the decision window opens (beep/notify/Telegram via events)
+    if card["phase"] in ("warmup", "decide") and _CAS["alerted"] != _CAS["day"]:
+        _CAS["alerted"] = _CAS["day"]
+        _push_event("cas_window", symbol,
+                    f"CAS WINDOW OPENING — EP {card['ep'] if card['ep'] is not None else '?'} "
+                    f"(decide at 15:13; ±{CAS_MIN_EP:.0f} bar)")
+    return card
+
+
+@app.post("/api/cas-log")
+def cas_log_edit(date: str = Form(...), burst_pts: float | None = Form(None),
+                 notes: str = Form("")):
+    """Manually patch a session's burst/notes (e.g. the tab was closed during the window)."""
+    rows = {r["date"]: r for r in store.load_cas_log(path=JOURNAL_DB)}
+    row = rows.get(date) or {}
+    if burst_pts is not None:
+        row["burst_pts"] = burst_pts
+        if row.get("ep"):
+            row["k"] = round(burst_pts / row["ep"], 3)
+    if notes:
+        row["notes"] = notes
+    store.save_cas_log(date, row, path=JOURNAL_DB)
+    return {"ok": True, "row": row}
+
+
 @app.get("/api/breadth")
 def breadth_get():
     """NIFTY-50 market breadth + index contribution — advance/decline tally + the top-20

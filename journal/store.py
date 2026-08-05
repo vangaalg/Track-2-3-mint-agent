@@ -320,6 +320,48 @@ def load_replay_daily(symbol: str, path: str | Path = DB_PATH) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# CAS paper log — one row per session for the 3:15 closing-auction setup:
+# EP at 15:13, the signal side, the observed futures burst, per-session k.
+# The calibration record that decides whether the setup ever goes live.
+# --------------------------------------------------------------------------- #
+_CAS_COLS = ("ep", "spot", "futures", "fair_carry", "side", "burst_pts", "k", "notes")
+
+
+def init_cas_log(path: str | Path = DB_PATH) -> None:
+    with _connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cas_log ("
+            "date TEXT PRIMARY KEY, ep REAL, spot REAL, futures REAL, fair_carry REAL, "
+            "side TEXT, burst_pts REAL, k REAL, notes TEXT, updated_at TEXT)")
+
+
+def save_cas_log(date: str, row: dict, path: str | Path = DB_PATH) -> None:
+    """Upsert one session's CAS row (latest wins — the burst lands after the EP)."""
+    init_cas_log(path)
+    vals = [row.get(c) for c in _CAS_COLS]
+    with _connect(path) as conn:
+        conn.execute(
+            "INSERT INTO cas_log (date, " + ", ".join(_CAS_COLS) + ", updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(date) DO UPDATE SET "
+            + ", ".join(f"{c}=excluded.{c}" for c in _CAS_COLS)
+            + ", updated_at=excluded.updated_at",
+            [date] + vals + [datetime.now(timezone.utc).isoformat()])
+
+
+def load_cas_log(path: str | Path = DB_PATH, limit: int = 30) -> list[dict]:
+    """Newest-first CAS sessions (for the card table + k calibration)."""
+    if not Path(path).exists():
+        return []
+    init_cas_log(path)
+    with _connect(path) as conn:
+        rows = conn.execute(
+            "SELECT date, " + ", ".join(_CAS_COLS)
+            + " FROM cas_log ORDER BY date DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- #
 # Market reads — Claude's on-demand "Market view" reads (no trigger). Own table
 # so the day's reads can be browsed/re-opened. ``ts`` is the IST moment the read
 # was generated (used for the day picker + display).

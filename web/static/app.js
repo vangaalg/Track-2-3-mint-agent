@@ -63,7 +63,7 @@ async function poll() {
     renderExecChip(d.execution);
     renderInstruments(d);
     renderChart(d); renderOI(d); renderStrategy();
-    fetchChart(); fetchTable(); fetchPending(); fetchEvents(); fetchLivePos();
+    fetchChart(); fetchTable(); fetchPending(); fetchEvents(); fetchLivePos(); fetchCas();
     fetchPcrHistory(); fetchBreadth(); fetchBuildupScan();
     fetchMarketReads();                               // saved Market-view reads (browse all day)
     // Heavier calls are throttled: /api/record runs settlement (+ possible Claude
@@ -1424,7 +1424,7 @@ async function toggleNotify() {
 // --- cross-instrument event feed (/api/events): fills, SL/target exits, broker errors,
 // fresh triggers on ANY watched instrument. Notifies once per event id.
 let _lastEventId = Number(localStorage.getItem("lastEventId") || 0);
-const _EVENT_ICON = { trigger: "🔔", trigger_perfect: "⭐", order_placed: "🟢", order_filled: "✅", order_failed: "🛑",
+const _EVENT_ICON = { trigger: "🔔", trigger_perfect: "⭐", cas_window: "🕒", order_placed: "🟢", order_filled: "✅", order_failed: "🛑",
                       position_exit: "🏁", exit_failed: "🛑", auto_flatten: "🔁", kill_switch: "⚡" };
 
 async function fetchEvents() {
@@ -1527,6 +1527,41 @@ async function renderBuScanHints(hints) {
         el.innerHTML += `<div class="warn">⚠ recorder is "${s.recorder}" — no OI accrues until it runs.</div>`;
     } catch (e) { /* healthz may be absent locally */ }
   }
+}
+
+// 3:15 CAS setup — EP = Futures − Spot − FairCarry at 15:13; CE/PE/no-trade signal,
+// timing checklist, k calibration + the 10-session paper log. Polled every cycle; the
+// server samples the futures burst automatically while this is being polled 15:10–15:20.
+async function fetchCas() {
+  try { renderCas(await getJson(`/api/cas?symbol=${sym()}`)); }
+  catch (e) { panelErr("casStatus", "cas: " + e.message); }
+}
+
+function renderCas(d) {
+  const sig = d.signal || {};
+  $("casPhase").textContent = ({ pre: "before 15:10", warmup: "warm-up", decide: "⚠ DECIDE NOW",
+    enter: "ENTER window", burst: "BURST — exit by 15:16:30", flatten: "FLATTEN — hard flat 15:18",
+    auction: "auction running", done: "done for today" }[d.phase] || d.phase);
+  $("casPhase").className = "tag" + ((d.phase === "decide" || d.phase === "enter") ? " casliveT" : "");
+  $("casStatus").textContent = `${d.sessions_logged}/${d.paper_sessions} sessions logged`
+    + (d.k != null ? ` · k=${d.k}` : " · k uncalibrated");
+  const cls = sig.side === "CE" ? "win-txt" : sig.side === "PE" ? "loss-txt" : "muted";
+  $("casSignal").innerHTML = `<span class="${cls}"><b>${sig.side ? "BUY ITM " + sig.side : "NO TRADE"}</b>`
+    + ` — ${sig.action || ""}</span>`
+    + (d.expected_burst_pts != null ? ` <span class="muted small">(k×EP ≈ ${d.expected_burst_pts} pts expected)</span>` : "");
+  $("casNums").textContent = `Futures ${n(d.futures)} − Spot ${n(d.spot)} − carry ${n(d.fair_carry, 0)}`
+    + ` = EP ${d.ep != null ? (d.ep >= 0 ? "+" : "") + d.ep : "—"} (bar ±${n(d.min_ep, 0)})`;
+  $("casTimeline").innerHTML = (d.timeline || []).map(([t, txt]) =>
+    `<span class="castime">${t.slice(0, 5)}</span> ${txt}`).join(" · ");
+  $("casNote").textContent = d.paper_phase ? "⚠ " + (d.note || "") : "";
+  const rows = d.log || [];
+  if (!rows.length) { $("casTbl").innerHTML = ""; return; }
+  let h = "<thead><tr><th>Date</th><th>EP</th><th>Side</th><th>Burst pts</th><th>k</th><th>Notes</th></tr></thead><tbody>";
+  for (const r of rows) {
+    h += `<tr><td>${r.date}</td><td>${n(r.ep)}</td><td>${r.side || "—"}</td>`
+      + `<td>${n(r.burst_pts)}</td><td>${n(r.k)}</td><td class="muted">${r.notes || ""}</td></tr>`;
+  }
+  $("casTbl").innerHTML = h + "</tbody>";
 }
 
 // Month-wise cumulative "if ALL triggers taken" P&L — the persisted daily replay ledger
@@ -1718,4 +1753,8 @@ $("pnlStrat").addEventListener("change", (e) => { _pnlStrat = e.target.value; fe
 refreshNotifyBtn();
 wireChartUI(fetchChart);          // timeframe buttons + ⚙ indicator panel (chart.js)
 poll(); setInterval(poll, POLL_MS);
+setInterval(() => {                         // CAS burst sampling: 10s cadence inside the window
+  const ist = new Date(Date.now() + 330 * 60000).toISOString().slice(11, 19);
+  if (ist >= "09:39:00" && ist <= "09:50:00") fetchCas();   // 15:09–15:20 IST in UTC terms
+}, 10000);
 refreshTokenStatus(); setInterval(refreshTokenStatus, 60000);   // token prefill + connection state
