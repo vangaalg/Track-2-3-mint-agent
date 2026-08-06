@@ -77,11 +77,15 @@ def in_session(now) -> bool:
 def implied_spot(chain: pd.DataFrame):
     """Chain-implied spot via put-call parity at the ATM (min |call_ltp − put_ltp|).
 
-    Used only as a fallback when a live spot quote isn't available; degrades to the
-    median strike if LTPs are absent.
+    Used only as a fallback when a live spot quote isn't available. Rows where either
+    LTP is missing OR ZERO are excluded — early-session stock chains carry sparse/stale
+    zero quotes at far strikes, and parity on a 0≈0 pair picked absurd spots (a live
+    watchlist showed Axis Bank "spot 640" against a 1200-strike chain). Degrades to the
+    median strike when no real two-sided quote exists.
     """
     try:
         c = chain.dropna(subset=["call_ltp", "put_ltp"])
+        c = c[(c["call_ltp"] > 0) & (c["put_ltp"] > 0)]
         if c.empty:
             return float(chain["strike"].median())
         row = c.loc[(c["call_ltp"] - c["put_ltp"]).abs().idxmin()]
@@ -214,8 +218,12 @@ def _build_live(instruments):
 
     def make_spot_fn(exchange_code):
         def spot(symbol):
+            from feeds.breeze_oi import _CODE_CACHE
             client = get_breeze_client()
-            resp = client.get_quotes(stock_code=symbol, exchange_code=exchange_code,
+            # use the ISEC code the chain fetcher already resolved (RELIANCE→RELIND etc.);
+            # an unresolved NSE symbol here errored → the parity fallback → bogus spots
+            code = _CODE_CACHE.get(symbol, symbol)
+            resp = client.get_quotes(stock_code=code, exchange_code=exchange_code,
                                      product_type="cash")
             if resp.get("Error"):
                 raise RuntimeError(resp["Error"])

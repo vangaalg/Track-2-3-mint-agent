@@ -198,3 +198,19 @@ def test_record_once_first_pull_uses_prev_close_baseline(tmp_path):
     summ = oi_summary_store.load_summary("NIFTY", root=tmp_path / "oi_summary")
     row = summ.iloc[-1]                                    # today's 09:16 row HAS a buildup
     assert row["buildup_bias"] == "bearish" and row["buildup_score"] < 0
+
+
+def test_implied_spot_ignores_zero_ltp_rows():
+    """Sparse early-session chains carry 0/stale LTPs at far strikes — parity on a 0≈0
+    pair produced absurd spots (live: Axis 'spot 640' on a 1200-strike chain)."""
+    chain = pd.DataFrame({
+        "strike": [640.0, 1150.0, 1200.0, 1250.0],
+        "call_oi": [1, 10, 20, 10], "put_oi": [1, 10, 20, 10],
+        "call_ltp": [0.0, 60.0, 25.0, 8.0],        # 640 has a zero-zero pair
+        "put_ltp": [0.0, 10.0, 22.0, 55.0],
+    })
+    sp = recorder.implied_spot(chain)
+    assert 1150 <= sp <= 1260                       # near the real ATM, never 640
+    # all-zero LTPs -> median-strike fallback, not a far-strike artifact
+    dead = chain.assign(call_ltp=0.0, put_ltp=0.0)
+    assert recorder.implied_spot(dead) == chain["strike"].median()

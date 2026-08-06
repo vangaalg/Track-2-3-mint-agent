@@ -13,6 +13,17 @@ from __future__ import annotations
 STRONG = 0.4      # |score| for a CLEAR lean (mirrors analysis.trade1.BUILDUP_STRONG + the UI)
 
 
+def _clean(v):
+    """NaN → None (summary rows written before buildup existed carry NULL→NaN columns;
+    FastAPI encodes JSON with allow_nan=False, so a stray NaN 500s the endpoint)."""
+    try:
+        if v is None or (isinstance(v, float) and v != v):
+            return None
+    except Exception:
+        return None
+    return v
+
+
 def build_card(symbol: str, row: dict | None, strong: float = STRONG) -> dict:
     """One watchlist card from a summary row (``oi_summary_store`` row dict) or None.
 
@@ -22,7 +33,7 @@ def build_card(symbol: str, row: dict | None, strong: float = STRONG) -> dict:
     for the leaning side (puts written → support; calls written → resistance)."""
     if not row:
         return {"symbol": symbol, "has_data": False, "bias": "neutral", "clear": False}
-    g = row.get
+    g = lambda k: _clean(row.get(k))                 # NaN-safe (NULL buildup cols → NaN → 500)
     score = g("buildup_score")
     strength = abs(score) if score is not None else 0.0
     bias = g("buildup_bias") or "neutral"
@@ -31,7 +42,7 @@ def build_card(symbol: str, row: dict | None, strong: float = STRONG) -> dict:
         g("buildup_call_strike") if bias == "bearish" else None)
     return {
         "symbol": symbol, "has_data": True,
-        "ts": g("ts"), "spot": g("spot"),
+        "ts": row.get("ts"), "spot": g("spot"),
         "bias": bias, "score": score, "strength": round(strength, 3), "clear": clear,
         "resistance": g("call_wall_strike"), "support": g("put_shelf_strike"),
         "eor": g("call_wall_strike"), "eor_ext": g("res_ext1"),      # ≈ EOR / EOR+1

@@ -1086,6 +1086,18 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       no-futures state). Suite green (441; 1 pre-existing oi_store fail). LIVE-VERIFY: Breeze futures
       get_quotes param shapes (right/strike for futures) on the first real 15:10 window.
 
+- [x] **Watchlist ⟳ HTTP 500 (NaN JSON) + bogus stock spot values (live 6-Aug catch).** With stock OI
+      finally flowing (ISEC + Tuesday fixes verified live: Bajaj-Auto/NTPC CLEAR BEAR, Adaniports/Axis/
+      Bharti/Grasim CLEAR BULL, FINNIFTY self-healed to CLEAR BULL), two bugs surfaced: (1) ⟳ Refresh →
+      HTTP 500 — first-of-day summary rows carry NULL buildup columns → pandas NaN → `build_card` passed
+      NaN through and FastAPI's `allow_nan=False` JSON encoding raised (reproduced exactly). Fix:
+      `buildup_scan._clean` NaN→None on every card field (score NaN → strength 0, clear False).
+      (2) absurd stock spots (Axis "640" on a 1200-strike chain): `recorder.implied_spot` parity picked
+      0≈0 stale far-strike pairs — now requires BOTH LTPs > 0 (median-strike fallback otherwise); AND
+      `make_spot_fn` now quotes with the chain-resolved ISEC code from `breeze_oi._CODE_CACHE` (the NSE
+      symbol errored → parity fallback → garbage). Tested: NaN card json.dumps(allow_nan=False) clean +
+      zero-LTP parity guard. Suite green (443; 1 pre-existing oi_store fail).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

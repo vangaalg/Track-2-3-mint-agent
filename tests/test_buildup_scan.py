@@ -51,3 +51,20 @@ def test_scan_sorts_clear_first_then_data():
     cards = scan(["AAA", "BBB", "CCC"], lambda s: frames.get(s))
     assert [c["symbol"] for c in cards] == ["BBB", "AAA", "CCC"]         # clear → data → none
     assert cards[0]["clear"] and not cards[2]["has_data"]
+
+
+def test_card_is_nan_safe_and_json_encodable():
+    """A first-of-day summary row has NULL buildup columns -> pandas NaN; the card must
+    swap NaN for None or FastAPI's allow_nan=False JSON encoding 500s the endpoint
+    (the live '⟳ Refresh -> HTTP 500' bug)."""
+    import json
+    row = {"ts": "t", "spot": float("nan"), "buildup_bias": None,
+           "buildup_score": float("nan"), "call_writing": float("nan"),
+           "put_writing": None, "call_wall_strike": 24600.0,
+           "put_shelf_strike": float("nan"), "res_ext1": 24637.0,
+           "sup_ext1": float("nan"), "buildup_call_strike": float("nan"),
+           "buildup_put_strike": None, "pcr": float("nan")}
+    c = build_card("X", row)
+    json.dumps(c, allow_nan=False)                 # must not raise
+    assert c["score"] is None and c["strength"] == 0.0 and c["clear"] is False
+    assert c["spot"] is None and c["resistance"] == 24600.0
