@@ -714,6 +714,29 @@ def test_cas_endpoint_decides_samples_and_finalizes(client, monkeypatch, tmp_pat
     assert store.load_cas_log(path=srv.JOURNAL_DB)[0]["notes"] == "manual"
 
 
+def test_cas_spot_falls_back_to_recorded_spot(client, monkeypatch, tmp_path):
+    """A bad/stale snapshot spot (the 6-Aug 14018 vs 24712-futures bug) is rejected and the
+    recorder's last recorded spot is used instead so the EP stays usable; with no better spot
+    the bad value is returned unchanged for cas_card to flag suspect."""
+    from feeds import oi_summary_store
+    root = tmp_path / "oi_summary"
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(root))
+    oi_summary_store.append_summary("NIFTY", "2026-08-06T13:30:00+05:30", 24667.0,
+                                    {"pcr": 1.0}, {}, buildup={"bias": "neutral", "score": 0.0},
+                                    root=root)
+    # a LATER poisoned row (cockpit recorded the same bad snapshot spot) must be skipped
+    oi_summary_store.append_summary("NIFTY", "2026-08-06T13:45:00+05:30", 14018.0,
+                                    {"pcr": 1.0}, {}, buildup={"bias": "neutral", "score": 0.0},
+                                    root=root)
+    # implausible snapshot spot vs futures → newest VALID recorded spot substituted (not the 14018)
+    assert srv._cas_spot("NIFTY", 14018.0, 24712.0) == 24667.0
+    # a valid snapshot spot is kept as-is
+    assert srv._cas_spot("NIFTY", 24670.0, 24712.0) == 24670.0
+    # no recorded spot to fall back to → return the bad value (cas_card marks it suspect)
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
+    assert srv._cas_spot("NIFTY", 14018.0, 24712.0) == 14018.0
+
+
 def test_cas_endpoint_no_futures_is_honest(client, monkeypatch, tmp_path):
     monkeypatch.setattr(srv, "JOURNAL_DB", str(tmp_path / "j2.db"))
     monkeypatch.setattr(srv, "FUT_FN", lambda code: None)

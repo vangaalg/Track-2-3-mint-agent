@@ -1152,6 +1152,23 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     (the view spans all recorded days; a day picker is the easy follow-on). Tested: date-break
     splits an overnight-spanning series into 2 episodes + `date` field (test_buildup_log, 9);
     endpoint carries `date` (test_web_server). node --check clean; suite green (453).
+- [x] **CAS spot sanity guard + trusted-spot fallback (live 6-Aug catch: EP +10667).** The 3:15 CAS
+      card read NIFTY spot as **14018** while futures was 24712 → EP +10667 → a bogus "BUY ITM CE".
+      Root cause: spot = the live snapshot's last 3-min close (`snap.spot`), which was a bad tick / a
+      STALE NIFTY snapshot (`/api/cas` reads `_st("NIFTY")` without forcing a refresh, so if NIFTY
+      isn't the actively-viewed instrument its spot goes stale); futures is fetched fresh (correct). An
+      index future never trades 43% off spot, so: (1) `analysis.cas.spot_looks_valid(spot, futures,
+      MAX_BASIS_PCT=3.0)` — a real basis is <~1%, a gap beyond 3% means the spot is wrong; `cas_card`
+      now SUPPRESSES the EP + signal when the spot is implausible (`spot_suspect=True`, action = "⚠ spot
+      feed looks wrong (futures X vs spot Y) — EP suppressed") instead of printing a garbage trade.
+      (2) `web.server._cas_spot` falls back to the recorder's newest VALID recorded spot (what the
+      watchlist trusts, ~24667) when the snapshot spot is implausible vs futures — walks newest→oldest so
+      a poisoned latest row (cockpit having recorded the same bad snapshot spot) is skipped — so the EP
+      stays usable (24712−24667−27 = +18); `_cas_track` only logs/samples an EP when the spot is valid,
+      so no garbage lands in the paper log. Frontend flags the bad spot value red with a ⚠. Tested:
+      spot_looks_valid truth table (incl. the 6-Aug numbers + a genuine window divergence staying valid),
+      cas_card suppression, `_cas_spot` fallback + poisoned-row skip + no-fallback passthrough. node
+      --check clean; suite green (456).
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

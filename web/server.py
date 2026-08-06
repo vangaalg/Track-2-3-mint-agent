@@ -1433,6 +1433,25 @@ def _cas_futures(symbol: str = "NIFTY"):
     return _CAS["fut"]
 
 
+def _cas_spot(symbol: str, spot, fut):
+    """Trust the live snapshot spot unless it's implausible for these futures (a bad tick or a
+    stale NIFTY snapshot — /api/cas reads NIFTY's state without forcing a refresh). Then fall
+    back to the recorder's last recorded spot (what the watchlist trusts) so the EP stays usable."""
+    if fut is None or cas_mod.spot_looks_valid(spot, fut):
+        return spot
+    try:
+        df = oi_summary_store.load_summary(symbol.upper(), root=OI_SUMMARY_ROOT)
+        if df is not None and not df.empty and "spot" in df.columns:
+            # newest → oldest: the first spot that's plausible for these futures (a poisoned
+            # latest row — e.g. the cockpit having recorded the same bad snapshot spot — is skipped)
+            for v in reversed(df["spot"].dropna().tolist()):
+                if cas_mod.spot_looks_valid(float(v), fut):
+                    return float(v)
+    except Exception:
+        pass
+    return spot                        # nothing better — cas_card flags it spot_suspect
+
+
 def _cas_track(now, ep, fut, spot) -> None:
     """Sample the window (called on each /api/cas poll) and finalize the day's row:
     EP frozen at the 15:13 decision, burst measured off the 15:15 futures print."""
@@ -1477,7 +1496,9 @@ def cas_get(symbol: str = "NIFTY"):
     now = _cas_now()
     spot = (_st(symbol)["snap"].spot if _st(symbol).get("snap") else None)
     fut = _cas_futures(symbol)
-    ep = cas_mod.excess_premium(fut, spot, CAS_FAIR_CARRY)
+    spot = _cas_spot(symbol, spot, fut)          # bad/stale snapshot spot → trusted recorded spot
+    ep = (cas_mod.excess_premium(fut, spot, CAS_FAIR_CARRY)
+          if cas_mod.spot_looks_valid(spot, fut) else None)   # never log/sample a garbage-spot EP
     _cas_track(now, ep, fut, spot)
     try:
         log_rows = store.load_cas_log(path=JOURNAL_DB)

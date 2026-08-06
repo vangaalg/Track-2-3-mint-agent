@@ -26,6 +26,7 @@ import pandas as pd
 FAIR_CARRY_DEFAULT = 27.0        # ≈25–30 pts for the Aug-2026 monthly; env/knob-tunable
 MIN_EP_DEFAULT = 15.0            # |EP| below this → no trade
 PAPER_SESSIONS = 10              # calibration phase length (sessions)
+MAX_BASIS_PCT = 3.0              # index futures trade within ~1% of spot; beyond this the spot leg is bad
 
 # The decision-window timeline (IST). Times as "HH:MM:SS" for the checklist.
 TIMELINE = [
@@ -45,6 +46,24 @@ def excess_premium(futures: float | None, spot: float | None,
     if futures is None or spot is None:
         return None
     return round(float(futures) - float(spot) - float(fair_carry), 2)
+
+
+def spot_looks_valid(spot, futures, max_basis_pct: float = MAX_BASIS_PCT) -> bool:
+    """True when spot is a plausible cash level for these futures. An index future trades
+    within a fraction of a percent of spot (basis = carry), so a gap beyond ``max_basis_pct``
+    means the spot quote is wrong — a bad tick or a stale snapshot (the real 6-Aug bug: a
+    NIFTY future at 24712 with spot read as 14018 = 43% off = impossible). Guards the EP so a
+    garbage spot never produces a garbage "BUY ITM" signal. With no futures to compare against
+    a lone spot is accepted (nothing to cross-check)."""
+    if spot is None:
+        return False
+    if futures is None:
+        return True
+    try:
+        s, f = float(spot), float(futures)
+        return s > 0 and f > 0 and abs(f - s) <= (max_basis_pct / 100.0) * f
+    except Exception:
+        return False
 
 
 def cas_signal(ep: float | None, min_ep: float = MIN_EP_DEFAULT) -> dict:
@@ -99,13 +118,20 @@ def estimate_k(rows: list[dict]) -> float | None:
 def cas_card(spot, futures, now, fair_carry: float = FAIR_CARRY_DEFAULT,
              min_ep: float = MIN_EP_DEFAULT, log_rows: list[dict] | None = None) -> dict:
     """Everything the 15:13 decision needs, in one payload."""
-    ep = excess_premium(futures, spot, fair_carry)
+    # A spot that can't be right for these futures (bad tick / stale snapshot) must NOT drive a
+    # trade — suppress the EP + signal and say so, rather than print "BUY ITM CE EP +10667".
+    suspect = spot is not None and futures is not None and not spot_looks_valid(spot, futures)
+    ep = None if suspect else excess_premium(futures, spot, fair_carry)
     sig = cas_signal(ep, min_ep)
+    if suspect:
+        sig = {"side": None, "ep": None,
+               "action": (f"⚠ spot feed looks wrong (futures {float(futures):.0f} vs "
+                          f"spot {float(spot):.0f}) — EP suppressed; check the NIFTY quote")}
     rows = log_rows or []
     k = estimate_k(rows)
     expected = round(ep * k, 1) if (ep is not None and k is not None) else None
     return {
-        "spot": spot, "futures": futures, "fair_carry": fair_carry,
+        "spot": spot, "futures": futures, "fair_carry": fair_carry, "spot_suspect": suspect,
         "ep": ep, "min_ep": min_ep, "signal": sig, "phase": phase(now),
         "timeline": TIMELINE,
         "k": k, "expected_burst_pts": expected,

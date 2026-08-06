@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analysis.cas import (excess_premium, cas_signal, phase, estimate_k, cas_card)
+from analysis.cas import (excess_premium, cas_signal, phase, estimate_k, cas_card,
+                          spot_looks_valid)
 from feeds.futures import parse_futures_ltp
 from journal import store
 
@@ -58,6 +59,29 @@ def test_cas_card_assembly():
     # missing futures leg → honest no-data signal, never a guess
     card2 = cas_card(24570.0, None, pd.Timestamp("2026-08-05T15:13:10+05:30"))
     assert card2["ep"] is None and card2["signal"]["side"] is None
+
+
+def test_spot_looks_valid():
+    assert spot_looks_valid(24570.0, 24648.0) is True        # ~78-pt basis, plausible
+    assert spot_looks_valid(14018.0, 24712.0) is False       # the 6-Aug bug: 43% off = impossible
+    assert spot_looks_valid(0.0, 24712.0) is False           # non-positive spot
+    assert spot_looks_valid(None, 24712.0) is False
+    assert spot_looks_valid(24570.0, None) is True           # no futures to cross-check → accept
+    # a genuine CAS-window divergence (spot frozen, futures ran) stays well within tolerance
+    assert spot_looks_valid(24570.0, 24680.0) is True        # 110 pts ≈ 0.45% < 3%
+
+
+def test_cas_card_suppresses_a_bad_spot():
+    """The 6-Aug garbage: futures 24712 with spot read as 14018 must NOT print a BUY signal —
+    EP suppressed, spot flagged suspect, and the reason surfaced."""
+    card = cas_card(14018.0, 24712.0, pd.Timestamp("2026-08-06T13:31:00+05:30"))
+    assert card["spot_suspect"] is True
+    assert card["ep"] is None and card["signal"]["side"] is None
+    assert "spot feed looks wrong" in card["signal"]["action"]
+    assert card["expected_burst_pts"] is None
+    # a valid spot for the same futures reads normally
+    ok = cas_card(24667.0, 24712.0, pd.Timestamp("2026-08-06T13:31:00+05:30"))
+    assert ok["spot_suspect"] is False and ok["ep"] == 24712.0 - 24667.0 - 27.0
 
 
 def test_parse_futures_ltp():

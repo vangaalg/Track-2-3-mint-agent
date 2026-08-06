@@ -1748,7 +1748,8 @@ function renderCas(d) {
   $("casSignal").innerHTML = `<span class="${cls}"><b>${sig.side ? "BUY ITM " + sig.side : "NO TRADE"}</b>`
     + ` — ${sig.action || ""}</span>`
     + (d.expected_burst_pts != null ? ` <span class="muted small">(k×EP ≈ ${d.expected_burst_pts} pts expected)</span>` : "");
-  $("casNums").textContent = `Futures ${n(d.futures)} − Spot ${n(d.spot)} − carry ${n(d.fair_carry, 0)}`
+  const spotTxt = d.spot_suspect ? `<span class="loss-txt">${n(d.spot)} ⚠</span>` : n(d.spot);
+  $("casNums").innerHTML = `Futures ${n(d.futures)} − Spot ${spotTxt} − carry ${n(d.fair_carry, 0)}`
     + ` = EP ${d.ep != null ? (d.ep >= 0 ? "+" : "") + d.ep : "—"} (bar ±${n(d.min_ep, 0)})`;
   $("casTimeline").innerHTML = (d.timeline || []).map(([t, txt]) =>
     `<span class="castime">${t.slice(0, 5)}</span> ${txt}`).join(" · ");
