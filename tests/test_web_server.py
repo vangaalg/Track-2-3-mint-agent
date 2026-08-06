@@ -603,6 +603,33 @@ def test_buildup_scan_empty_when_unrecorded(client, tmp_path, monkeypatch):
     assert any("nothing stored yet" in h for h in d2["hints"])
 
 
+def test_buildup_log_records_clear_transition_and_hold(client, tmp_path, monkeypatch):
+    """The CLEAR bull/bear log derives episodes from the recorded lean series: NIFTY crosses
+    bull → clear_bull at 09:40 and holds to 09:50 ⇒ one holding episode, from_state=bull,
+    duration 10 min."""
+    from feeds import oi_summary_store
+    root = tmp_path / "oi_summary"
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(root))
+    for ts, score, bias in [("2026-08-06T09:35:00+05:30", 0.2, "bullish"),
+                            ("2026-08-06T09:40:00+05:30", 0.5, "bullish"),
+                            ("2026-08-06T09:45:00+05:30", 0.6, "bullish"),
+                            ("2026-08-06T09:50:00+05:30", 0.45, "bullish")]:
+        oi_summary_store.append_summary(
+            "NIFTY", ts, 24000.0, {"pcr": 1.0},
+            {}, buildup={"bias": bias, "score": score}, root=root)
+    d = client.get("/api/buildup-log?symbol=NIFTY&refresh=true").json()
+    assert d["holding"] == 1 and d["count"] == 1
+    e = d["rows"][0]
+    assert e["symbol"] == "NIFTY" and e["state"] == "clear_bull"
+    assert e["from_state"] == "bull" and e["holding"] is True
+    assert e["duration_min"] == 10.0 and e["start"].startswith("2026-08-06T09:40")
+    assert "2026-08-06" in d["days"]
+    # empty when nothing recorded
+    monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
+    empty = client.get("/api/buildup-log?symbol=NIFTY&refresh=true").json()
+    assert empty["count"] == 0 and empty["rows"] == []
+
+
 def test_refresh_writes_pnl_ledger_and_monthly_rolls_up(client, monkeypatch, tmp_path):
     """Each refresh persists the per-strategy 'if all taken' footer; /api/pnl-monthly rolls
     the ledger up month-wise with a running cumulative (the trader's cumulative-₹ ask)."""

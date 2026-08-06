@@ -70,6 +70,7 @@ async function poll() {
     // post-mortems) server-side, and the triggers-log refetches every instrument+day.
     if (_pollN % 5 === 1) { fetchRecord(); fetchPnl(); }   // ledger view rides the slow slot
     if (_pollN % 4 === 1) fetchTriggersLog();
+    if (_pollN % 4 === 2) fetchBuildupLog();          // CLEAR bull/bear transition log (throttled)
     if ($("scanAuto").checked) fetchScanner();        // auto-refresh the scanner (toggle)
   } catch (e) {
     $("dot").className = "dot err"; $("meta").textContent = "error: " + e.message;
@@ -409,6 +410,68 @@ function renderBuildupScan(d) {
       + `<td><button class="btn mini" data-bufocus="${r.symbol}">Focus</button></td></tr>`;
   }
   $("buScanTbl").innerHTML = h + "</tbody>";
+}
+
+// CLEAR bull/bear transition log: when each instrument crossed into a strong OI lean and how
+// long it has held it (derived from the recorded oi_summary series — no Breeze pulls).
+async function fetchBuildupLog(refresh) {
+  const sel = $("buLogSym");
+  const wanted = sel ? sel.value : "all";
+  try {
+    const d = await getJson(`/api/buildup-log?symbol=${encodeURIComponent(wanted)}`
+      + (refresh ? "&refresh=true" : ""));
+    // ensure the active instrument is a pickable option (besides "All")
+    if (sel && currentSymbol && !Array.from(sel.options).some((o) => o.value === currentSymbol)) {
+      const o = document.createElement("option"); o.value = currentSymbol; o.textContent = currentSymbol;
+      sel.appendChild(o);
+    }
+    renderBuildupLog(d);
+    panelErr("buLogStatus", null);
+  } catch (e) { panelErr("buLogStatus", "log: " + e.message); }
+}
+
+async function buLogRefresh() {
+  $("buLogRefresh").disabled = true; $("buLogStatus").textContent = "refreshing…";
+  await fetchBuildupLog(true);
+  $("buLogRefresh").disabled = false;
+}
+
+function fmtDur(m) {
+  const v = Math.round(m || 0);
+  if (v < 60) return `${v} min`;
+  return `${Math.floor(v / 60)}h ${v % 60}m`;
+}
+
+function renderBuildupLog(d) {
+  const rows = d.rows || [];
+  $("buLogStatus").innerHTML = d.error ? `<span class="loss-txt">error</span>`
+    : `${d.holding || 0} holding · ${d.count || 0} today`
+      + (d.generated ? ` · ${String(d.generated).slice(11, 16)}` : "");
+  if (!rows.length) {
+    $("buLogTbl").innerHTML = "<tbody><tr><td class='muted'>No CLEAR lean recorded yet — an "
+      + "episode is logged once the OI lean crosses |score| ≥ 0.4 (recorder/cockpit must be live).</td></tr></tbody>";
+    return;
+  }
+  const badge = (r) => r.bias === "bullish"
+    ? `<span class="bup">🟢 CLEAR BULL</span>` : `<span class="bdn">🔴 CLEAR BEAR</span>`;
+  const hhmm = (t) => String(t || "").slice(11, 16);
+  const pretty = (s) => ({ clear_bull: "clear bull", clear_bear: "clear bear" }[s] || s || "—");
+  let h = "<thead><tr><th>Script</th><th>State</th><th>Since</th><th>Held</th>"
+    + "<th>From→</th><th>Peak</th><th>Spot@start</th></tr></thead><tbody>";
+  for (const r of rows) {
+    const held = r.holding
+      ? `<b>${fmtDur(r.duration_min)}</b> <span class="win-txt">· holding</span>`
+      : `${fmtDur(r.duration_min)} <span class="muted small">→ ${pretty(r.to_state)} ${hhmm(r.end)}</span>`;
+    h += `<tr class="${r.holding ? (r.bias === "bullish" ? "clearbull" : "clearbear") : ""}">`
+      + `<td><b>${r.label || r.symbol}</b></td>`
+      + `<td>${badge(r)}</td>`
+      + `<td>${hhmm(r.start)}</td>`
+      + `<td>${held}</td>`
+      + `<td class="muted small">${pretty(r.from_state)} →</td>`
+      + `<td>${n(r.peak_score)}</td>`
+      + `<td>${r.spot_at_start != null ? n(r.spot_at_start, 1) : "—"}</td></tr>`;
+  }
+  $("buLogTbl").innerHTML = h + "</tbody>";
 }
 
 async function scanRescan() {
@@ -1692,6 +1755,8 @@ $("buScanTbl").addEventListener("click", (e) => {   // Focus a watchlist script'
   const f = e.target.closest("button[data-bufocus]");
   if (f) focusInstrument(f.dataset.bufocus);
 });
+$("buLogRefresh").onclick = buLogRefresh;
+$("buLogSym").addEventListener("change", () => fetchBuildupLog(true));
 $("scanAuto").checked = localStorage.getItem("scanAuto") !== "0";   // restore the toggle
 $("scanAuto").addEventListener("change", (e) => {
   localStorage.setItem("scanAuto", e.target.checked ? "1" : "0");

@@ -1098,6 +1098,27 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       symbol errored → parity fallback → garbage). Tested: NaN card json.dumps(allow_nan=False) clean +
       zero-LTP parity guard. Suite green (443; 1 pre-existing oi_store fail).
 
+- [x] **CLEAR bull/bear transition log — WHEN each instrument turned + HOW LONG it holds (trader ask).**
+      The OI-buildup lean was point-in-time only (the watchlist shows the CURRENT state); no history of
+      WHEN it crossed into a strong lean or how long it has held. Built as a PURE derivation over the
+      ALREADY-persisted `oi_summary` series (`buildup_bias`/`buildup_score` per cycle) — no new write path,
+      works retroactively over the whole recorded day. New `feeds/buildup_log.py`: `grade_state` (score →
+      5-step clear_bull/bull/neutral/bear/clear_bear, thresholds mirror `buildup_signal` 0.15 + the CLEAR
+      bar 0.4), `clear_episodes` (collapse contiguous CLEAR runs → episode with start/end, duration_min,
+      `holding`, `from_state` (e.g. bull→clear_bull), `to_state`, peak_score, spot_at_start), `collect`
+      (across many instruments, holding-first then newest-start, failing loader isolated). `web/server.py`:
+      `GET /api/buildup-log?symbol=all|<sym>&day=` (60s single-entry cache; `all` = the buildup watchlist
+      indices+liquid stocks, single symbol = one file read) → `_compute_buildup_log`. Frontend: 🕓 "CLEAR
+      bull/bear log" card (index.html/app.js) — instrument picker (All / active) + ⟳ Refresh, table of
+      episodes (script · 🟢CLEAR BULL/🔴CLEAR BEAR · since HH:MM · held "10 min · holding" or "→ bear 10:30"
+      · from→ · peak · spot@start), holding episodes highlighted+first, honest empty state; polled on the
+      throttled slot (`_pollN % 4 === 2`). Matches the trader's example exactly: bull→clear_bull @09:40,
+      still clear @09:50 ⇒ duration 10 min, holding. Duration reads off recorded ts so a holding episode
+      grows as new cycles land (recorder ~15m; cockpit finer per OI bucket). Tested: grade thresholds +
+      episode collapse/duration/from-to + two-episode re-entry + holding-first sort + failing-loader
+      isolation (test_buildup_log, 7) + endpoint records the 09:40→09:50 hold + empty state
+      (test_web_server). node --check clean; suite green (452).
+
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
       last-7-days 3-min Trade-1 trigger as-it-was and back-train the agent. Mirrors live

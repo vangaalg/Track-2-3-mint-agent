@@ -37,7 +37,7 @@ from feeds.breadth import compute_breadth
 from feeds.instruments import (
     INSTRUMENTS, get_instrument, instrument_list, offsets_for, DEFAULT_INSTRUMENT,
     scanner_symbols, buildup_indices)
-from feeds import buildup_scan, liquidity
+from feeds import buildup_scan, buildup_log, liquidity
 from feeds.envutil import flag as env_flag, raw as env_raw
 from analysis.trade1 import (
     propose_trade1, apply_strike, apply_oi_boost, apply_oi_confidence,
@@ -976,6 +976,46 @@ def oi_history(symbol: str = "NIFTY", day: str | None = None):
         df = df[[str(t)[:10] == day for t in df.index]]
     rows = json.loads(df.reset_index().to_json(orient="records"))  # NaN -> null
     return {"symbol": symbol.upper(), "rows": rows, "days": days}
+
+
+_BUILDUP_LOG: dict = {"at": 0.0, "key": None, "data": None}
+BUILDUP_LOG_TTL = 60           # seconds — a store read; single-instrument is one file, "all" is many
+
+
+def _compute_buildup_log(symbol: str, day: str | None) -> dict:
+    """Derive the CLEAR bull/bear transition episodes from the recorded OI-summary series."""
+    load = lambda s: oi_summary_store.load_summary(s.upper(), root=OI_SUMMARY_ROOT)
+    syms = _buildup_watchlist() if (not symbol or symbol == "all") else [symbol.upper()]
+    eps = buildup_log.collect(syms, load)
+    for e in eps:
+        e["label"] = get_instrument(e["symbol"]).get("label", e["symbol"])
+    days = sorted({e["start"][:10] for e in eps if e.get("start")}, reverse=True)
+    if day and day != "all":
+        eps = [e for e in eps if (e.get("start") or "")[:10] == day]
+    return {"symbol": (symbol or "all").upper(), "rows": eps, "days": days,
+            "count": len(eps), "holding": sum(1 for e in eps if e["holding"]),
+            "generated": datetime.now().isoformat(timespec="seconds")}
+
+
+@app.get("/api/buildup-log")
+def buildup_log_get(symbol: str = "all", day: str | None = None, refresh: bool = False):
+    """CLEAR bull / CLEAR bear transition log: when each instrument crossed INTO a strong OI
+    lean and how long it has HELD it (from the recorded ``oi_summary`` series — no Breeze pulls).
+
+    ``symbol=all`` aggregates across the watchlist (indices + the day's most-liquid F&O),
+    holding episodes first; a single symbol reads just that one file. ``day`` (YYYY-MM-DD)
+    filters to one recorded session. Cached briefly (the ``all`` path reads many files)."""
+    key = f"{(symbol or 'all').upper()}|{day or 'all'}"
+    now = time.time()
+    if not refresh and _BUILDUP_LOG["key"] == key and now - _BUILDUP_LOG["at"] < BUILDUP_LOG_TTL:
+        return _BUILDUP_LOG["data"]
+    try:
+        data = _compute_buildup_log(symbol, day)
+    except Exception as exc:
+        return {"symbol": (symbol or "all").upper(), "rows": [], "days": [],
+                "count": 0, "holding": 0, "error": str(exc)}
+    _BUILDUP_LOG.update(at=now, key=key, data=data)
+    return data
 
 
 @app.get("/api/market-reads")

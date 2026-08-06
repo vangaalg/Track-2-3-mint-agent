@@ -63,6 +63,18 @@
     <div class="tablewrap"><table id="buScanTbl"></table></div>
   </section>
 
+  <!-- CLEAR bull/bear transition log: when each instrument entered a strong OI lean + how long it holds -->
+  <section class="card" id="buildupLogCard">
+    <div class="scanhdr">
+      <h2>🕓 CLEAR bull/bear log — when it turned + how long it holds</h2>
+      <select id="buLogSym"><option value="all">All instruments</option></select>
+      <button id="buLogRefresh" class="btn csv">⟳ Refresh</button>
+      <span id="buLogStatus" class="muted small"></span>
+    </div>
+    <div class="small muted">🟢 CLEAR BULL / 🔴 CLEAR BEAR episodes off the recorded OI lean · holding (still live) first · duration grows as new cycles record</div>
+    <div class="tablewrap"><table id="buLogTbl"></table></div>
+  </section>
+
   <!-- NIFTY-50 market breadth: advance/decline + top-20 heavyweights' contribution to the index -->
   <section class="card" id="breadthCard">
     <div class="scanhdr">
