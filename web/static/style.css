@@ -81,8 +81,13 @@ td.conf { font-weight:600; white-space:nowrap; }
   border-radius:7px; padding:3px 6px; font-size:12px; }
 .btn.csv { padding:3px 8px; font-size:11px; background:var(--tile); border-color:var(--line); color:var(--txt); }
 .btn.csv:hover { border-color:var(--blue); }
-.scanhdr { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+.scanhdr { display:flex; align-items:center; gap:12px; margin-bottom:8px; flex-wrap:wrap; }
 .scanhdr h2 { margin:0; }
+.tblsearch { background:var(--tile); border:1px solid var(--line); color:var(--txt);
+  border-radius:6px; padding:3px 8px; font-size:12px; width:150px; }
+.tblsearch:focus { outline:none; border-color:var(--blue); }
+th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+th.sortable:hover { color:var(--txt); }
 .pending-badge { background:var(--amber); color:#1a1a1a; border-radius:10px; padding:1px 8px;
   font-weight:600; font-size:11px; margin-right:6px; }
 #pendingCard { border:1px solid var(--amber); }

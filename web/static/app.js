@@ -364,15 +364,77 @@ async function buScanRefresh() {
   $("buScanRefresh").disabled = false;
 }
 
+// ── Sticky per-table search + click-to-sort (survives the live poll re-render) ──────────
+// A column = {label, key, get}. `key` null → not sortable (e.g. the action column). `get`
+// returns a number (blanks as null → always sorted last) or a string. State per table:
+// {data, filter, key, dir}. The header row carries data-sk + an active-direction caret.
+const _numv = (x) => {
+  const v = Number(x);
+  return (x == null || x === "" || Number.isNaN(v)) ? null : v;
+};
+
+function _headRow(cols, st) {
+  return "<thead><tr>" + cols.map((c) => {
+    if (!c.key) return `<th>${c.label}</th>`;
+    const ind = st.key === c.key ? (st.dir === 1 ? " ▲" : " ▼") : "";
+    return `<th class="sortable" data-sk="${c.key}">${c.label}${ind}</th>`;
+  }).join("") + "</tr></thead>";
+}
+
+function _sortFilter(rows, st, cols, textFn) {
+  let out = rows;
+  if (st.filter) {
+    const q = st.filter.toLowerCase();
+    out = out.filter((r) => textFn(r).toLowerCase().includes(q));
+  }
+  const col = cols.find((c) => c.key === st.key);
+  if (col && col.get) {
+    out = out.slice().sort((a, b) => {
+      const x = col.get(a), y = col.get(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;                 // blanks always last, regardless of dir
+      if (y == null) return -1;
+      if (typeof x === "number" && typeof y === "number") return (x - y) * st.dir;
+      return String(x).localeCompare(String(y)) * st.dir;
+    });
+  }
+  return out;
+}
+
+// Wire a table's header clicks (toggle key/dir) + its search box to a redraw fn (call once).
+function _wireSortFilter(tableId, inputId, st, redraw) {
+  $(tableId).addEventListener("click", (e) => {
+    const th = e.target.closest("th[data-sk]");
+    if (!th) return;
+    const k = th.dataset.sk;
+    if (st.key === k) st.dir = -st.dir; else { st.key = k; st.dir = 1; }
+    redraw();
+  });
+  const inp = $(inputId);
+  if (inp) inp.addEventListener("input", () => { st.filter = inp.value.trim(); redraw(); });
+}
+
+const _buScan = { data: null, filter: "", key: null, dir: 1 };
+const BUSCAN_COLS = [
+  { label: "Script", key: "script", get: (r) => (r.label || r.symbol || "") },
+  { label: "Lean", key: "lean", get: (r) => _numv(r.score) },
+  { label: "Score", key: "score", get: (r) => _numv(r.score) },
+  { label: "Support/EOS", key: "support", get: (r) => _numv(r.support) },
+  { label: "Resist/EOR", key: "resist", get: (r) => _numv(r.resistance) },
+  { label: "OI shift", key: "shift", get: (r) => _numv(r.shift_strike) },
+  { label: "Spot", key: "spot", get: (r) => _numv(r.spot) },
+  { label: "", key: null },
+];
+
 function renderBuildupScan(d) {
-  const rows = d.rows || [];
+  _buScan.data = d;
   $("buScanStatus").innerHTML = d.error ? `<span class="loss-txt">error</span>`
     : `${d.clear || 0} CLEAR · ${d.with_data || 0}/${d.count || 0} with OI`
       + (d.generated ? ` · ${String(d.generated).slice(11, 16)}` : "");
   renderBuScanHints(d.hints || []);
-  // alert when ANY watchlist script crosses into a CLEAR lean (not just the active one) —
-  // per-symbol dedup shared with the active-instrument panel, so no double beeps
-  for (const r of rows) {
+  // alert when ANY watchlist script crosses into a CLEAR lean (unfiltered — a search/sort
+  // in the view must never suppress an alert). Per-symbol dedup shared with the log/panel.
+  for (const r of (d.rows || [])) {
     if (!r.has_data) continue;
     const state = r.clear ? r.bias : "none";
     if (r.clear && _buildupAlert[r.symbol] !== state) {
@@ -381,18 +443,27 @@ function renderBuildupScan(d) {
     }
     _buildupAlert[r.symbol] = state;
   }
-  if (!rows.length) {
+  drawBuScan();
+}
+
+function drawBuScan() {
+  const d = _buScan.data;
+  if (!d) return;
+  const src = d.rows || [];
+  if (!src.length) {
     $("buScanTbl").innerHTML = "<tbody><tr><td class='muted'>No recorded OI yet — the recorder "
       + "accumulates it live (indices ~15m, stocks ~60m).</td></tr></tbody>";
     return;
   }
+  const rows = _sortFilter(src, _buScan, BUSCAN_COLS,
+    (r) => `${r.label || ""} ${r.symbol || ""} ${r.kind || ""}`);
   const perfectSyms = new Set((_pendingRows || []).filter((p) => p.perfect).map((p) => p.symbol));
   const lean = (r) => (perfectSyms.has(r.symbol) ? "⭐ " : "")
     + (r.bias === "bullish" ? `<span class="bup">🟢 ${r.clear ? "CLEAR " : ""}BULL</span>`
     : r.bias === "bearish" ? `<span class="bdn">🔴 ${r.clear ? "CLEAR " : ""}BEAR</span>`
     : `<span class="muted">neutral</span>`);
-  let h = "<thead><tr><th>Script</th><th>Lean</th><th>Score</th><th>Support/EOS</th>"
-    + "<th>Resist/EOR</th><th>OI shift</th><th>Spot</th><th></th></tr></thead><tbody>";
+  let h = _headRow(BUSCAN_COLS, _buScan) + "<tbody>";
+  if (!rows.length) h += `<tr><td colspan="8" class="muted">No match for “${_buScan.filter}”.</td></tr>`;
   for (const r of rows) {
     if (!r.has_data) {
       h += `<tr class="nodata"><td>${r.label || r.symbol}</td><td colspan="6" class="muted small">OI pending</td>`
@@ -443,26 +514,29 @@ function fmtDur(m) {
   return `${Math.floor(v / 60)}h ${v % 60}m`;
 }
 
+const _buLog = { data: null, filter: "", key: null, dir: 1 };
+const BULOG_COLS = [
+  { label: "Script", key: "script", get: (r) => (r.label || r.symbol || "") },
+  { label: "State", key: "state", get: (r) => r.bias || "" },
+  { label: "Since", key: "since", get: (r) => r.start || "" },     // ISO string sorts by time
+  { label: "Held", key: "held", get: (r) => _numv(r.duration_min) },
+  { label: "From→", key: "from", get: (r) => r.from_state || "" },
+  { label: "Peak", key: "peak", get: (r) => _numv(r.peak_score) },
+  { label: "Spot@start", key: "spot", get: (r) => _numv(r.spot_at_start) },
+];
+
 function renderBuildupLog(d) {
-  const rows = d.rows || [];
+  _buLog.data = d;
   $("buLogStatus").innerHTML = d.error ? `<span class="loss-txt">error</span>`
     : `${d.holding || 0} holding · ${d.count || 0} today`
       + (d.generated ? ` · ${String(d.generated).slice(11, 16)}` : "");
-  if (!rows.length) {
-    $("buLogTbl").innerHTML = "<tbody><tr><td class='muted'>No CLEAR lean recorded yet — an "
-      + "episode is logged once the OI lean crosses |score| ≥ 0.4 (recorder/cockpit must be live).</td></tr></tbody>";
-    _buLogPrimed = true;                               // nothing pre-existing → first later crossing beeps
-    return;
-  }
-  const badge = (r) => r.bias === "bullish"
-    ? `<span class="bup">🟢 CLEAR BULL</span>` : `<span class="bdn">🔴 CLEAR BEAR</span>`;
   const hhmm = (t) => String(t || "").slice(11, 16);
   const pretty = (s) => ({ clear_bull: "clear bull", clear_bear: "clear bear" }[s] || s || "—");
-  // Desktop beep + notification when an instrument crosses INTO a still-live CLEAR lean.
-  // Shares the per-symbol dedup with the watchlist (`_buildupAlert`) so a transition pings
-  // exactly ONCE — no double beep — and a flip (bull↔bear) re-fires. The first render only
-  // SEEDS the map (no beep) so a page load never floods with pre-existing leans.
-  for (const r of rows) {
+  // Desktop beep + notification when an instrument crosses INTO a still-live CLEAR lean
+  // (unfiltered — a search/sort in the view must never suppress the alert). Shares the
+  // per-symbol dedup with the watchlist (`_buildupAlert`) so a transition pings exactly ONCE
+  // and a flip re-fires. The first render only SEEDS the map (no beep → no page-load flood).
+  for (const r of (d.rows || [])) {
     if (!r.holding) continue;                          // only a live crossing is an event
     if (_buLogPrimed && _buildupAlert[r.symbol] !== r.bias) {
       notifyEvent("clear_lean",
@@ -472,8 +546,25 @@ function renderBuildupLog(d) {
     _buildupAlert[r.symbol] = r.bias;
   }
   _buLogPrimed = true;
-  let h = "<thead><tr><th>Script</th><th>State</th><th>Since</th><th>Held</th>"
-    + "<th>From→</th><th>Peak</th><th>Spot@start</th></tr></thead><tbody>";
+  drawBuLog();
+}
+
+function drawBuLog() {
+  const d = _buLog.data;
+  if (!d) return;
+  const src = d.rows || [];
+  if (!src.length) {
+    $("buLogTbl").innerHTML = "<tbody><tr><td class='muted'>No CLEAR lean recorded yet — an "
+      + "episode is logged once the OI lean crosses |score| ≥ 0.4 (recorder/cockpit must be live).</td></tr></tbody>";
+    return;
+  }
+  const rows = _sortFilter(src, _buLog, BULOG_COLS, (r) => `${r.label || ""} ${r.symbol || ""}`);
+  const badge = (r) => r.bias === "bullish"
+    ? `<span class="bup">🟢 CLEAR BULL</span>` : `<span class="bdn">🔴 CLEAR BEAR</span>`;
+  const hhmm = (t) => String(t || "").slice(11, 16);
+  const pretty = (s) => ({ clear_bull: "clear bull", clear_bear: "clear bear" }[s] || s || "—");
+  let h = _headRow(BULOG_COLS, _buLog) + "<tbody>";
+  if (!rows.length) h += `<tr><td colspan="7" class="muted">No match for “${_buLog.filter}”.</td></tr>`;
   for (const r of rows) {
     const held = r.holding
       ? `<b>${fmtDur(r.duration_min)}</b> <span class="win-txt">· holding</span>`
@@ -1773,6 +1864,8 @@ $("buScanTbl").addEventListener("click", (e) => {   // Focus a watchlist script'
 });
 $("buLogRefresh").onclick = buLogRefresh;
 $("buLogSym").addEventListener("change", () => fetchBuildupLog(true));
+_wireSortFilter("buScanTbl", "buScanSearch", _buScan, drawBuScan);   // per-column sort + search
+_wireSortFilter("buLogTbl", "buLogSearch", _buLog, drawBuLog);
 $("scanAuto").checked = localStorage.getItem("scanAuto") !== "0";   // restore the toggle
 $("scanAuto").addEventListener("change", (e) => {
   localStorage.setItem("scanAuto", e.target.checked ? "1" : "0");

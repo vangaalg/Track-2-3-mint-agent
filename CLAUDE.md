@@ -1126,6 +1126,16 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     stops a page load flooding with pre-existing leans while still beeping the first genuine
     later crossing. Honors the 🔔 mute toggle + needs a click to prime audio (autoplay policy),
     same as every other cockpit alert. Frontend-only; node --check clean.
+  - **Per-column sort + search on the buildup watchlist AND the CLEAR log (trader ask).** Both
+    tables gained a 🔍 filter box (matches script/label/kind) + click-to-sort headers (toggle
+    asc/desc, ▲/▼ caret, blanks always last). Generic `_sortFilter`/`_headRow`/`_wireSortFilter`
+    helpers driven by per-table column configs (BUSCAN_COLS/BULOG_COLS = {label,key,get}); each
+    render split into ingest (store data + fire alerts on the UNFILTERED set + status) vs
+    `drawBuScan`/`drawBuLog` (filter+sort+build). Sort/filter state (`_buScan`/`_buLog`) is
+    STICKY across the live poll re-render (the search input is a static header element, so focus
+    +value survive); alerts still fire off the full data so a filtered view never suppresses a
+    beep. `.tblsearch`/`th.sortable` CSS + a `<input type=search>` per card header. Frontend-only;
+    node --check clean.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
