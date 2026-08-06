@@ -21,6 +21,7 @@ let _logDay = "all", _logStrat = "all", _logDays = [], _logRows = [];  // trigge
 let _scanRows = [];                          // last scanner rows (for the 💬 full-read lookup)
 let _seenPending = new Set();                // pending trigger ts already alerted (one beep each)
 let _buildupAlert = {};                       // per-symbol last strong OI lean alerted (dedup)
+let _buLogPrimed = false;                      // seed the CLEAR-log dedup on first render (no load-flood)
 const STRONG_BUILDUP = 0.4;                   // |score| for a CLEAR lean (= analysis.trade1.BUILDUP_STRONG)
 
 let _pollN = 0;                                       // poll counter — throttles heavy fetches
@@ -450,12 +451,27 @@ function renderBuildupLog(d) {
   if (!rows.length) {
     $("buLogTbl").innerHTML = "<tbody><tr><td class='muted'>No CLEAR lean recorded yet — an "
       + "episode is logged once the OI lean crosses |score| ≥ 0.4 (recorder/cockpit must be live).</td></tr></tbody>";
+    _buLogPrimed = true;                               // nothing pre-existing → first later crossing beeps
     return;
   }
   const badge = (r) => r.bias === "bullish"
     ? `<span class="bup">🟢 CLEAR BULL</span>` : `<span class="bdn">🔴 CLEAR BEAR</span>`;
   const hhmm = (t) => String(t || "").slice(11, 16);
   const pretty = (s) => ({ clear_bull: "clear bull", clear_bear: "clear bear" }[s] || s || "—");
+  // Desktop beep + notification when an instrument crosses INTO a still-live CLEAR lean.
+  // Shares the per-symbol dedup with the watchlist (`_buildupAlert`) so a transition pings
+  // exactly ONCE — no double beep — and a flip (bull↔bear) re-fires. The first render only
+  // SEEDS the map (no beep) so a page load never floods with pre-existing leans.
+  for (const r of rows) {
+    if (!r.holding) continue;                          // only a live crossing is an event
+    if (_buLogPrimed && _buildupAlert[r.symbol] !== r.bias) {
+      notifyEvent("clear_lean",
+        `${r.bias === "bullish" ? "🟢" : "🔴"} ${r.label || r.symbol} CLEAR ${String(r.bias).toUpperCase()}`,
+        `turned ${hhmm(r.start)} · held ${fmtDur(r.duration_min)} · from ${pretty(r.from_state)}`);
+    }
+    _buildupAlert[r.symbol] = r.bias;
+  }
+  _buLogPrimed = true;
   let h = "<thead><tr><th>Script</th><th>State</th><th>Since</th><th>Held</th>"
     + "<th>From→</th><th>Peak</th><th>Spot@start</th></tr></thead><tbody>";
   for (const r of rows) {

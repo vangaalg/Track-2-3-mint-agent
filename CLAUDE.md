@@ -1118,6 +1118,14 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
       episode collapse/duration/from-to + two-episode re-entry + holding-first sort + failing-loader
       isolation (test_buildup_log, 7) + endpoint records the 09:40→09:50 hold + empty state
       (test_web_server). node --check clean; suite green (452).
+  - **Desktop beep on a new CLEAR transition.** The log now fires the shared `notifyEvent`
+    channel (beep + browser Notification + title-bar badge) when an instrument crosses INTO a
+    still-live CLEAR bull/bear lean. Reuses the watchlist's per-symbol dedup map (`_buildupAlert`)
+    so a transition pings EXACTLY ONCE (no double with the watchlist) and a bull↔bear flip
+    re-fires; a one-time prime (`_buLogPrimed`, seeded on the first render incl. the empty path)
+    stops a page load flooding with pre-existing leans while still beeping the first genuine
+    later crossing. Honors the 🔔 mute toggle + needs a click to prime audio (autoplay policy),
+    same as every other cockpit alert. Frontend-only; node --check clean.
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every
