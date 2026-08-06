@@ -1136,6 +1136,22 @@ is to let Stage 1 backtesting decide which wins **per instrument**. See
     +value survive); alerts still fire off the full data so a filtered view never suppresses a
     beep. `.tblsearch`/`th.sortable` CSS + a `<input type=search>` per card header. Frontend-only;
     node --check clean.
+  - **CLEAR-log timing fix (0-min bug) + date column (live 6-Aug catch).** The trader saw "Since
+    09:37 · 0 min holding" on Axis Bank at 11:01 — wrong. Root cause: `duration_min` was
+    `last_sample − first_sample`, and hourly-recorded stocks often had ONE summary row since the
+    lean turned (`end == start` → 0). Fix: a still-holding TODAY episode is now measured to NOW on
+    the CLIENT (`_heldMin` = `Date.now() − Date.parse(start)`; the +05:30 offset in the stored ts
+    makes it correct for any viewer TZ), so it grows every poll even with a single recorded sample;
+    the server's `duration_min` stays the honest recorded span (drives the API/CSV + the closed/
+    stale fallback). Server also now BREAKS episodes on the date boundary (`feeds/buildup_log.
+    clear_episodes` — a lean can't "hold" across an overnight close, else a still-clear open merged
+    into yesterday as a 20-hour hold) + emits a `date` field; `from_state`/`to_state` null across a
+    session gap. Frontend: new **Date** column (sortable), a `· last OI HH:MM` note when the last
+    sample is >30 min stale, and a holding row whose last sample is NOT today shows `stale (last
+    <date time>)` instead of a bogus multi-hour "now" duration. Status label "today" → "logged"
+    (the view spans all recorded days; a day picker is the easy follow-on). Tested: date-break
+    splits an overnight-spanning series into 2 episodes + `date` field (test_buildup_log, 9);
+    endpoint carries `date` (test_web_server). node --check clean; suite green (453).
 
 ## PENDING ROADMAP (keep visible — confirmed with user)
 - [x] **Self-improving loop — Phase 3: TRAINING MODE (`/train` tab).** Replay every

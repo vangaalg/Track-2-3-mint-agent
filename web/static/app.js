@@ -514,21 +514,40 @@ function fmtDur(m) {
   return `${Math.floor(v / 60)}h ${v % 60}m`;
 }
 
+const _MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmtDate(iso) {                                 // "2026-08-06T…" → "06 Aug"
+  const p = String(iso || "").slice(0, 10).split("-");
+  return p.length < 3 ? "—" : `${p[2]} ${_MON[(+p[1]) - 1] || p[1]}`;
+}
+
 const _buLog = { data: null, filter: "", key: null, dir: 1 };
 const BULOG_COLS = [
   { label: "Script", key: "script", get: (r) => (r.label || r.symbol || "") },
   { label: "State", key: "state", get: (r) => r.bias || "" },
+  { label: "Date", key: "date", get: (r) => (r.date || String(r.start || "").slice(0, 10)) },
   { label: "Since", key: "since", get: (r) => r.start || "" },     // ISO string sorts by time
-  { label: "Held", key: "held", get: (r) => _numv(r.duration_min) },
+  { label: "Held", key: "held", get: (r) => _heldMin(r) },        // live now-turn for holding rows
   { label: "From→", key: "from", get: (r) => r.from_state || "" },
   { label: "Peak", key: "peak", get: (r) => _numv(r.peak_score) },
   { label: "Spot@start", key: "spot", get: (r) => _numv(r.spot_at_start) },
 ];
 
+// Minutes an episode has run. A still-holding TODAY episode is measured to NOW (the recorded
+// span is only as long as the last sample — for an hourly stock with one row it reads 0), so
+// it grows every poll. Date.parse honours the +05:30 offset in the ISO ts, so this is correct
+// for any viewer timezone. A holding row whose last sample is NOT today is stale (market shut
+// after it) → fall back to the recorded span, never "now" (else it reads as a multi-hour hold).
+function _heldMin(r) {
+  if (r.holding && String(r.end || "").slice(0, 10) === _istToday()) {
+    return Math.max(0, (Date.now() - Date.parse(r.start)) / 60000);
+  }
+  return _numv(r.duration_min) || 0;
+}
+
 function renderBuildupLog(d) {
   _buLog.data = d;
   $("buLogStatus").innerHTML = d.error ? `<span class="loss-txt">error</span>`
-    : `${d.holding || 0} holding · ${d.count || 0} today`
+    : `${d.holding || 0} holding · ${d.count || 0} logged`
       + (d.generated ? ` · ${String(d.generated).slice(11, 16)}` : "");
   const hhmm = (t) => String(t || "").slice(11, 16);
   const pretty = (s) => ({ clear_bull: "clear bull", clear_bear: "clear bear" }[s] || s || "—");
@@ -563,15 +582,25 @@ function drawBuLog() {
     ? `<span class="bup">🟢 CLEAR BULL</span>` : `<span class="bdn">🔴 CLEAR BEAR</span>`;
   const hhmm = (t) => String(t || "").slice(11, 16);
   const pretty = (s) => ({ clear_bull: "clear bull", clear_bear: "clear bear" }[s] || s || "—");
+  const today = _istToday();
   let h = _headRow(BULOG_COLS, _buLog) + "<tbody>";
-  if (!rows.length) h += `<tr><td colspan="7" class="muted">No match for “${_buLog.filter}”.</td></tr>`;
+  if (!rows.length) h += `<tr><td colspan="8" class="muted">No match for “${_buLog.filter}”.</td></tr>`;
   for (const r of rows) {
-    const held = r.holding
-      ? `<b>${fmtDur(r.duration_min)}</b> <span class="win-txt">· holding</span>`
-      : `${fmtDur(r.duration_min)} <span class="muted small">→ ${pretty(r.to_state)} ${hhmm(r.end)}</span>`;
-    h += `<tr class="${r.holding ? (r.bias === "bullish" ? "clearbull" : "clearbear") : ""}">`
+    const endToday = String(r.end || "").slice(0, 10) === today;
+    let held;
+    if (r.holding && endToday) {                       // live — grows to NOW each poll
+      const staleM = (Date.now() - Date.parse(r.end)) / 60000;
+      const note = staleM > 30 ? ` <span class="muted small">· last OI ${hhmm(r.end)}</span>` : "";
+      held = `<b>${fmtDur(_heldMin(r))}</b> <span class="win-txt">· holding</span>${note}`;
+    } else if (r.holding) {                            // still "clear" but no data today → stale
+      held = `${fmtDur(r.duration_min)} <span class="muted small">· stale (last ${fmtDate(r.end)} ${hhmm(r.end)})</span>`;
+    } else {                                           // closed — recorded span + what broke it
+      held = `${fmtDur(r.duration_min)} <span class="muted small">→ ${pretty(r.to_state)} ${hhmm(r.end)}</span>`;
+    }
+    h += `<tr class="${r.holding && endToday ? (r.bias === "bullish" ? "clearbull" : "clearbear") : ""}">`
       + `<td><b>${r.label || r.symbol}</b></td>`
       + `<td>${badge(r)}</td>`
+      + `<td>${fmtDate(r.date || r.start)}</td>`
       + `<td>${hhmm(r.start)}</td>`
       + `<td>${held}</td>`
       + `<td class="muted small">${pretty(r.from_state)} →</td>`

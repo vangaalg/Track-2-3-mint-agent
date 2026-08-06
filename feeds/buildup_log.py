@@ -94,24 +94,31 @@ def clear_episodes(df: pd.DataFrame | None, symbol: str = "",
         if st not in _CLEAR:
             i += 1
             continue
+        day = ts_list[i][:10]
         j = i
         peak = scores[i]
-        while j + 1 < n and states[j + 1] == st:
+        # Extend the run only while the SAME clear state AND the SAME session (date). A lean
+        # does not "hold" across an overnight market close, so a date change ends the episode —
+        # otherwise a still-clear open would merge into yesterday and read as a 20-hour hold.
+        while j + 1 < n and states[j + 1] == st and ts_list[j + 1][:10] == day:
             j += 1
             if not _isnan(scores[j]) and (_isnan(peak) or abs(scores[j]) > abs(peak)):
                 peak = scores[j]
         holding = j == n - 1
+        next_same_day = (j + 1 < n) and (ts_list[j + 1][:10] == day)
+        prev_same_day = (i > 0) and (ts_list[i - 1][:10] == day)
         start_ts, end_ts = ts_list[i], ts_list[j]
         episodes.append({
             "symbol": symbol,
             "state": st,
             "bias": "bullish" if st == CLEAR_BULL else "bearish",
+            "date": day,
             "start": start_ts,
             "end": end_ts,
-            "duration_min": _minutes(start_ts, end_ts),
+            "duration_min": _minutes(start_ts, end_ts),   # recorded span; the live "now-turn" is on the client
             "holding": holding,
-            "from_state": states[i - 1] if i > 0 else None,
-            "to_state": states[j + 1] if j + 1 < n else None,
+            "from_state": states[i - 1] if prev_same_day else None,
+            "to_state": states[j + 1] if next_same_day else None,
             "samples": j - i + 1,
             "peak_score": None if _isnan(peak) else round(float(peak), 3),
             "spot_at_start": None if _isnan(spots[i]) else round(float(spots[i]), 1),

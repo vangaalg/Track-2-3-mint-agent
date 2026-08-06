@@ -40,10 +40,28 @@ def test_bull_to_clear_bull_episode_holds_10_min():
     assert e["state"] == "clear_bull" and e["bias"] == "bullish"
     assert e["from_state"] == "bull" and e["to_state"] is None
     assert e["holding"] is True
+    assert e["date"] == "2026-08-06"
     assert e["start"].startswith("2026-08-06T09:40")
-    assert e["duration_min"] == 10.0           # 09:40 → 09:50
+    assert e["duration_min"] == 10.0           # recorded span 09:40 → 09:50 (live now-turn is client-side)
     assert e["peak_score"] == 0.6 and e["samples"] == 3
     assert e["spot_at_start"] == 24001.0
+
+
+def test_episode_breaks_on_the_date_boundary():
+    """A clear lean at yesterday's close and again at today's open is TWO episodes, not one
+    20-hour hold — a lean cannot carry across an overnight market close."""
+    df = _series([
+        ("2026-08-05T15:25:00+05:30", 0.5),    # yesterday, clear (closes the session)
+        ("2026-08-06T09:15:00+05:30", 0.5),    # today, clear again (fresh episode)
+        ("2026-08-06T09:30:00+05:30", 0.55),   # today, holding
+    ])
+    eps = clear_episodes(df, symbol="NIFTY")
+    assert len(eps) == 2
+    assert eps[0]["date"] == "2026-08-05" and eps[0]["holding"] is False
+    assert eps[0]["to_state"] is None          # session boundary, not a real break
+    assert eps[1]["date"] == "2026-08-06" and eps[1]["holding"] is True
+    assert eps[1]["from_state"] is None        # first sample of today's session
+    assert eps[1]["duration_min"] == 15.0      # 09:15 → 09:30 within today
 
 
 def test_closed_episode_records_end_and_to_state():

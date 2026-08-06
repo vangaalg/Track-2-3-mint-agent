@@ -623,7 +623,7 @@ def test_buildup_log_records_clear_transition_and_hold(client, tmp_path, monkeyp
     assert e["symbol"] == "NIFTY" and e["state"] == "clear_bull"
     assert e["from_state"] == "bull" and e["holding"] is True
     assert e["duration_min"] == 10.0 and e["start"].startswith("2026-08-06T09:40")
-    assert "2026-08-06" in d["days"]
+    assert e["date"] == "2026-08-06" and "2026-08-06" in d["days"]
     # empty when nothing recorded
     monkeypatch.setattr(srv, "OI_SUMMARY_ROOT", str(tmp_path / "none"))
     empty = client.get("/api/buildup-log?symbol=NIFTY&refresh=true").json()
